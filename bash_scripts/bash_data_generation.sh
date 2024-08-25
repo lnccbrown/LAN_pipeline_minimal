@@ -71,7 +71,7 @@ while [ ! $# -eq 0 ]
 if [ $also_use_base_acct ]; then
     sbatch -p batch --array=0-$n_base_acct ../sbatch_scripts/sbatch_data_generation.sh \
                     --config_path $yaml_config_data_gen \
-                    --date_gen_base_path $project_folder \
+                    --data_gen_base_path $project_folder \
                     --bashrc_path $bashrc_path \
                     --conda_env_name $conda_env_name | cut -f 4 -d' '
 fi 
