@@ -29,7 +29,7 @@
 # Read in arguments:
 network_id=None
 config_file=None
-conda_env_name=lan_pipe
+conda_env_name=lan-pipeline
 bashrc_path=/users/afengler/.bashrc
 data_gen_base_path=/users/afengler/data/proj_lan_pipeline_minimal/LAN_pipeline_minimal/
 
@@ -61,6 +61,7 @@ source $bashrc_path  # NOTE: This file needs to contain conda initialization stu
 conda deactivate
 conda deactivate
 conda activate $conda_env_name
+echo "Conda environment: $conda_env_name"
 
 python -u ../scripts/data_generation_script.py --config_path $config_path \
                                             --data_gen_base_path $data_gen_base_path

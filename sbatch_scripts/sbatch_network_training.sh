@@ -31,7 +31,7 @@ networks_path_base="/users/afengler/data/proj_lan_pipeline_minimal/LAN_pipeline_
 dl_workers=4
 n_networks=2
 backend="jax"
-conda_env_name=lan_pipe
+conda_env_name=lan-pipeline
 bashrc_path=/users/afengler/.bashrc
 
 echo "arguments passed to sbatch_network_training.sh $#"
