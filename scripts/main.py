@@ -104,25 +104,26 @@ def generate_training_script(
 
 # --------------------------------------------------------------------------------------
 
+set -x  # Enable command echo
+set -e  # Exit on error
+
+echo "Starting job at: $(date)"
+echo "Running on node: $(hostname)"
+echo "Current working directory: $(pwd)"
+
 config_path="{config_path}"
 networks_path_base="{networks_path_base}"
 dl_workers={dl_workers}
 n_networks={n_networks}
 backend="{backend}"
-conda_env_name="{conda_env_name}"
-bashrc_path="{bashrc_path}"
 
-source $bashrc_path
+echo "Using config path: $config_path"
+echo "Using networks path: $networks_path_base"
+echo "Number of networks: $n_networks"
+echo "Backend: $backend"
 
-conda deactivate
-conda deactivate
-conda activate $conda_env_name
-
-echo "The config file supplied is: $config_path"
-echo "Output folder is: $networks_path_base"
-
-x='teststr'
-if [ -z ${{SLURM_ARRAY_TASK_ID}} ];
+# Use uv to run Python scripts
+if [ -z ${SLURM_ARRAY_TASK_ID} ];
 then
     for ((i = 1; i <= $n_networks; i++))
         do
@@ -130,15 +131,17 @@ then
             echo "No array ID"
             
             if [ "$backend" == "jax" ]; then
-                python -u ../scripts/jax_training_script.py --config-path $config_path \\
+                echo "Running JAX training script..."
+                uv run python scripts/jax_training_script.py --config-path $config_path \\
                                                          --network-id 0 \\
-                                                         --networks_path_base $networks_path_base \\
-                                                         --dl_workers $dl_workers
+                                                         --networks-path-base $networks_path_base \\
+                                                         --dl-workers $dl_workers
             elif [ "$backend" == "torch" ]; then
-                python -u ../scripts/torch_training_script.py --config-path $config_path \\
+                echo "Running PyTorch training script..."
+                uv run python scripts/torch_training_script.py --config-path $config_path \\
                                                            --network-id 0 \\
-                                                           --networks_path_base $networks_path_base \\
-                                                           --dl_workers $dl_workers
+                                                           --networks-path-base $networks_path_base \\
+                                                           --dl-workers $dl_workers
             fi
         done
 else
@@ -148,18 +151,22 @@ else
             echo "Array ID is $SLURM_ARRAY_TASK_ID"
             
             if [ "$backend" == "jax" ]; then
-                python -u ../scripts/jax_training_script.py --config-path $config_path \\
+                echo "Running JAX training script with array ID..."
+                uv run python scripts/jax_training_script.py --config-path $config_path \\
                                                          --network-id $SLURM_ARRAY_TASK_ID \\
-                                                         --networks_path_base $networks_path_base \\
-                                                         --dl_workers $dl_workers
+                                                         --networks-path-base $networks_path_base \\
+                                                         --dl-workers $dl_workers
             elif [ "$backend" == "torch" ]; then
-                python -u ../scripts/torch_training_script.py --config-path $config_path \\
+                echo "Running PyTorch training script with array ID..."
+                uv run python scripts/torch_training_script.py --config-path $config_path \\
                                                            --network-id $SLURM_ARRAY_TASK_ID \\
-                                                           --networks_path_base $networks_path_base \\
-                                                           --dl_workers $dl_workers
+                                                           --networks-path-base $networks_path_base \\
+                                                           --dl-workers $dl_workers
             fi
         done
 fi
+
+echo "Job completed at: $(date)"
 """
     return script_content
 
