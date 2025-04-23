@@ -24,8 +24,6 @@ def generate_sbatch_script(
     cores: int,
     nodes: int,
     config_path: Path,
-    conda_env_name: str,
-    bashrc_path: Path,
     data_gen_base_path: Path,
 ) -> str:
     """Generate SBATCH script with the given parameters."""
@@ -49,20 +47,21 @@ def generate_sbatch_script(
 # BASIC SETUP
 
 config_path="{config_path}"
-conda_env_name="{conda_env_name}"
-bashrc_path="{bashrc_path}"
 data_gen_base_path="{data_gen_base_path}"
 
 echo "The config file supplied is: $config_path"
 
-source $bashrc_path
+set -x  # Enable command echo
+set -e  # Exit on error
 
-conda deactivate
-conda deactivate
-conda activate $conda_env_name
+echo "Starting job at: $(date)"
+echo "Running on node: $(hostname)"
+echo "Current working directory: $(pwd)"
 
-python -u ../scripts/data_generation_script.py --config-path $config_path \\
+python -m uv run scripts/data_generation_script.py --config-path $config_path \\
                                             --data-gen-base-path $data_gen_base_path
+
+echo "Job completed at: $(date)"
 """
     return script_content
 
@@ -79,8 +78,6 @@ def generate_training_script(
     n_networks: int,
     backend: Backend,
     dl_workers: int,
-    conda_env_name: str,
-    bashrc_path: Path,
     use_gpu: bool = False,
     array_range: Optional[str] = None,
 ) -> str:
@@ -186,12 +183,6 @@ def generate(
     ),
     cores: int = typer.Option(12, "--cores", "-c", help="Number of CPU cores"),
     nodes: int = typer.Option(1, "--nodes", "-n", help="Number of nodes"),
-    conda_env_name: str = typer.Option(
-        "lan_pipe", "--conda-env", "-e", help="Conda environment name"
-    ),
-    bashrc_path: Path = typer.Option(
-        Path("/users/afengler/.bashrc"), "--bashrc", "-b", help="Path to bashrc file"
-    ),
     data_gen_base_path: Path = typer.Option(
         Path("/users/afengler/data/proj_lan_pipeline_minimal/LAN_pipeline_minimal/"),
         "--data-base",
@@ -217,8 +208,6 @@ def generate(
             cores=cores,
             nodes=nodes,
             config_path=config_path,
-            conda_env_name=conda_env_name,
-            bashrc_path=bashrc_path,
             data_gen_base_path=data_gen_base_path,
         )
 
@@ -277,12 +266,6 @@ def train(
     dl_workers: int = typer.Option(
         4, "--dl-workers", "-w", help="Number of dataloader workers"
     ),
-    conda_env_name: str = typer.Option(
-        "lan_pipe", "--conda-env", "-e", help="Conda environment name"
-    ),
-    bashrc_path: Path = typer.Option(
-        Path("/users/afengler/.bashrc"), "--bashrc", help="Path to bashrc file"
-    ),
     use_gpu: bool = typer.Option(False, "--gpu", help="Whether to use GPU resources"),
     array_range: Optional[str] = typer.Option(
         None, "--array", help="SLURM array range (e.g., '0-8')"
@@ -310,8 +293,6 @@ def train(
             n_networks=n_networks,
             backend=backend,
             dl_workers=dl_workers,
-            conda_env_name=conda_env_name,
-            bashrc_path=bashrc_path,
             use_gpu=use_gpu,
             array_range=array_range,
         )
