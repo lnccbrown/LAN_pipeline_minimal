@@ -62,7 +62,7 @@ conda deactivate
 conda activate $conda_env_name
 
 python -u ../scripts/data_generation_script.py --config-path $config_path \\
-                                            --data_gen_base_path $data_gen_base_path
+                                            --data-gen-base-path $data_gen_base_path
 """
     return script_content
 

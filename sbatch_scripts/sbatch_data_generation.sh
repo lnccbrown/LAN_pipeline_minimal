@@ -45,7 +45,7 @@ while [ ! $# -eq 0 ]
             --bashrc_path | -bp)
                 bashrc_path=$2
                 ;;
-            --data_gen_base_path | -db)
+            --data-gen-base-path | -db)
                 data_gen_base_path=$2
                 ;;
         esac
@@ -63,4 +63,4 @@ conda deactivate
 conda activate $conda_env_name
 
 python -u ../scripts/data_generation_script.py --config-path $config_path \
-                                            --data_gen_base_path $data_gen_base_path
+                                            --data-gen-base-path $data_gen_base_path

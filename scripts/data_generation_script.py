@@ -33,7 +33,7 @@ if __name__ == "__main__":
     # Interface ----
     CLI = argparse.ArgumentParser()
     CLI.add_argument("--config-path", type=none_or_str, default=None)
-    CLI.add_argument("--data_gen_base_path", type=none_or_str, default=None)
+    CLI.add_argument("--data-gen-base-path", type=none_or_str, default=None)
 
     args = CLI.parse_args()
     print(args)
