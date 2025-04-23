@@ -157,13 +157,13 @@ then
                 python -m uv run scripts/jax_training_script.py --config-path $config_path \\
                                                          --network-id 0 \\
                                                          --networks-path-base $networks_path_base \\
-                                                         --dl-workers $dl_workers
+                                                         --data-loader-workers $dl_workers
             elif [ "$backend" == "torch" ]; then
                 echo "Running PyTorch training script..."
                 python -m uv run scripts/torch_training_script.py --config-path $config_path \\
                                                            --network-id 0 \\
                                                            --networks-path-base $networks_path_base \\
-                                                           --dl-workers $dl_workers
+                                                           --data-loader-workers $dl_workers
             fi
         done
 else
@@ -177,13 +177,13 @@ else
                 python -m uv run scripts/jax_training_script.py --config-path $config_path \\
                                                          --network-id $SLURM_ARRAY_TASK_ID \\
                                                          --networks-path-base $networks_path_base \\
-                                                         --dl-workers $dl_workers
+                                                         --data-loader-workers $dl_workers
             elif [ "$backend" == "torch" ]; then
                 echo "Running PyTorch training script with array ID..."
                 python -m uv run scripts/torch_training_script.py --config-path $config_path \\
                                                            --network-id $SLURM_ARRAY_TASK_ID \\
                                                            --networks-path-base $networks_path_base \\
-                                                           --dl-workers $dl_workers
+                                                           --data-loader-workers $dl_workers
             fi
         done
 fi
@@ -270,7 +270,7 @@ def train(
         Backend.jax, "--backend", "-b", help="Deep learning backend to use"
     ),
     dl_workers: int = typer.Option(
-        4, "--dl-workers", "-w", help="Number of dataloader workers"
+        4, "--data-loader-workers", "-w", help="Number of dataloader workers"
     ),
     use_gpu: bool = typer.Option(False, "--gpu", help="Whether to use GPU resources"),
     array_range: Optional[str] = typer.Option(

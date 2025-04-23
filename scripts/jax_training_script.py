@@ -40,11 +40,11 @@ def none_or_int(value):
 
 if __name__ == "__main__":
     # Interface ----
-    CLI = argparse.ArgumentParser()
+    CLI = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     CLI.add_argument("--config-path", type=none_or_str, default=None)
     CLI.add_argument("--network-id", type=none_or_int, default=None)
-    CLI.add_argument("--networks_path_base", type=none_or_str, default=None)
-    CLI.add_argument("--dl_workers", type=int, default=0)
+    CLI.add_argument("--networks-path-base", "--networks_path_base", type=none_or_str, default=None, dest="networks_path_base")
+    CLI.add_argument("--data-loader-workers", "--dl_workers", type=int, default=0, dest="dl_workers")
 
     args = CLI.parse_args()
     print("Arguments passed: ", args)
