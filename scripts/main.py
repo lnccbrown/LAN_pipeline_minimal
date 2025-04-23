@@ -136,13 +136,13 @@ then
             
             if [ "$backend" == "jax" ]; then
                 echo "Running JAX training script..."
-                python -m uv run python scripts/jax_training_script.py --config-path $config_path \\
+                python -m uv run scripts/jax_training_script.py --config-path $config_path \\
                                                          --network-id 0 \\
                                                          --networks-path-base $networks_path_base \\
                                                          --dl-workers $dl_workers
             elif [ "$backend" == "torch" ]; then
                 echo "Running PyTorch training script..."
-                python -m uv run python scripts/torch_training_script.py --config-path $config_path \\
+                python -m uv run scripts/torch_training_script.py --config-path $config_path \\
                                                            --network-id 0 \\
                                                            --networks-path-base $networks_path_base \\
                                                            --dl-workers $dl_workers
@@ -156,13 +156,13 @@ else
             
             if [ "$backend" == "jax" ]; then
                 echo "Running JAX training script with array ID..."
-                python -m uv run python scripts/jax_training_script.py --config-path $config_path \\
+                python -m uv run scripts/jax_training_script.py --config-path $config_path \\
                                                          --network-id $SLURM_ARRAY_TASK_ID \\
                                                          --networks-path-base $networks_path_base \\
                                                          --dl-workers $dl_workers
             elif [ "$backend" == "torch" ]; then
                 echo "Running PyTorch training script with array ID..."
-                python -m uv run python scripts/torch_training_script.py --config-path $config_path \\
+                python -m uv run scripts/torch_training_script.py --config-path $config_path \\
                                                            --network-id $SLURM_ARRAY_TASK_ID \\
                                                            --networks-path-base $networks_path_base \\
                                                            --dl-workers $dl_workers
