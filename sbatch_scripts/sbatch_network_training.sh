@@ -39,7 +39,7 @@ echo "arguments passed to sbatch_network_training.sh $#"
 while [ ! $# -eq 0 ]
     do
         case "$1" in
-            --config_path | -p)
+            --config-path | -p)
                 echo "passing config path $2"
                 config_path=$2
                 ;;
@@ -90,12 +90,12 @@ then
             echo "No array ID"
             
             if [ "$backend" == "jax" ]; then
-                python -u ../scripts/jax_training_script.py --config_path $config_path \
+                python -u ../scripts/jax_training_script.py --config-path $config_path \
                                                          --network_id 0 \
                                                          --networks_path_base $networks_path_base \
                                                          --dl_workers $dl_workers
             elif [ "$backend" == "torch" ]; then
-                python -u ../scripts/torch_training_script.py --config_path $config_path \
+                python -u ../scripts/torch_training_script.py --config-path $config_path \
                                                            --network_id 0 \
                                                            --networks_path_base $networks_path_base \
                                                            --dl_workers $dl_workers
@@ -109,12 +109,12 @@ else
             echo "Array ID is $SLURM_ARRAY_TASK_ID" 
             
             if [ "$backend" == "jax" ]; then
-                python -u ../scripts/jax_training_script.py --config_path $config_path \
+                python -u ../scripts/jax_training_script.py --config-path $config_path \
                                                          --network_id $SLURM_ARRAY_TASK_ID \
                                                          --networks_path_base $networks_path_base \
                                                          --dl_workers $dl_workers
             elif [ "$backend" == "torch" ]; then
-                python -u ../scripts/torch_training_script.py --config_path $config_path \
+                python -u ../scripts/torch_training_script.py --config-path $config_path \
                                                            --network_id $SLURM_ARRAY_TASK_ID \
                                                            --networks_path_base $networks_path_base \
                                                            --dl_workers $dl_workers

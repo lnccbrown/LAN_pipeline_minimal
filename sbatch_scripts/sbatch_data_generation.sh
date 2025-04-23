@@ -36,7 +36,7 @@ data_gen_base_path=/users/afengler/data/proj_lan_pipeline_minimal/LAN_pipeline_m
 while [ ! $# -eq 0 ]
     do
         case "$1" in
-            --config_path | -cf)
+            --config-path | -cf)
                 config_path=$2
                 ;;
             --conda_env_name | -ce)
@@ -62,5 +62,5 @@ conda deactivate
 conda deactivate
 conda activate $conda_env_name
 
-python -u ../scripts/data_generation_script.py --config_path $config_path \
+python -u ../scripts/data_generation_script.py --config-path $config_path \
                                             --data_gen_base_path $data_gen_base_path

@@ -59,7 +59,7 @@ if [ "$partition" == "gpu" ]; then
                   --account=$oscar_acct \
                   --array=0-$n_networks ../sbatch_scripts/sbatch_network_training.sh \
                   --backend $backend \
-                  --config_path $yaml_config_network \
+                  --config-path $yaml_config_network \
                   --networks_path_base $networks_path_base \
                   --dl_workers $dl_workers \
                   --conda_env_name $conda_env_name \
@@ -68,7 +68,7 @@ elif [ "$partition" == "cpu" ]; then
     sbatch -p batch --account=$oscar_acct  \
                     --array=0-$n_networks ../sbatch_scripts/sbatch_network_training.sh \
                     --backend $backend \
-                    --config_path $yaml_config_network \
+                    --config-path $yaml_config_network \
                     --networks_path_base $networks_path_base \
                     --dl_workers $dl_workers \
                     --conda_env_name $conda_env_name \

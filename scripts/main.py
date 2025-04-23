@@ -10,9 +10,11 @@ from enum import Enum
 app = typer.Typer(help="LAN Pipeline CLI tools")
 console = Console()
 
+
 class Backend(str, Enum):
     jax = "jax"
     torch = "torch"
+
 
 def generate_sbatch_script(
     job_name: str,
@@ -27,7 +29,7 @@ def generate_sbatch_script(
     data_gen_base_path: Path,
 ) -> str:
     """Generate SBATCH script with the given parameters."""
-    
+
     script_content = f"""#!/bin/bash
 
 # Default resources are 1 core with 2.8GB of memory per core.
@@ -59,10 +61,11 @@ conda deactivate
 conda deactivate
 conda activate $conda_env_name
 
-python -u ../scripts/data_generation_script.py --config_path $config_path \\
+python -u ../scripts/data_generation_script.py --config-path $config_path \\
                                             --data_gen_base_path $data_gen_base_path
 """
     return script_content
+
 
 def generate_training_script(
     job_name: str,
@@ -82,7 +85,7 @@ def generate_training_script(
     array_range: Optional[str] = None,
 ) -> str:
     """Generate SBATCH script for network training with the given parameters."""
-    
+
     script_content = f"""#!/bin/bash
 
 # Default resources are 1 core with 2.8GB of memory per core.
@@ -130,12 +133,12 @@ then
             echo "No array ID"
             
             if [ "$backend" == "jax" ]; then
-                python -u ../scripts/jax_training_script.py --config_path $config_path \\
+                python -u ../scripts/jax_training_script.py --config-path $config_path \\
                                                          --network_id 0 \\
                                                          --networks_path_base $networks_path_base \\
                                                          --dl_workers $dl_workers
             elif [ "$backend" == "torch" ]; then
-                python -u ../scripts/torch_training_script.py --config_path $config_path \\
+                python -u ../scripts/torch_training_script.py --config-path $config_path \\
                                                            --network_id 0 \\
                                                            --networks_path_base $networks_path_base \\
                                                            --dl_workers $dl_workers
@@ -148,12 +151,12 @@ else
             echo "Array ID is $SLURM_ARRAY_TASK_ID"
             
             if [ "$backend" == "jax" ]; then
-                python -u ../scripts/jax_training_script.py --config_path $config_path \\
+                python -u ../scripts/jax_training_script.py --config-path $config_path \\
                                                          --network_id $SLURM_ARRAY_TASK_ID \\
                                                          --networks_path_base $networks_path_base \\
                                                          --dl_workers $dl_workers
             elif [ "$backend" == "torch" ]; then
-                python -u ../scripts/torch_training_script.py --config_path $config_path \\
+                python -u ../scripts/torch_training_script.py --config-path $config_path \\
                                                            --network_id $SLURM_ARRAY_TASK_ID \\
                                                            --networks_path_base $networks_path_base \\
                                                            --dl_workers $dl_workers
@@ -163,41 +166,48 @@ fi
 """
     return script_content
 
+
 @app.command()
 def generate(
-    config_path: Path = typer.Argument(..., help="Path to configuration file", exists=True),
-    job_name: str = typer.Option("data_generator", "--job-name", "-j", help="Name of the SLURM job"),
-    output_dir: Path = typer.Option(
-        Path("../slurm"),
-        "--output-dir",
-        "-o",
-        help="Directory for SLURM output files"
+    config_path: Path = typer.Argument(
+        ..., help="Path to configuration file", exists=True
     ),
-    time: str = typer.Option("48:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"),
-    memory: str = typer.Option("16G", "--memory", "-m", help="Requested memory (e.g., 16G)"),
+    job_name: str = typer.Option(
+        "data_generator", "--job-name", "-j", help="Name of the SLURM job"
+    ),
+    output_dir: Path = typer.Option(
+        Path("../slurm"), "--output-dir", "-o", help="Directory for SLURM output files"
+    ),
+    time: str = typer.Option(
+        "48:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"
+    ),
+    memory: str = typer.Option(
+        "16G", "--memory", "-m", help="Requested memory (e.g., 16G)"
+    ),
     cores: int = typer.Option(12, "--cores", "-c", help="Number of CPU cores"),
     nodes: int = typer.Option(1, "--nodes", "-n", help="Number of nodes"),
-    conda_env_name: str = typer.Option("lan_pipe", "--conda-env", "-e", help="Conda environment name"),
+    conda_env_name: str = typer.Option(
+        "lan_pipe", "--conda-env", "-e", help="Conda environment name"
+    ),
     bashrc_path: Path = typer.Option(
-        Path("/users/afengler/.bashrc"),
-        "--bashrc",
-        "-b",
-        help="Path to bashrc file"
+        Path("/users/afengler/.bashrc"), "--bashrc", "-b", help="Path to bashrc file"
     ),
     data_gen_base_path: Path = typer.Option(
         Path("/users/afengler/data/proj_lan_pipeline_minimal/LAN_pipeline_minimal/"),
         "--data-base",
         "-d",
-        help="Base path for data generation"
+        help="Base path for data generation",
     ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Only generate script without running"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Only generate script without running"
+    ),
 ):
     """Generate and optionally submit a SLURM job for data generation."""
-    
+
     try:
         # Create output directory if it doesn't exist
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Generate script content
         script_content = generate_sbatch_script(
             job_name=job_name,
@@ -211,64 +221,82 @@ def generate(
             bashrc_path=bashrc_path,
             data_gen_base_path=data_gen_base_path,
         )
-        
+
         # Write script to temporary file
         script_path = output_dir / f"temp_{job_name}.sh"
         script_path.write_text(script_content)
         script_path.chmod(0o755)
-        
+
         rprint(f"[green]Generated SBATCH script at:[/green] {script_path}")
-        
+
         if not dry_run:
             with console.status("Submitting job to SLURM..."):
-                subprocess.run(['sbatch', str(script_path)], check=True)
+                subprocess.run(["sbatch", str(script_path)], check=True)
             rprint("[green]Job submitted successfully! :rocket:[/green]")
         else:
             rprint("[yellow]Dry run - script generated but not submitted[/yellow]")
-            
+
     except Exception as e:
         rprint(f"[red]Error: {str(e)}[/red]")
         raise typer.Exit(1)
 
+
 @app.command()
 def train(
-    config_path: Path = typer.Argument(..., help="Path to configuration file", exists=True),
-    job_name: str = typer.Option("model_trainer", "--job-name", "-j", help="Name of the SLURM job"),
-    output_dir: Path = typer.Option(
-        Path("../slurm"),
-        "--output-dir",
-        "-o",
-        help="Directory for SLURM output files"
+    config_path: Path = typer.Argument(
+        ..., help="Path to configuration file", exists=True
     ),
-    time: str = typer.Option("32:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"),
-    memory: str = typer.Option("32G", "--memory", "-m", help="Requested memory (e.g., 32G)"),
+    job_name: str = typer.Option(
+        "model_trainer", "--job-name", "-j", help="Name of the SLURM job"
+    ),
+    output_dir: Path = typer.Option(
+        Path("../slurm"), "--output-dir", "-o", help="Directory for SLURM output files"
+    ),
+    time: str = typer.Option(
+        "32:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"
+    ),
+    memory: str = typer.Option(
+        "32G", "--memory", "-m", help="Requested memory (e.g., 32G)"
+    ),
     cores: int = typer.Option(12, "--cores", "-c", help="Number of CPU cores"),
     nodes: int = typer.Option(1, "--nodes", "-n", help="Number of nodes"),
     networks_path_base: Path = typer.Option(
-        Path("/users/afengler/data/proj_lan_pipeline_minimal/LAN_pipeline_minimal/data/"),
+        Path(
+            "/users/afengler/data/proj_lan_pipeline_minimal/LAN_pipeline_minimal/data/"
+        ),
         "--networks-path",
         "-p",
-        help="Base path for networks"
+        help="Base path for networks",
     ),
-    n_networks: int = typer.Option(2, "--n-networks", "-N", help="Number of networks to train"),
-    backend: Backend = typer.Option(Backend.jax, "--backend", "-b", help="Deep learning backend to use"),
-    dl_workers: int = typer.Option(4, "--dl-workers", "-w", help="Number of dataloader workers"),
-    conda_env_name: str = typer.Option("lan_pipe", "--conda-env", "-e", help="Conda environment name"),
+    n_networks: int = typer.Option(
+        2, "--n-networks", "-N", help="Number of networks to train"
+    ),
+    backend: Backend = typer.Option(
+        Backend.jax, "--backend", "-b", help="Deep learning backend to use"
+    ),
+    dl_workers: int = typer.Option(
+        4, "--dl-workers", "-w", help="Number of dataloader workers"
+    ),
+    conda_env_name: str = typer.Option(
+        "lan_pipe", "--conda-env", "-e", help="Conda environment name"
+    ),
     bashrc_path: Path = typer.Option(
-        Path("/users/afengler/.bashrc"),
-        "--bashrc",
-        help="Path to bashrc file"
+        Path("/users/afengler/.bashrc"), "--bashrc", help="Path to bashrc file"
     ),
     use_gpu: bool = typer.Option(False, "--gpu", help="Whether to use GPU resources"),
-    array_range: Optional[str] = typer.Option(None, "--array", help="SLURM array range (e.g., '0-8')"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Only generate script without running"),
+    array_range: Optional[str] = typer.Option(
+        None, "--array", help="SLURM array range (e.g., '0-8')"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Only generate script without running"
+    ),
 ):
     """Generate and optionally submit a SLURM job for network training."""
-    
+
     try:
         # Create output directory if it doesn't exist
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Generate script content
         script_content = generate_training_script(
             job_name=job_name,
@@ -287,24 +315,25 @@ def train(
             use_gpu=use_gpu,
             array_range=array_range,
         )
-        
+
         # Write script to temporary file
         script_path = output_dir / f"temp_{job_name}.sh"
         script_path.write_text(script_content)
         script_path.chmod(0o755)
-        
+
         rprint(f"[green]Generated SBATCH script at:[/green] {script_path}")
-        
+
         if not dry_run:
             with console.status("Submitting job to SLURM..."):
-                subprocess.run(['sbatch', str(script_path)], check=True)
+                subprocess.run(["sbatch", str(script_path)], check=True)
             rprint("[green]Job submitted successfully! :rocket:[/green]")
         else:
             rprint("[yellow]Dry run - script generated but not submitted[/yellow]")
-            
+
     except Exception as e:
         rprint(f"[red]Error: {str(e)}[/red]")
         raise typer.Exit(1)
+
 
 if __name__ == "__main__":
     app()
