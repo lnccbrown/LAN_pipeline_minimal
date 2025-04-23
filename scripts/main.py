@@ -25,6 +25,7 @@ def generate_sbatch_script(
     nodes: int,
     config_path: Path,
     data_gen_base_path: Path,
+    account: Optional[str] = None,
 ) -> str:
     """Generate SBATCH script with the given parameters."""
 
@@ -43,6 +44,7 @@ def generate_sbatch_script(
 #SBATCH --mem={memory}
 #SBATCH -c {cores}
 #SBATCH -N {nodes}
+{f"#SBATCH --account={account}" if account else ""}
 
 # BASIC SETUP
 
@@ -80,6 +82,7 @@ def generate_training_script(
     dl_workers: int,
     use_gpu: bool = False,
     array_range: Optional[str] = None,
+    account: Optional[str] = None,
 ) -> str:
     """Generate SBATCH script for network training with the given parameters."""
 
@@ -98,6 +101,7 @@ def generate_training_script(
 #SBATCH --mem={memory}
 #SBATCH -c {cores}
 #SBATCH -N {nodes}
+{f"#SBATCH --account={account}" if account else ""}
 
 {f"#SBATCH -p gpu --gres=gpu:1" if use_gpu else "##SBATCH -p gpu --gres=gpu:1"}
 {f"#SBATCH --array={array_range}" if array_range else "##SBATCH --array=0-8"}
@@ -173,32 +177,21 @@ echo "Job completed at: $(date)"
 
 @app.command()
 def generate(
-    config_path: Path = typer.Argument(
-        ..., help="Path to configuration file", exists=True
-    ),
-    job_name: str = typer.Option(
-        "data_generator", "--job-name", "-j", help="Name of the SLURM job"
-    ),
-    output_dir: Path = typer.Option(
-        Path("../slurm"), "--output-dir", "-o", help="Directory for SLURM output files"
-    ),
-    time: str = typer.Option(
-        "48:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"
-    ),
-    memory: str = typer.Option(
-        "16G", "--memory", "-m", help="Requested memory (e.g., 16G)"
-    ),
+    config_path: Path = typer.Argument(..., help="Path to configuration file", exists=True),
+    job_name: str = typer.Option("data_generator", "--job-name", "-j", help="Name of the SLURM job"),
+    output_dir: Path = typer.Option(Path("logs"), "--output-dir", "-o", help="Directory for SLURM output files"),
+    time: str = typer.Option("48:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"),
+    memory: str = typer.Option("16G", "--memory", "-m", help="Requested memory (e.g., 16G)"),
     cores: int = typer.Option(12, "--cores", "-c", help="Number of CPU cores"),
     nodes: int = typer.Option(1, "--nodes", "-n", help="Number of nodes"),
     data_gen_base_path: Path = typer.Option(
-        Path("/users/afengler/data/proj_lan_pipeline_minimal/LAN_pipeline_minimal/"),
+        Path("data"), 
         "--data-base",
         "-d",
-        help="Base path for data generation",
+        help="Base path for data generation"
     ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Only generate script without running"
-    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only generate script without running"),
+    account: Optional[str] = typer.Option(None, "--account", "-a", help="SLURM account to use"),
 ):
     """Generate and optionally submit a SLURM job for data generation."""
 
@@ -216,6 +209,7 @@ def generate(
             nodes=nodes,
             config_path=config_path,
             data_gen_base_path=data_gen_base_path,
+            account=account,
         )
 
         # Write script to temporary file
@@ -239,30 +233,17 @@ def generate(
 
 @app.command()
 def train(
-    config_path: Path = typer.Argument(
-        ..., help="Path to configuration file", exists=True
-    ),
-    job_name: str = typer.Option(
-        "model_trainer", "--job-name", "-j", help="Name of the SLURM job"
-    ),
-    output_dir: Path = typer.Option(
-        Path("../slurm"), "--output-dir", "-o", help="Directory for SLURM output files"
-    ),
-    time: str = typer.Option(
-        "32:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"
-    ),
-    memory: str = typer.Option(
-        "32G", "--memory", "-m", help="Requested memory (e.g., 32G)"
-    ),
+    config_path: Path = typer.Argument(..., help="Path to configuration file", exists=True),
+    job_name: str = typer.Option("model_trainer", "--job-name", "-j", help="Name of the SLURM job"),
+    output_dir: Path = typer.Option(Path("logs"), "--output-dir", "-o", help="Directory for SLURM output files"),
+    time: str = typer.Option("32:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"),
+    memory: str = typer.Option("32G", "--memory", "-m", help="Requested memory (e.g., 32G)"),
     cores: int = typer.Option(12, "--cores", "-c", help="Number of CPU cores"),
     nodes: int = typer.Option(1, "--nodes", "-n", help="Number of nodes"),
     networks_path_base: Path = typer.Option(
-        Path(
-            "/users/afengler/data/proj_lan_pipeline_minimal/LAN_pipeline_minimal/data/"
-        ),
-        "--networks-path",
-        "-p",
-        help="Base path for networks",
+        Path("networks"),
+        "--networks-base",
+        help="Base path for networks"
     ),
     n_networks: int = typer.Option(
         2, "--n-networks", "-N", help="Number of networks to train"
@@ -280,6 +261,7 @@ def train(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Only generate script without running"
     ),
+    account: Optional[str] = typer.Option(None, "--account", "-a", help="SLURM account to use"),
 ):
     """Generate and optionally submit a SLURM job for network training."""
 
@@ -302,6 +284,7 @@ def train(
             dl_workers=dl_workers,
             use_gpu=use_gpu,
             array_range=array_range,
+            account=account,
         )
 
         # Write script to temporary file
