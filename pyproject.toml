@@ -1,0 +1,18 @@
+[project]
+name = "lan_pipe"
+version = "0.1.0"
+description = "LAN pipeline project"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "jax[cuda11_pip]",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "lanfactory",
+    "ssm-simulators",
+    "jupyter",
+    "frozendict",
+    "pyyaml",
+    "typer",
+    "rich",
+]
