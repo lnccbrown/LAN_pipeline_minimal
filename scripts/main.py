@@ -48,17 +48,26 @@ def generate_sbatch_script(
 
 # BASIC SETUP
 
-config_path="{config_path}"
-data_gen_base_path="{data_gen_base_path}"
-
-echo "The config file supplied is: $config_path"
-
 set -x  # Enable command echo
 set -e  # Exit on error
 
 echo "Starting job at: $(date)"
 echo "Running on node: $(hostname)"
 echo "Current working directory: $(pwd)"
+
+# Load Python module
+module load python
+
+# Install uv if not already installed
+if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+config_path="{config_path}"
+data_gen_base_path="{data_gen_base_path}"
+
+echo "The config file supplied is: $config_path"
 
 python -m uv run scripts/data_generation_script.py --config-path $config_path \\
                                             --data-gen-base-path $data_gen_base_path
@@ -114,6 +123,15 @@ set -e  # Exit on error
 echo "Starting job at: $(date)"
 echo "Running on node: $(hostname)"
 echo "Current working directory: $(pwd)"
+
+# Load Python module
+module load python
+
+# Install uv if not already installed
+if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi
 
 config_path="{config_path}"
 networks_path_base="{networks_path_base}"
