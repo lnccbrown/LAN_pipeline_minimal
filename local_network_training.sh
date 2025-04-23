@@ -33,13 +33,13 @@ echo $networks_path
 if [ "$backend" == "jax" ]; then
     python -u scripts/jax_training_script.py --model $model \
                                              --config-path $network_training_yaml \
-                                             --network_id 0 \
+                                             --network-id 0 \
                                              --networks_path $networks_path \
                                              --dl_workers 2
 elif [ "$backend" == "torch" ]; then
     python -u scripts/torch_training_script.py --model $model \
                                              --config-path $network_training_yaml \
-                                             --network_id 0 \
+                                             --network-id 0 \
                                              --networks_path $networks_path \
                                              --dl_workers 2
 fi

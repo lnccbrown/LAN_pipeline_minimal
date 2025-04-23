@@ -41,7 +41,7 @@ if __name__ == "__main__":
     # Interface ----
     CLI = argparse.ArgumentParser()
     CLI.add_argument("--config-path", type=none_or_str, default=None)
-    CLI.add_argument("--network_id", type=none_or_int, default=None)
+    CLI.add_argument("--network-id", type=none_or_int, default=None)
     CLI.add_argument("--networks_path_base", type=none_or_str, default=None)
     CLI.add_argument("--dl_workers", type=int, default=0)
 

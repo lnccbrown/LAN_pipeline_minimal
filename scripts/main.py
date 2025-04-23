@@ -134,12 +134,12 @@ then
             
             if [ "$backend" == "jax" ]; then
                 python -u ../scripts/jax_training_script.py --config-path $config_path \\
-                                                         --network_id 0 \\
+                                                         --network-id 0 \\
                                                          --networks_path_base $networks_path_base \\
                                                          --dl_workers $dl_workers
             elif [ "$backend" == "torch" ]; then
                 python -u ../scripts/torch_training_script.py --config-path $config_path \\
-                                                           --network_id 0 \\
+                                                           --network-id 0 \\
                                                            --networks_path_base $networks_path_base \\
                                                            --dl_workers $dl_workers
             fi
@@ -152,12 +152,12 @@ else
             
             if [ "$backend" == "jax" ]; then
                 python -u ../scripts/jax_training_script.py --config-path $config_path \\
-                                                         --network_id $SLURM_ARRAY_TASK_ID \\
+                                                         --network-id $SLURM_ARRAY_TASK_ID \\
                                                          --networks_path_base $networks_path_base \\
                                                          --dl_workers $dl_workers
             elif [ "$backend" == "torch" ]; then
                 python -u ../scripts/torch_training_script.py --config-path $config_path \\
-                                                           --network_id $SLURM_ARRAY_TASK_ID \\
+                                                           --network-id $SLURM_ARRAY_TASK_ID \\
                                                            --networks_path_base $networks_path_base \\
                                                            --dl_workers $dl_workers
             fi
