@@ -123,7 +123,7 @@ echo "Number of networks: $n_networks"
 echo "Backend: $backend"
 
 # Use uv to run Python scripts
-if [ -z ${SLURM_ARRAY_TASK_ID} ];
+if [ -z "$SLURM_ARRAY_TASK_ID" ];
 then
     for ((i = 1; i <= $n_networks; i++))
         do
