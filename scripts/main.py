@@ -195,32 +195,21 @@ echo "Job completed at: $(date)"
 
 @app.command()
 def generate(
-    config_path: Path = typer.Argument(
-        ..., help="Path to configuration file", exists=True
-    ),
-    job_name: str = typer.Option(
-        "data_generator", "--job-name", "-j", help="Name of the SLURM job"
-    ),
-    output_dir: Path = typer.Option(
-        Path("logs"), "--output-dir", "-o", help="Directory for SLURM output files"
-    ),
-    time: str = typer.Option(
-        "48:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"
-    ),
-    memory: str = typer.Option(
-        "16G", "--memory", "-m", help="Requested memory (e.g., 16G)"
-    ),
+    config_path: Path = typer.Argument(..., help="Path to configuration file", exists=True),
+    job_name: str = typer.Option("data_generator", "--job-name", "-j", help="Name of the SLURM job"),
+    output_dir: Path = typer.Option(Path("logs"), "--output-dir", "-o", help="Directory for SLURM output files"),
+    time: str = typer.Option("48:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"),
+    memory: str = typer.Option("16G", "--memory", "-m", help="Requested memory (e.g., 16G)"),
     cores: int = typer.Option(12, "--cores", "-c", help="Number of CPU cores"),
     nodes: int = typer.Option(1, "--nodes", "-n", help="Number of nodes"),
     data_gen_base_path: Path = typer.Option(
-        Path("."), "--data-base", "-d", help="Base path for data generation"
+        Path("data"), 
+        "--data-base",
+        "-d",
+        help="Base path for data generation"
     ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Only generate script without running"
-    ),
-    account: Optional[str] = typer.Option(
-        None, "--account", "-a", help="SLURM account to use"
-    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only generate script without running"),
+    account: Optional[str] = typer.Option(None, "--account", "-a", help="SLURM account to use"),
 ):
     """Generate and optionally submit a SLURM job for data generation."""
 
@@ -262,25 +251,17 @@ def generate(
 
 @app.command()
 def train(
-    config_path: Path = typer.Argument(
-        ..., help="Path to configuration file", exists=True
-    ),
-    job_name: str = typer.Option(
-        "model_trainer", "--job-name", "-j", help="Name of the SLURM job"
-    ),
-    output_dir: Path = typer.Option(
-        Path("logs"), "--output-dir", "-o", help="Directory for SLURM output files"
-    ),
-    time: str = typer.Option(
-        "32:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"
-    ),
-    memory: str = typer.Option(
-        "32G", "--memory", "-m", help="Requested memory (e.g., 32G)"
-    ),
+    config_path: Path = typer.Argument(..., help="Path to configuration file", exists=True),
+    job_name: str = typer.Option("model_trainer", "--job-name", "-j", help="Name of the SLURM job"),
+    output_dir: Path = typer.Option(Path("logs"), "--output-dir", "-o", help="Directory for SLURM output files"),
+    time: str = typer.Option("32:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"),
+    memory: str = typer.Option("32G", "--memory", "-m", help="Requested memory (e.g., 32G)"),
     cores: int = typer.Option(12, "--cores", "-c", help="Number of CPU cores"),
     nodes: int = typer.Option(1, "--nodes", "-n", help="Number of nodes"),
     networks_path_base: Path = typer.Option(
-        Path("networks"), "--networks-base", help="Base path for networks"
+        Path("networks"),
+        "--networks-base",
+        help="Base path for networks"
     ),
     n_networks: int = typer.Option(
         2, "--n-networks", "-N", help="Number of networks to train"
@@ -298,9 +279,7 @@ def train(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Only generate script without running"
     ),
-    account: Optional[str] = typer.Option(
-        None, "--account", "-a", help="SLURM account to use"
-    ),
+    account: Optional[str] = typer.Option(None, "--account", "-a", help="SLURM account to use"),
 ):
     """Generate and optionally submit a SLURM job for network training."""
 
