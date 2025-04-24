@@ -46,6 +46,7 @@ The pipeline works as a two-step process.
 2. Network training
 
 You want to respectively run the `bash_data_generation.sh` script for data generation, and the `bash_network_training.sh` script for network training.
+
 Find example call to these scripts in the `bash_run.sh` file, which sits in the `user_configs_examples` folder (you pass the configs mentioned below as arguments to the `bash` scripts).
 
 ### `user_configs_examples` folder
