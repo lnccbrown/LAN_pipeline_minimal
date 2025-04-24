@@ -93,6 +93,22 @@ if __name__ == "__main__":
     print("NETWORK CONFIG")
     print(network_config)
 
+    # TODO: delete debug prints
+    print(
+        "DEBUG: Looking for files in",
+        config_dict["config_dict"]["training_data_folder"],
+    )
+    print(
+        "DEBUG: Directory exists?",
+        os.path.exists(config_dict["config_dict"]["training_data_folder"]),
+    )
+    print(
+        "DEBUG: Directory contents:",
+        os.listdir(config_dict["config_dict"]["training_data_folder"])
+        if os.path.exists(config_dict["config_dict"]["training_data_folder"])
+        else "N/A",
+    )
+
     # Get training and validation data files
     file_list = os.listdir(config_dict["config_dict"]["training_data_folder"])
 
