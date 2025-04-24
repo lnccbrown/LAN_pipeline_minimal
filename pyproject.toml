@@ -16,3 +16,8 @@ dependencies = [
     "typer",
     "rich",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.6",
+]
