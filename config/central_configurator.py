@@ -183,6 +183,7 @@ def get_train_network_config(yaml_config_path = None,
     # Network architectures
     layer_sizes = basic_config['LAYER_SIZES'][net_index]
     activations = basic_config['ACTIVATIONS'][net_index]
+    print("DEBUG: activations =", activations, type(activations))
     activations.append(output_layer_dict[train_output_type_dict[network_type]])
     # Append last layer (type of layer depends on type of network as per train_output_type_dict dictionary above)
 
