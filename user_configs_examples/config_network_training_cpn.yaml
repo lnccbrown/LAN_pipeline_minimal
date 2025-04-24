@@ -7,8 +7,12 @@ N_EPOCHS: 50
 TRAINING_DATA_FOLDER: "data/training_data/lan/training_data_n_samples_20000_dt_0.001/ddm"
 MODEL: "ddm"
 SHUFFLE: True
-LAYER_SIZES: [100, 100, 100, 1]
-ACTIVATIONS: ['tanh', 'tanh', 'tanh', 'linear']
+
+LAYER_SIZES:
+  - [100, 100, 100, 1]
+ACTIVATIONS:
+  - ['tanh', 'tanh', 'tanh']
+
 WEIGHT_DECAY: 0.0
 TRAIN_VAL_SPLIT: 0.5
 N_TRAINING_FILES: 1
@@ -24,4 +28,3 @@ LR_SCHEDULER_PARAMS:
 FEATURES_KEY: "cpn_data"
 LABEL_KEY: "cpn_labels"
 LOSS: "bcelogit"
-SAVE_HISTORY: True
