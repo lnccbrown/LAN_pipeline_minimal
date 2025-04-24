@@ -25,4 +25,3 @@ FEATURES_KEY: "cpn_data"
 LABEL_KEY: "cpn_labels"
 LOSS: "bcelogit"
 SAVE_HISTORY: True
-TRAIN_OUTPUT_TYPE: "logits"
