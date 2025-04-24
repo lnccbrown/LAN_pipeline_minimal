@@ -254,7 +254,7 @@ def train(
     config_path: Path = typer.Argument(..., help="Path to configuration file", exists=True),
     job_name: str = typer.Option("model_trainer", "--job-name", "-j", help="Name of the SLURM job"),
     output_dir: Path = typer.Option(Path("logs"), "--output-dir", "-o", help="Directory for SLURM output files"),
-    time: str = typer.Option("32:00:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"),
+    time: str = typer.Option("00:10:00", "--time", "-t", help="Requested runtime in format HH:MM:SS"),
     memory: str = typer.Option("32G", "--memory", "-m", help="Requested memory (e.g., 32G)"),
     cores: int = typer.Option(12, "--cores", "-c", help="Number of CPU cores"),
     nodes: int = typer.Option(1, "--nodes", "-n", help="Number of nodes"),
