@@ -7,18 +7,12 @@ N_EPOCHS: 50
 TRAINING_DATA_FOLDER: "data/training_data/lan/training_data_n_samples_20000_dt_0.001/ddm"
 MODEL: "ddm"
 SHUFFLE: True
-LAYER_SIZES: [[100, 100, 100, 1], [100, 100, 100, 100, 1], [100, 100, 100, 100, 100, 1],
-              [120, 120, 120, 1], [120, 120, 120, 120, 1], [120, 120, 120, 120, 120, 1]]
-ACTIVATIONS: [['tanh', 'tanh', 'tanh'], 
-              ['tanh', 'tanh', 'tanh', 'tanh'], 
-              ['tanh', 'tanh', 'tanh', 'tanh', 'tanh'],
-              ['tanh', 'tanh', 'tanh'], 
-              ['tanh', 'tanh', 'tanh', 'tanh'], 
-              ['tanh', 'tanh', 'tanh', 'tanh', 'tanh']]
+LAYER_SIZES: [100, 100, 100, 1]
+ACTIVATIONS: ['tanh', 'tanh', 'tanh', 'linear']
 WEIGHT_DECAY: 0.0
 TRAIN_VAL_SPLIT: 0.5
 N_TRAINING_FILES: 1
-LABELS_LOWER_BOUND: np.log(1e-7)
+LABELS_LOWER_BOUND: -16.11809565095832
 LEARNING_RATE: 0.001
 LR_SCHEDULER: 'reduce_on_plateau'
 LR_SCHEDULER_PARAMS:
@@ -27,3 +21,8 @@ LR_SCHEDULER_PARAMS:
   threshold: 0.001
   min_lr: 0.00000001
   verbose: True
+FEATURES_KEY: "cpn_data"
+LABEL_KEY: "cpn_labels"
+LOSS: "bcelogit"
+SAVE_HISTORY: True
+TRAIN_OUTPUT_TYPE: "logits"
