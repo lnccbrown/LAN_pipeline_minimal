@@ -1,0 +1,4 @@
+echo "Loading required modules"
+module load gcc
+module load cuda
+module load cudnn

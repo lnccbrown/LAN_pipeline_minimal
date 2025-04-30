@@ -4,7 +4,7 @@ GPU_BATCH_SIZE: 512
 GENERATOR_APPROACH: "lan"
 OPTIMIZER_: "adam"
 N_EPOCHS: 50
-TRAINING_DATA_FOLDER: "data/training_data/lan/training_data_n_samples_20000/ddm"
+TRAINING_DATA_FOLDER: "data/training_data/lan/training_data_n_samples_20000_dt_0.001/ddm"
 MODEL: "ddm"
 SHUFFLE: True
 LAYER_SIZES: [[100, 100, 100, 1], [100, 100, 100, 100, 1], [100, 100, 100, 100, 100, 1],
