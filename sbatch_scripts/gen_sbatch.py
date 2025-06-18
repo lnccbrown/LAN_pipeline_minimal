@@ -9,6 +9,7 @@ from pathlib import Path
 import logging
 import subprocess
 import yaml
+import textwrap
 
 # Environment for this script is in the UV pyproject.toml file
 
@@ -24,7 +25,9 @@ SBATCH_TEMPLATE = """#!/bin/bash
 #SBATCH --error={error}
 
 # Your commands here
-{command}
+{environment}
+
+uv run {command}
 """
 
 def create_command(command_name, **params):
@@ -51,6 +54,7 @@ def create_sbatch_script(
     time="01:00:00",
     mem="4G",
     command="",
+    environment=""
 ):
     """
     Creates a SBATCH script using the SBATCH template.
@@ -62,6 +66,7 @@ def create_sbatch_script(
         time (string): Time limit for job
         mem (string): Amount of memory in GB to be used with SBATCH job
         command (string): Python command(s) to run after setting up all SBATCH metadata
+        environment (string): Additional metadata that includes commands to create the appropriate environment for generate or jaxtrain
 
     Returns:
         sbatch_script (sbatch_template): SBATCH script with metadata used for running SBATCH jobs
@@ -75,6 +80,7 @@ def create_sbatch_script(
         output=output,
         error=error,
         command=command,
+        environment=environment
     )
     return sbatch_script
 
@@ -162,7 +168,12 @@ def main():
     parent_parser_metadata.add_argument(
         "--sh-only",
         action="store_true",
-        help="When used, gen_sbatch will only generate the sbatch script without submitting the job",
+        help="Generate the sbatch script without submitting the job",
+    )
+    parent_parser_metadata.add_argument(
+        "--make-env",
+        action="store_true",
+        help="Create correct environment to run generate or jaxtrain in the SBATCH script",
     )
     parent_parser_metadata.add_argument(
         "--log-level",
@@ -249,12 +260,23 @@ def main():
             "config-path": args.config_path,
             "output-path": args.output_path,
             "log-level": args.log_level,
-            "sh-only": args.sh_only, 
+            #"sh-only": args.sh_only, 
             "time": args.time
         }
         # Create command
         command = create_command("generate.py", **params)
         logger.info(f"Generated command: {command}")
+
+        # Add correct environment to SBATCH file
+        if args.make_env:
+            environment = textwrap.dedent("""
+            module load python
+            git clone https://github.com/lnccbrown/ssm-simulators.git
+            cd ssms-simulators
+            git checkout add-generate-to-release-0.8.3
+            python -m uv sync""")
+        else:
+            environment=""
 
         # Get configuration file metadata 
         bc = get_basic_config_from_yaml(params["config-path"])
@@ -270,8 +292,9 @@ def main():
                 error=f"{target / job_name}.err",
                 time=args.time,
                 command=command,
-                mem="16G"
-            )
+                mem="16G",
+                environment=environment
+        )
 
         # Run sbatch
         write_sbatch(script, sbatch_script)
@@ -299,13 +322,22 @@ def main():
             "network-id": args.network_id,
             "dl-workers": args.dl_workers,
             "log-level": args.log_level,
-            "sh-only": args.sh_only, 
+            #"sh-only": args.sh_only, 
             "time": args.time
         }
 
         # Create command
         command = create_command("jaxtrain.py", **params)
         logger.info(f"Generated command: {command}")
+
+        if args.make_env:
+            environment = textwrap.dedent("""
+            module load python
+            git clone https://github.com/lnccbrown/LANfactory.git
+            cd LANfactory
+            python -m uv sync""")
+        else:
+            environment=""
 
         # Get metadata about job from the configuration file
         bc = get_basic_config_from_yaml(params["config-path"])
@@ -317,11 +349,12 @@ def main():
         # Create SBATCH metadata
         sbatch_script = create_sbatch_script(
                 job_name=job_name,
-                output=f"{target / job_name}.out",
-                error=f"{target / job_name}.err",
+                output=f"{job_name}.out",
+                error=f"{job_name}.err",
                 time=args.time,
                 command=command,
-                mem="16G"
+                mem="16G",
+                environment=environment
             )
 
         # Run sbatch
@@ -334,7 +367,6 @@ def main():
 
         # Submits job
         submit_sbatch(script, logger)
-        logger.info("Job submitted successfully")
 
 # Main
 if __name__ == "__main__":
