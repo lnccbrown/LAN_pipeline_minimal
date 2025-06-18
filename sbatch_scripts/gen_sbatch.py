@@ -10,6 +10,8 @@ import logging
 import subprocess
 import yaml
 
+# Environment for this script is in the UV pyproject.toml file
+
 # SBATCH template
 SBATCH_TEMPLATE = """#!/bin/bash
 
@@ -30,7 +32,7 @@ def create_command(command_name, **params):
     Creates a full CLI command to be run using the SBATCH script.
 
     Parameters:
-        command_name (string): name of the Python file you are going to run (generate.py or jax_train.py)
+        command_name (string): name of the Python file you are going to run (generate.py or jaxtrain.py)
         params (dictionary): dictionary of parameters to be used with the Python file
 
     Returns:
@@ -122,18 +124,7 @@ def get_basic_config_from_yaml(
     basic_config = yaml.safe_load(open(yaml_config_path, "rb"))
     return basic_config
 
-    
-
 def main():
-
-    # params = {"config-path": "/path/to/config.yaml", "output-path" : "/path/to/output_folder"}
-
-    # command = create_command("generate.py", **params)
-
-    # print(command)
-
-    # sbatch_script = create_sbatch_script
-    # print(sbatch_script)
 
     # Setting up argument parsing 
 
@@ -142,7 +133,7 @@ def main():
 
     epilog = (
         f"Example:\n    {prog} generate.py --config-path path/to/config.yaml --output-path path/to/output/folder --log-level INFO\n"
-        f"    {prog} jax_train.py --config-path path/to/config.yaml --training-data-folder path/to/training_data --network-id 0 --dl-workers 4 --networks-path-base path/to/trained_network_output --log-level INFO\n" # examples for generate and jaxtrain scripts
+        f"    {prog} jaxtrain.py --config-path path/to/config.yaml --training-data-folder path/to/training_data --network-id 0 --dl-workers 4 --networks-path-base path/to/trained_network_output --log-level INFO\n" # examples for generate and jaxtrain scripts
     )
     parser = argparse.ArgumentParser(
         description = description,
@@ -151,29 +142,33 @@ def main():
         formatter_class=RawDescriptionHelpFormatter 
     )
 
-    # Common arguments for both generate and jaxtrain
-    parent_parser = argparse.ArgumentParser(add_help=False)
-
-    parent_parser.add_argument(
+    # Only the config-path argument, since this should be the first argument for generate and jaxtrain
+    parent_parser_config = argparse.ArgumentParser(add_help=False)
+    parent_parser_config.add_argument(
         "--config-path",
         default="dump",
-        help="path to config file for running commands (default: 'dump')",
+        help="Path to configuration .yaml file for running commands (default: 'dump')",
         type=str,
         required=True
     )
-    parent_parser.add_argument(
+    
+    # Common metadata arguments for both generate and jaxtrain
+    parent_parser_metadata = argparse.ArgumentParser(add_help=False)
+    parent_parser_metadata.add_argument(
+        "--time", 
+        help="Wall time limit for each job (default: 24:00:00)", 
+        default="24:00:00"
+    )
+    parent_parser_metadata.add_argument(
+        "--sh-only",
+        action="store_true",
+        help="When used, gen_sbatch will only generate the sbatch script without submitting the job",
+    )
+    parent_parser_metadata.add_argument(
         "--log-level",
         default="WARNING",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="set the log level",
-    )
-    parent_parser.add_argument(
-        "--sh-only",
-        action="store_true",
-        help="generate sbatch script only, do not submit the job",
-    )
-    parent_parser.add_argument(
-        "--time", help="time limit for each job (default: 24:00:00)", default="24:00:00"
+        help="Set the log level (default=WARNING)",
     )
 
     # Subparsers for arguments specific to generate and jaxtrain
@@ -184,7 +179,8 @@ def main():
     )
     # Generate args
     generate_parser = subparsers.add_parser(
-        "generate", help = "Generates simulated data from model parameters", parents=[parent_parser]
+        "generate", help="Generates simulated data from model parameters", 
+        parents=[parent_parser_config]
     )
     generate_parser.add_argument(
         "--output-path",
@@ -194,34 +190,42 @@ def main():
     )
 
     # Jaxtrain args
-    jax_train_parser = subparsers.add_parser(
-        "jax_train", help = "Trains a neural network using simulated data", parents=[parent_parser]
+    jaxtrain_parser = subparsers.add_parser(
+        "jaxtrain", help = "Trains a neural network using simulated data", 
+        parents=[parent_parser_config]
     )
-    jax_train_parser.add_argument(
+    jaxtrain_parser.add_argument(
+        "--networks-path-base",
+        type=str,
+        help="Output folder for the trained neural network",
+        required=True
+    )
+    jaxtrain_parser.add_argument(
         "--training-data-folder",
         help="Path to folder with data to train the neural network on",
         type=str,
         required=True
     )
-    jax_train_parser.add_argument(
+    jaxtrain_parser.add_argument(
         "--network-id",
         type=int,
-        help="Id for the neural network to train (default=0)",
+        help="Id for the neural network to train (default=0).",
         default=0,
     )
-    jax_train_parser.add_argument(
+    jaxtrain_parser.add_argument(
         "--dl-workers",
         type=int,
         help="Number of cores to use with the dataloader class (default=1)",
         default=1,
         required=True
     )
-    jax_train_parser.add_argument(
-        "--networks-path-base",
-        type=str,
-        help="output folder for the trained neural net",
-        required=True
-    )
+
+    # Manually adding metadata parent arguments to the subparsers so the order is correct
+    for action in parent_parser_metadata._actions:
+        if isinstance(action, argparse._HelpAction):
+            continue  # skip help, already there
+        jaxtrain_parser._add_action(action)
+        generate_parser._add_action(action)
 
     args = parser.parse_args()
 
@@ -238,10 +242,9 @@ def main():
         # target folder for generate
         target = Path(args.output_path)
         target.mkdir(exist_ok=True, parents=True)
-        print("target:", target)
-        #print("Vars(args)", vars(args))
+        logger.info(f"Simulated data output folder: {target}")
 
-        # get parameters from command from the arguments parser
+        # get parameters for command from the arguments parser
         params = {
             "config-path": args.config_path,
             "output-path": args.output_path,
@@ -249,19 +252,18 @@ def main():
             "sh-only": args.sh_only, 
             "time": args.time
         }
-        #print("Parameter dictionary:", params)
-
+        # Create command
         command = create_command("generate.py", **params)
-        print("Command:", command)
+        logger.info(f"Generated command: {command}")
 
-        # Something feels very circular about my logic here. I am running sbatch.py, and then the command "generate". Then I am specifying the arguments needed to run the generate.py script AND the arguments for the sbatch.py script. Those arguments are used to create a command that's going to be added to my Sbatch template, but why can't I just take the string of what I wrote after gen_sbatch.py generate <all arguments?> 
-
+        # Get configuration file metadata 
         bc = get_basic_config_from_yaml(params["config-path"])
-        print(bc)
         
-        job_name = f"{bc["MODEL"]}_generate_sbatch" #TODO: need to figure out how to get better job names and script names later
+        # Use information from config file to name job and sbatch script
+        job_name = f"{bc["MODEL"]}_generate_sbatch" 
         script = f"{bc["MODEL"]}_generate_sbatch.sh"
 
+        # Create SBATCH metadata
         sbatch_script = create_sbatch_script(
                 job_name=job_name,
                 output=f"{target / job_name}.out",
@@ -274,21 +276,23 @@ def main():
         # Run sbatch
         write_sbatch(script, sbatch_script)
 
-        # # Generate sbatch only, do not submit job
-        # if args.sh_only:
-        #     logger.info(f"Generated sbatch script: {script}")
-        #     return
+        # Generate sbatch only, do not submit job
+        if args.sh_only:
+            logger.info(f"Generated sbatch script: {script}")
+            return
 
-        # # Submits job
-        # submit_sbatch(script, logger)
+        # Submits job
+        submit_sbatch(script, logger)
+        logger.info(F"Job submitted successfully")
 
-    elif args.command == "jax_train":
-        print("Vars(args):", vars(args))
-        
+    elif args.command == "jaxtrain":
+  
         # target folder for jaxtrain
         target = Path(args.networks_path_base)
         target.mkdir(exist_ok=True, parents=True)
+        logger.info(f"Trained networks output folder: {target}")
 
+        # Get parameters from the parsed arguments
         params = {
             "config-path": args.config_path,
             "training-data-folder": args.training_data_folder,
@@ -298,17 +302,19 @@ def main():
             "sh-only": args.sh_only, 
             "time": args.time
         }
-        print("Parameter dictionary:", params)
 
-        command = create_command("jax_train.py", **params)
-        print("Command:", command)
+        # Create command
+        command = create_command("jaxtrain.py", **params)
+        logger.info(f"Generated command: {command}")
 
+        # Get metadata about job from the configuration file
         bc = get_basic_config_from_yaml(params["config-path"])
-        #print(bc)
 
+        # Use info from the configuration file to name job and .sh script
         job_name = f"{bc["MODEL"]}_jaxtrain_sbatch" #TODO: need to figure out how to get better job names and script names later
         script = f"{bc["MODEL"]}_jaxtrain_sbatch.sh"
 
+        # Create SBATCH metadata
         sbatch_script = create_sbatch_script(
                 job_name=job_name,
                 output=f"{target / job_name}.out",
@@ -321,13 +327,14 @@ def main():
         # Run sbatch
         write_sbatch(script, sbatch_script)
 
-        # # Generate sbatch only, do not submit job
-        # if args.sh_only:
-        #     logger.info(f"Generated sbatch script: {script}")
-        #     return
+        # Generate sbatch only, do not submit job
+        if args.sh_only:
+            logger.info(f"Generated sbatch script: {script}")
+            return
 
-        # # Submits job
-        # submit_sbatch(script, logger)
+        # Submits job
+        submit_sbatch(script, logger)
+        logger.info("Job submitted successfully")
 
 # Main
 if __name__ == "__main__":
