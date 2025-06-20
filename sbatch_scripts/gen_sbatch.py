@@ -138,8 +138,8 @@ def main():
     prog = "gen_sbatch" # program name
 
     epilog = (
-        f"Example:\n    {prog} generate.py --config-path path/to/config.yaml --output path/to/output/folder --log-level INFO\n"
-        f"    {prog} jaxtrain.py --config-path path/to/config.yaml --training-data-folder path/to/training_data --network-id 0 --dl-workers 4 --networks-path-base path/to/trained_network_output --log-level INFO\n" # examples for generate and jaxtrain scripts
+        f"Example:\n    {prog} generate --config-path path/to/config.yaml --output path/to/output/folder --time 24:00:00 --sh-only --make-env --log-level INFO\n"
+        f"    {prog} jaxtrain --config-path path/to/config.yaml --networks-path-base path/to/trained_network_output --training-data-folder path/to/training_data --network-id 0 --dl-workers 4 --time 00:10:00 --sh-only --make-env --log-level INFO\n" # examples for generate and jaxtrain scripts
     )
     parser = argparse.ArgumentParser(
         description = description,
@@ -318,6 +318,7 @@ def main():
         # Get parameters from the parsed arguments
         params = {
             "config-path": args.config_path,
+            "networks-path-base": args.networks_path_base,
             "training-data-folder": args.training_data_folder,
             "network-id": args.network_id,
             "dl-workers": args.dl_workers,
@@ -327,7 +328,7 @@ def main():
         }
 
         # Create command
-        command = create_command("jaxtrain.py", **params) #TODO: add relative path to jaxtrain
+        command = create_command("src/lanfactory/cli/jax_train.py", **params)
         logger.info(f"Generated command: {command}")
 
         if args.make_env:
@@ -335,7 +336,7 @@ def main():
             module load python
             git clone https://github.com/lnccbrown/LANfactory.git
             cd LANfactory
-            python -m uv sync""")
+            uv sync""")
         else:
             environment=""
 
