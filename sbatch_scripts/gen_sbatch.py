@@ -138,7 +138,7 @@ def main():
     prog = "gen_sbatch" # program name
 
     epilog = (
-        f"Example:\n    {prog} generate.py --config-path path/to/config.yaml --output-path path/to/output/folder --log-level INFO\n"
+        f"Example:\n    {prog} generate.py --config-path path/to/config.yaml --output path/to/output/folder --log-level INFO\n"
         f"    {prog} jaxtrain.py --config-path path/to/config.yaml --training-data-folder path/to/training_data --network-id 0 --dl-workers 4 --networks-path-base path/to/trained_network_output --log-level INFO\n" # examples for generate and jaxtrain scripts
     )
     parser = argparse.ArgumentParser(
@@ -194,7 +194,7 @@ def main():
         parents=[parent_parser_config]
     )
     generate_parser.add_argument(
-        "--output-path",
+        "--output",
         help="Path to output folder for simulated data",
         type=str,
         required=True
@@ -251,20 +251,20 @@ def main():
     if args.command == "generate":
         
         # target folder for generate
-        target = Path(args.output_path)
+        target = Path(args.output)
         target.mkdir(exist_ok=True, parents=True)
         logger.info(f"Simulated data output folder: {target}")
 
         # get parameters for command from the arguments parser
         params = {
             "config-path": args.config_path,
-            "output-path": args.output_path,
+            "output": args.output,
             "log-level": args.log_level,
             #"sh-only": args.sh_only, 
-            "time": args.time
+            #"time": args.time
         }
         # Create command
-        command = create_command("generate.py", **params)
+        command = create_command("ssms/cli/generate.py", **params)
         logger.info(f"Generated command: {command}")
 
         # Add correct environment to SBATCH file
@@ -272,9 +272,9 @@ def main():
             environment = textwrap.dedent("""
             module load python
             git clone https://github.com/lnccbrown/ssm-simulators.git
-            cd ssms-simulators
+            cd ssm-simulators
             git checkout add-generate-to-release-0.8.3
-            python -m uv sync""")
+            uv sync""")
         else:
             environment=""
 
@@ -282,14 +282,14 @@ def main():
         bc = get_basic_config_from_yaml(params["config-path"])
         
         # Use information from config file to name job and sbatch script
-        job_name = f"{bc["MODEL"]}_generate_sbatch" 
-        script = f"{bc["MODEL"]}_generate_sbatch.sh"
+        job_name = f"{bc['MODEL']}_generate_sbatch" 
+        script = f"{bc['MODEL']}_generate_sbatch.sh"
 
         # Create SBATCH metadata
         sbatch_script = create_sbatch_script(
                 job_name=job_name,
-                output=f"{target / job_name}.out",
-                error=f"{target / job_name}.err",
+                output=f"{job_name}.out",
+                error=f"{job_name}.err",
                 time=args.time,
                 command=command,
                 mem="16G",
@@ -323,11 +323,11 @@ def main():
             "dl-workers": args.dl_workers,
             "log-level": args.log_level,
             #"sh-only": args.sh_only, 
-            "time": args.time
+            #"time": args.time
         }
 
         # Create command
-        command = create_command("jaxtrain.py", **params)
+        command = create_command("jaxtrain.py", **params) #TODO: add relative path to jaxtrain
         logger.info(f"Generated command: {command}")
 
         if args.make_env:
@@ -343,8 +343,8 @@ def main():
         bc = get_basic_config_from_yaml(params["config-path"])
 
         # Use info from the configuration file to name job and .sh script
-        job_name = f"{bc["MODEL"]}_jaxtrain_sbatch" #TODO: need to figure out how to get better job names and script names later
-        script = f"{bc["MODEL"]}_jaxtrain_sbatch.sh"
+        job_name = f"{bc['MODEL']}_jaxtrain_sbatch" #TODO: need to figure out how to get better job names and script names later
+        script = f"{bc['MODEL']}_jaxtrain_sbatch.sh"
 
         # Create SBATCH metadata
         sbatch_script = create_sbatch_script(
