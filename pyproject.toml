@@ -1,7 +1,7 @@
 [project]
 name = "lan-pipeline-minimal"
 version = "0.1.0"
-description = "Environment to create and submit sbatch scripts to run ssm-simulators or LANfactory on Oscar"
+description = "Environment to create and submit sbatch scripts to generate data with ssm-simulators or train LANs with LANfactory on Oscar"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

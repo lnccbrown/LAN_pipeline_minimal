@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Generates and submits individual sbatch job for generating simulations of a model, and/or for training neural network on those simulations
+Generates and submits individual sbatch job for generating simulated data for a given model, and/or for training neural network on simulated data.
 """
-# Imports
 import argparse
 from argparse import RawDescriptionHelpFormatter
 from pathlib import Path
@@ -11,7 +10,7 @@ import subprocess
 import yaml
 import textwrap
 
-# Environment for this script is in the UV pyproject.toml file
+# Environment metadata for this script is in the pyproject.toml file
 
 # SBATCH template
 SBATCH_TEMPLATE = """#!/bin/bash
@@ -120,7 +119,7 @@ def get_basic_config_from_yaml(
     """
     Load the basic configuration from a YAML file. Modified from the generate.py file
     
-    Paramters:
+    Parameters:
         yaml_config_path (string or Path): path to the .yaml config file for use with generate.py
 
     Returns:
@@ -260,8 +259,6 @@ def main():
             "config-path": args.config_path,
             "output": args.output,
             "log-level": args.log_level,
-            #"sh-only": args.sh_only, 
-            #"time": args.time
         }
         # Create command
         command = create_command("ssms/cli/generate.py", **params)
@@ -323,8 +320,6 @@ def main():
             "network-id": args.network_id,
             "dl-workers": args.dl_workers,
             "log-level": args.log_level,
-            #"sh-only": args.sh_only, 
-            #"time": args.time
         }
 
         # Create command
