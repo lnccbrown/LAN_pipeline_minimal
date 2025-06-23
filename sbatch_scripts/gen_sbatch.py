@@ -29,7 +29,7 @@ SBATCH_TEMPLATE = """#!/bin/bash
 uv run {command}
 """
 
-def create_command(command_name, **params):
+def create_command(command_name: str, **params: dict):
     """
     Creates a full CLI command to be run using the SBATCH script.
 
@@ -129,7 +129,7 @@ def get_basic_config_from_yaml(
     basic_config = yaml.safe_load(open(yaml_config_path, "rb"))
     return basic_config
 
-def get_environment_setup(make_env, command):
+def get_environment_setup(make_env: bool, command: str):
     """
     Sets up environment for running generate or jaxtrain if the --make-env argument is sued
 
@@ -163,7 +163,7 @@ def get_environment_setup(make_env, command):
 
     return environment
     
-def get_parameters_setup(command, args):
+def get_parameters_setup(command: str, args: dict):
     """
     Creates parameter dictionary for use with generate or jaxtrain
 
@@ -171,6 +171,9 @@ def get_parameters_setup(command, args):
         command (string): Either "generate" or "jaxtrain"
         args (dictionary): Dictionary of parsed arguments for generate or jaxtrain
     """
+    
+    # Ensuring that config path is an absolute, not a relative path
+    args.config_path = Path.resolve(args.config_path)
 
     params = {
         "config-path": args.config_path
@@ -261,24 +264,12 @@ def main():
         "generate", help="Generates simulated data from model parameters", 
         parents=[parent_parser_config]
     )
-    # generate_parser.add_argument(
-    #     "--output",
-    #     help="Path to output folder for simulated data",
-    #     type=str,
-    #     required=True
-    # )
 
     # Jaxtrain args
     jaxtrain_parser = subparsers.add_parser(
         "jaxtrain", help = "Trains a neural network using simulated data", 
         parents=[parent_parser_config]
     )
-    # jaxtrain_parser.add_argument(
-    #     "--networks-path-base",
-    #     type=str,
-    #     help="Output folder for the trained neural network",
-    #     required=True
-    # )
     jaxtrain_parser.add_argument(
         "--training-data-folder",
         help="Path to folder with data to train the neural network on",
