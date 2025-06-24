@@ -154,7 +154,7 @@ def get_environment_setup(make_env: bool, command: str):
             environment = textwrap.dedent("""
             module load python
             module load gcc
-            git clone https://github.com/lnccbrown/LANfactory.git
+            uv add git+https://github.com/lnccbrown/lanfactory
             cd LANfactory
             uv sync""")
             
