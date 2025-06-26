@@ -10,8 +10,6 @@ import subprocess
 import yaml
 import textwrap
 
-# Environment metadata for this script is in the pyproject.toml file
-
 # SBATCH template
 SBATCH_TEMPLATE = """#!/bin/bash
 
@@ -22,6 +20,7 @@ SBATCH_TEMPLATE = """#!/bin/bash
 #SBATCH --time={time}
 #SBATCH --output={output}
 #SBATCH --error={error}
+#SBATCH --array=1-{array_size}
 
 # Your commands here
 {environment}
@@ -53,7 +52,8 @@ def create_sbatch_script(
     time="01:00:00",
     mem="4G",
     command="",
-    environment=""
+    environment="",
+    array_size=1
 ):
     """
     Creates a SBATCH script using the SBATCH template.
@@ -79,7 +79,8 @@ def create_sbatch_script(
         output=output,
         error=error,
         command=command,
-        environment=environment
+        environment=environment,
+        array_size=array_size
     )
     return sbatch_script
 
@@ -129,33 +130,33 @@ def get_basic_config_from_yaml(
     basic_config = yaml.safe_load(open(yaml_config_path, "rb"))
     return basic_config
 
-def get_environment_setup(make_env: bool, command: str):
+def get_environment_setup(args: argparse.Namespace):
     """
     Sets up environment for running generate or jaxtrain if the --make-env argument is sued
 
     Parameters:
-        make_env (Boolean): When True, sets up environment to run genreate or jaxtrain in the SBATCH script
-        command (str): Either "generate" or "jaxtrain" depending on which script you are running
+        args (argparse.Namespace): Parsed arguments used for generate or jaxtrain
     """
-    if make_env:
+    if args.make_env:
 
-        if command == "generate":
+        if args.command == "generate":
 
             environment = textwrap.dedent("""
             module load python
             module load gcc
-            git clone https://github.com/lnccbrown/ssm-simulators.git
+            if [ ! -d "ssm-simulators" ]; then
+                git clone https://github.com/lnccbrown/ssm-simulators.git -b add-generate-to-release-0.8.3
+            fi               
             cd ssm-simulators
             git checkout add-generate-to-release-0.8.3
             uv sync""")
 
-        elif command == "jaxtrain":
+        elif args.command == "jaxtrain":
 
             environment = textwrap.dedent("""
             module load python
             module load gcc
             uv add git+https://github.com/lnccbrown/lanfactory
-            cd LANfactory
             uv sync""")
             
     else:
@@ -163,34 +164,36 @@ def get_environment_setup(make_env: bool, command: str):
 
     return environment
     
-def get_parameters_setup(command: str, args: dict):
+def get_parameters_setup(args: argparse.Namespace):
     """
     Creates parameter dictionary for use with generate or jaxtrain
 
     Parameters:
-        command (string): Either "generate" or "jaxtrain"
-        args (dictionary): Dictionary of parsed arguments for generate or jaxtrain
+        args (argparse.Namespace): Parsed arguments used for generate or jaxtrain
     """
     
     # Ensuring that config path is an absolute, not a relative path
     args.config_path = Path.resolve(args.config_path)
 
     params = {
-        "config-path": args.config_path
+        "config-path": args.config_path.resolve(),
+        "log-level": args.log_level
     }
 
-    if command == "generate":
+    if args.command == "generate":
         
-        params["output"] = args.output_path
+        params["output"] = args.output_path.resolve()
 
-    elif command == "jaxtrain":
+    elif args.command == "jaxtrain":
 
-        params["networks-path-base"] = args.output_path
-        params["training-data-folder"] = args.training_data_folder
-        params["network-id"] = args.network_id
-        params["dl-workers"] = args.dl_workers
-
-    params["log-level"] = args.log_level
+        params.update(
+            {
+                "networks-path-base": args.output_path.resolve(),
+                "training-data-folder": args.training_data_folder.resolve(),
+                "network-id": args.network_id,
+                "dl-workers": args.dl_workers,
+            }
+        )
 
     return params
 
@@ -202,7 +205,7 @@ def main():
     prog = "gen_sbatch" # program name
 
     epilog = (
-        f"Example:\n    {prog} generate --config-path path/to/config.yaml --output-path path/to/output/folder --time 24:00:00 --sh-only --make-env --log-level INFO\n"
+        f"Example:\n    {prog} generate --config-path path/to/config.yaml --output-path path/to/output/folder --array-size 1 --time 24:00:00 --sh-only --make-env --log-level INFO\n"
         f"    {prog} jaxtrain --config-path path/to/config.yaml --output-path path/to/trained_network_output --training-data-folder path/to/training_data --network-id 0 --dl-workers 4 --time 00:10:00 --sh-only --make-env --log-level INFO\n" # examples for generate and jaxtrain scripts
     )
     parser = argparse.ArgumentParser(
@@ -264,6 +267,9 @@ def main():
         "generate", help="Generates simulated data from model parameters", 
         parents=[parent_parser_config]
     )
+    generate_parser.add_argument(
+        "--array-size", type=int, default=1, help="Size of the job array (default: 1)"
+    )
 
     # Jaxtrain args
     jaxtrain_parser = subparsers.add_parser(
@@ -273,7 +279,7 @@ def main():
     jaxtrain_parser.add_argument(
         "--training-data-folder",
         help="Path to folder with data to train the neural network on",
-        type=str,
+        type=Path,
         required=True
     )
     jaxtrain_parser.add_argument(
@@ -308,20 +314,18 @@ def main():
     )
 
     if args.command == "generate":
-        
+
         # target folder for generate
-        target = Path(args.output_path)
-        target.mkdir(exist_ok=True, parents=True)
-        logger.info(f"Simulated data output folder: {target}")
+        target = args.output_path.resolve()
 
         # Add correct environment to SBATCH file
-        environment=get_environment_setup(args.make_env, args.command)
+        environment=get_environment_setup(args)
 
         # get parameters for command from the arguments parser
-        params = get_parameters_setup(args.command, args)
+        params = get_parameters_setup(args)
 
         # Create command
-        command = create_command("ssms/cli/generate.py", **params)
+        command = create_command("generate", **params)
         logger.info(f"Generated command: {command}")
 
         # Get configuration file metadata 
@@ -339,7 +343,8 @@ def main():
                 time=args.time,
                 command=command,
                 mem="16G",
-                environment=environment
+                environment=environment,
+                array_size=args.array_size
         )
 
         # Run sbatch
@@ -349,6 +354,10 @@ def main():
         if args.sh_only:
             logger.info(f"Generated sbatch script: {script}")
             return
+        
+        # Make output folder for simulated data
+        target.mkdir(exist_ok=True, parents=True)
+        logger.info(f"Simulated data output folder: {target}")
 
         # Submits job
         submit_sbatch(script, logger)
@@ -357,18 +366,16 @@ def main():
     elif args.command == "jaxtrain":
   
         # target folder for jaxtrain
-        target = Path(args.output_path)
-        target.mkdir(exist_ok=True, parents=True)
-        logger.info(f"Trained networks output folder: {target}")
+        target = args.output_path.resolve()
 
         # Set up environment
-        environment=get_environment_setup(args.make_env, args.command)
+        environment=get_environment_setup(args)
 
         # Get parameters from the parsed arguments
-        params = get_parameters_setup(args.command, args)
+        params = get_parameters_setup(args)
 
         # Create command
-        command = create_command("src/lanfactory/cli/jax_train.py", **params)
+        command = create_command("jaxtrain", **params)
         logger.info(f"Generated command: {command}")
 
         # Get metadata about job from the configuration file
@@ -396,6 +403,10 @@ def main():
         if args.sh_only:
             logger.info(f"Generated sbatch script: {script}")
             return
+        
+        # Make output folder for trained network
+        target.mkdir(exist_ok=True, parents=True)
+        logger.info(f"Trained networks output folder: {target}")
 
         # Submits job
         submit_sbatch(script, logger)
