@@ -156,7 +156,7 @@ def get_environment_setup(args: argparse.Namespace):
             environment = textwrap.dedent("""
             module load python
             module load gcc
-            uv add git+https://github.com/lnccbrown/lanfactory
+            cd LAN_pipeline_minimal
             uv sync""")
             
     else:
