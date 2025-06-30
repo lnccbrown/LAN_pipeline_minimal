@@ -23,10 +23,13 @@ SBATCH_TEMPLATE = """#!/bin/bash
 #SBATCH --array=1-{array_size}
 
 # Your commands here
-{environment}
+module load python
+module load gcc
 
-uv run {command}
+pip install uv
+python -m uv run {command}
 """
+
 
 def create_command(command_name: str, **params: dict):
     """
