@@ -273,22 +273,17 @@ def main():
     )
 
     if args.command == "generate":
-
-        # target folder for generate
         target = args.output_path.resolve()
 
-        # get parameters for command from the arguments parser
         params = get_parameters_setup(args)
 
-        # Create command
         command = create_command("generate", **params)
         logger.info(f"Generated command: {command}")
 
-        # Get configuration file metadata 
         bc = get_basic_config_from_yaml(params["config-path"])
-        
+
         # Use information from config file to name job and sbatch script
-        job_name = f"{bc['MODEL']}_generate_sbatch" 
+        job_name = f"{bc['MODEL']}_generate_sbatch"
         script = f"{bc['MODEL']}_generate_sbatch.sh"
 
         # Create SBATCH metadata
@@ -309,8 +304,7 @@ def main():
         if args.sh_only:
             logger.info(f"Generated sbatch script: {script}")
             return
-        
-        # Make output folder for simulated data
+
         target.mkdir(exist_ok=True, parents=True)
         logger.info(f"Simulated data output folder: {target}")
 
@@ -319,14 +313,11 @@ def main():
         logger.info("Job submitted successfully")
 
     elif args.command == "jaxtrain":
-  
-        # target folder for jaxtrain
         target = args.output_path.resolve()
 
         # Get parameters from the parsed arguments
         params = get_parameters_setup(args)
 
-        # Create command
         command = create_command("jaxtrain", **params)
         logger.info(f"Generated command: {command}")
 
@@ -347,22 +338,18 @@ def main():
             mem="16G",
         )
 
-        # Run sbatch
         write_sbatch(script, sbatch_script)
 
         # Generate sbatch only, do not submit job
         if args.sh_only:
             logger.info(f"Generated sbatch script: {script}")
             return
-        
-        # Make output folder for trained network
+
         target.mkdir(exist_ok=True, parents=True)
         logger.info(f"Trained networks output folder: {target}")
 
-        # Submits job
         submit_sbatch(script, logger)
 
-# Main
+
 if __name__ == "__main__":
     main()
-
