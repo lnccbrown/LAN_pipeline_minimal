@@ -2,13 +2,13 @@
 """
 Generates and submits individual sbatch job for generating simulated data for a given model, and/or for training neural network on simulated data.
 """
+
 import argparse
 from argparse import RawDescriptionHelpFormatter
 from pathlib import Path
 import logging
 import subprocess
 import yaml
-import textwrap
 
 # SBATCH template
 SBATCH_TEMPLATE = """#!/bin/bash
@@ -130,40 +130,7 @@ def get_basic_config_from_yaml(
     basic_config = yaml.safe_load(open(yaml_config_path, "rb"))
     return basic_config
 
-def get_environment_setup(args: argparse.Namespace):
-    """
-    Sets up environment for running generate or jaxtrain if the --make-env argument is sued
 
-    Parameters:
-        args (argparse.Namespace): Parsed arguments used for generate or jaxtrain
-    """
-    if args.make_env:
-
-        if args.command == "generate":
-
-            environment = textwrap.dedent("""
-            module load python
-            module load gcc
-            if [ ! -d "ssm-simulators" ]; then
-                git clone https://github.com/lnccbrown/ssm-simulators.git -b add-generate-to-release-0.8.3
-            fi               
-            cd ssm-simulators
-            git checkout add-generate-to-release-0.8.3
-            uv sync""")
-
-        elif args.command == "jaxtrain":
-
-            environment = textwrap.dedent("""
-            module load python
-            module load gcc
-            cd LAN_pipeline_minimal
-            uv sync""")
-            
-    else:
-        environment=""
-
-    return environment
-    
 def get_parameters_setup(args: argparse.Namespace):
     """
     Creates parameter dictionary for use with generate or jaxtrain
@@ -245,11 +212,6 @@ def main():
         help="Generate the sbatch script without submitting the job",
     )
     parent_parser_metadata.add_argument(
-        "--make-env",
-        action="store_true",
-        help="Create correct environment to run generate or jaxtrain in the SBATCH script",
-    )
-    parent_parser_metadata.add_argument(
         "--log-level",
         default="WARNING",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -318,9 +280,6 @@ def main():
         # target folder for generate
         target = args.output_path.resolve()
 
-        # Add correct environment to SBATCH file
-        environment=get_environment_setup(args)
-
         # get parameters for command from the arguments parser
         params = get_parameters_setup(args)
 
@@ -337,14 +296,13 @@ def main():
 
         # Create SBATCH metadata
         sbatch_script = create_sbatch_script(
-                job_name=job_name,
-                output=f"{job_name}.out",
-                error=f"{job_name}.err",
-                time=args.time,
-                command=command,
-                mem="16G",
-                environment=environment,
-                array_size=args.array_size
+            job_name=job_name,
+            output=f"{job_name}.out",
+            error=f"{job_name}.err",
+            time=args.time,
+            command=command,
+            mem="16G",
+            array_size=args.array_size,
         )
 
         # Run sbatch
@@ -368,9 +326,6 @@ def main():
         # target folder for jaxtrain
         target = args.output_path.resolve()
 
-        # Set up environment
-        environment=get_environment_setup(args)
-
         # Get parameters from the parsed arguments
         params = get_parameters_setup(args)
 
@@ -387,14 +342,13 @@ def main():
 
         # Create SBATCH metadata
         sbatch_script = create_sbatch_script(
-                job_name=job_name,
-                output=f"{job_name}.out",
-                error=f"{job_name}.err",
-                time=args.time,
-                command=command,
-                mem="16G",
-                environment=environment
-            )
+            job_name=job_name,
+            output=f"{job_name}.out",
+            error=f"{job_name}.err",
+            time=args.time,
+            command=command,
+            mem="16G",
+        )
 
         # Run sbatch
         write_sbatch(script, sbatch_script)
