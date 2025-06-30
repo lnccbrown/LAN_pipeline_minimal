@@ -251,8 +251,7 @@ def main():
         "--dl-workers",
         type=int,
         help="Number of cores to use with the dataloader class (default=1)",
-        default=0,
-        required=True,
+        default=1,
     )
 
     # Manually adding metadata parent arguments to the subparsers so the order is correct
