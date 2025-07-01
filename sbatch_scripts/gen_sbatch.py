@@ -198,7 +198,7 @@ def main():
     parent_parser_metadata = argparse.ArgumentParser(add_help=False)
     parent_parser_metadata.add_argument(
         "--time",
-        help="Wall time limit for each job (default: 24:00:00)",
+        help="Wall time limit for each job (default: 00:30:00)",
         default="00:30:00",
     )
     parent_parser_metadata.add_argument(
