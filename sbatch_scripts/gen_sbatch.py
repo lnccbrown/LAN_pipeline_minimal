@@ -220,6 +220,11 @@ def train_command(command_name: str):
             dl_workers=dl_workers,
         )
 
+    return train
+
+
+app.command("jaxtrain")(train_command("jaxtrain"))
+app.command("torchtrain")(train_command("torchtrain"))
 
 if __name__ == "__main__":
     app()
