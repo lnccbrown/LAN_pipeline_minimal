@@ -1,19 +1,13 @@
-#!/usr/bin/env python3
-"""
-Generates and submits individual sbatch job for generating simulated data for a given model, and/or for training neural network on simulated data.
-"""
-
-import argparse
-from argparse import RawDescriptionHelpFormatter
+import typer
 from pathlib import Path
 import logging
-import subprocess
 import yaml
+import subprocess
+
+app = typer.Typer(add_completion=False)
 
 # SBATCH template
 SBATCH_TEMPLATE = """#!/bin/bash
-
-# specifies sbatch resources needed for the job
 
 #SBATCH --mem={mem}
 #SBATCH -J {job_name}
@@ -22,7 +16,6 @@ SBATCH_TEMPLATE = """#!/bin/bash
 #SBATCH --error={error}
 #SBATCH --array=1-{array_size}
 
-# Your commands here
 module load python
 module load gcc
 
@@ -32,20 +25,8 @@ python -m uv run {command}
 
 
 def create_command(command_name: str, **params: dict):
-    """
-    Creates a full CLI command to be run using the SBATCH script.
-
-    Parameters:
-        command_name (string): name of the Python file you are going to run (generate.py or jaxtrain.py)
-        params (dictionary): dictionary of parameters to be used with the Python file
-
-    Returns:
-        command (string): full CLI command, with the script to be run, and all parameters
-
-    """
     command = f"{command_name} "
     command += " ".join([f"--{key} {value}" for key, value in params.items()])
-
     return command
 
 
@@ -58,23 +39,6 @@ def create_sbatch_script(
     command="",
     array_size=1,
 ):
-    """
-    Creates a SBATCH script using the SBATCH template.
-
-    Parameters:
-        job_name (string): Name for SBATCH job
-        outputs (string): Name for output file after running SBATCH job
-        error (string): Name for the error file after running SBATCH job
-        time (string): Time limit for job
-        mem (string): Amount of memory in GB to be used with SBATCH job
-        command (string): Python command(s) to run after setting up all SBATCH metadata
-        environment (string): Additional metadata that includes commands to create the appropriate environment for generate or jaxtrain
-
-    Returns:
-        sbatch_script (sbatch_template): SBATCH script with metadata used for running SBATCH jobs
-
-    """
-
     sbatch_script = SBATCH_TEMPLATE.format(
         mem=mem,
         job_name=job_name,
@@ -88,28 +52,11 @@ def create_sbatch_script(
 
 
 def write_sbatch(script, sbatch_script):
-    """
-    Adds SBATCH metadata to .sh script
-
-    Parameters:
-        script (.sh file): .sh file that will be turned into an SBATCH script
-        sbatch_script (string): output from the create_sbatch_script function with SBATCH metadata
-
-    Returns:
-        None.
-    """
     with open(script, "w") as f:
         f.write(sbatch_script)
 
 
 def submit_sbatch(script, logger):
-    """
-    Submits SBATCH .sh file to OSCAR.
-
-    Parameters:
-        script (SBATCH .sh): script with SBATCH metadata added after running write_sbatch
-        logger (Logger): logger from file
-    """
     try:
         result = subprocess.run(["sbatch", script], capture_output=True, text=True)
         logger.info(result.stdout)
@@ -120,234 +67,157 @@ def submit_sbatch(script, logger):
 
 
 def get_basic_config_from_yaml(yaml_config_path: str | Path):
-    """
-    Load the basic configuration from a YAML file. Modified from the generate.py file
-
-    Parameters:
-        yaml_config_path (string or Path): path to the .yaml config file for use with generate.py
-
-    Returns:
-        basic_config (dictionary?): basic configuration dictionary, taken from the config.yaml file
-
-    """
     basic_config = yaml.safe_load(open(yaml_config_path, "rb"))
     return basic_config
 
 
-def get_parameters_setup(args: argparse.Namespace):
-    """
-    Creates parameter dictionary for use with generate or jaxtrain
-
-    Parameters:
-        args (argparse.Namespace): Parsed arguments used for generate or jaxtrain
-    """
-
-    params = {"config-path": args.config_path.resolve(), "log-level": args.log_level}
-
-    if args.command == "generate":
-        params["output"] = args.output_path.resolve()
-
-    elif args.command == "jaxtrain":
+def get_parameters_setup(
+    command: str,
+    config_path: Path,
+    output_path: Path,
+    log_level: str,
+    training_data_folder: Path = None,
+    network_id: int = 0,
+    dl_workers: int = 1,
+):
+    params = {"config-path": config_path.resolve(), "log-level": log_level}
+    if command == "generate":
+        params["output"] = output_path.resolve()
+    elif command in ["jaxtrain", "torchtrain"]:
         params.update(
             {
-                "networks-path-base": args.output_path.resolve(),
-                "training-data-folder": args.training_data_folder.resolve(),
-                "network-id": args.network_id,
-                "dl-workers": args.dl_workers,
+                "networks-path-base": output_path.resolve(),
+                "training-data-folder": training_data_folder.resolve()
+                if training_data_folder
+                else None,
+                "network-id": network_id,
+                "dl-workers": dl_workers,
             }
         )
-
     return params
 
 
-def main():
-    # Setting up argument parsing
-
-    description = __doc__  # docstring for gen_sbatch
-    prog = "gen_sbatch"  # program name
-
-    epilog = (
-        f"Example:\n    {prog} generate --config-path path/to/config.yaml --output-path path/to/output/folder --array-size 1 --time 24:00:00 --sh-only --make-env --log-level INFO\n"
-        f"    {prog} jaxtrain --config-path path/to/config.yaml --output-path path/to/trained_network_output --training-data-folder path/to/training_data --network-id 0 --dl-workers 4 --time 00:10:00 --sh-only --make-env --log-level INFO\n"  # examples for generate and jaxtrain scripts
-    )
-    parser = argparse.ArgumentParser(
-        description=description,
-        prog=prog,
-        epilog=epilog,
-        formatter_class=RawDescriptionHelpFormatter,
-    )
-
-    # Only the config-path and --output-path arguments, since these should be the first two arguments for generate and jaxtrain
-    parent_parser_config = argparse.ArgumentParser(add_help=False)
-    parent_parser_config.add_argument(
-        "--config-path",
-        default="dump",
-        help="Path to configuration .yaml file for running commands (default: 'dump')",
-        type=Path,
-        required=True,
-    )
-    parent_parser_config.add_argument(
-        "--output-path",
-        default="dump",
-        help="Path to output folder for simulated data (generate) or trained neural network (jaxtrain)",
-        type=Path,
-        required=True,
-    )
-
-    # Common metadata arguments for both generate and jaxtrain
-    parent_parser_metadata = argparse.ArgumentParser(add_help=False)
-    parent_parser_metadata.add_argument(
-        "--time",
-        help="Wall time limit for each job (default: 00:30:00)",
-        default="00:30:00",
-    )
-    parent_parser_metadata.add_argument(
-        "--sh-only",
-        action="store_true",
-        help="Generate the sbatch script without submitting the job",
-    )
-    parent_parser_metadata.add_argument(
-        "--log-level",
-        default="WARNING",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Set the log level (default=WARNING)",
-    )
-
-    # Subparsers for arguments specific to generate and jaxtrain
-    subparsers = parser.add_subparsers(
-        title="commands",
-        dest="command",
-        required=True,
-    )
-
-    generate_parser = subparsers.add_parser(
-        "generate",
-        help="Generates simulated data from model parameters",
-        parents=[parent_parser_config],
-    )
-    generate_parser.add_argument(
-        "--array-size", type=int, default=1, help="Size of the job array (default: 1)"
-    )
-
-    jaxtrain_parser = subparsers.add_parser(
-        "jaxtrain",
-        help="Trains a neural network using simulated data",
-        parents=[parent_parser_config],
-    )
-    jaxtrain_parser.add_argument(
-        "--training-data-folder",
-        help="Path to folder with data to train the neural network on",
-        type=Path,
-        required=True,
-    )
-    jaxtrain_parser.add_argument(
-        "--network-id",
-        type=int,
-        help="Id for the neural network to train (default=0).",
-        default=0,
-    )
-    jaxtrain_parser.add_argument(
-        "--dl-workers",
-        type=int,
-        help="Number of cores to use with the dataloader class (default=1)",
-        default=1,
-    )
-
-    # Manually adding metadata parent arguments to the subparsers so the order is correct
-    for action in parent_parser_metadata._actions:
-        if isinstance(action, argparse._HelpAction):
-            continue  # skip help, already there
-        jaxtrain_parser._add_action(action)
-        generate_parser._add_action(action)
-
-    args = parser.parse_args()
-
-    # Setting up logging
-    logger = logging.getLogger(__file__)
+def handle_job(
+    command_name: str,
+    config_path: Path,
+    output_path: Path,
+    log_level: str,
+    time: str,
+    sh_only: bool,
+    array_size: int = 1,
+    training_data_folder: Path = None,
+    network_id: int = 0,
+    dl_workers: int = 1,
+):
     logging.basicConfig(
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        level=getattr(logging, args.log_level),
+        level=getattr(logging, log_level),
     )
-
-    if args.command == "generate":
-        target = args.output_path.resolve()
-
-        params = get_parameters_setup(args)
-
-        command = create_command("generate", **params)
-        logger.info(f"Generated command: {command}")
-
-        bc = get_basic_config_from_yaml(params["config-path"])
-
-        # Use information from config file to name job and sbatch script
-        job_name = f"{bc['MODEL']}_generate_sbatch"
-        script = f"{bc['MODEL']}_generate_sbatch.sh"
-
-        # Create SBATCH metadata
-        sbatch_script = create_sbatch_script(
-            job_name=job_name,
-            output=f"{job_name}.out",
-            error=f"{job_name}.err",
-            time=args.time,
-            command=command,
-            mem="16G",
-            array_size=args.array_size,
-        )
-
-        # Run sbatch
-        write_sbatch(script, sbatch_script)
-
-        # Generate sbatch only, do not submit job
-        if args.sh_only:
-            logger.info(f"Generated sbatch script: {script}")
-            return
-
-        target.mkdir(exist_ok=True, parents=True)
+    logger = logging.getLogger("gen_sbatch")
+    target = output_path.resolve()
+    params = get_parameters_setup(
+        command_name,
+        config_path,
+        output_path,
+        log_level,
+        training_data_folder,
+        network_id,
+        dl_workers,
+    )
+    command = create_command(command_name, **params)
+    logger.info(f"Generated command: {command}")
+    bc = get_basic_config_from_yaml(params["config-path"])
+    job_name = f"{bc['MODEL']}_{command_name}_sbatch"
+    script = f"{bc['MODEL']}_{command_name}_sbatch.sh"
+    sbatch_kwargs = dict(
+        job_name=job_name,
+        output=f"{job_name}.out",
+        error=f"{job_name}.err",
+        time=time,
+        command=command,
+        mem="16G",
+    )
+    if command_name == "generate":
+        sbatch_kwargs["array_size"] = array_size
+    sbatch_script = create_sbatch_script(**sbatch_kwargs)
+    write_sbatch(script, sbatch_script)
+    if sh_only:
+        logger.info(f"Generated sbatch script: {script}")
+        return
+    target.mkdir(exist_ok=True, parents=True)
+    if command_name == "generate":
         logger.info(f"Simulated data output folder: {target}")
-
-        # Submits job
         submit_sbatch(script, logger)
         logger.info("Job submitted successfully")
-
-    elif args.command == "jaxtrain":
-        target = args.output_path.resolve()
-
-        # Get parameters from the parsed arguments
-        params = get_parameters_setup(args)
-
-        command = create_command("jaxtrain", **params)
-        logger.info(f"Generated command: {command}")
-
-        # Get metadata about job from the configuration file
-        bc = get_basic_config_from_yaml(params["config-path"])
-
-        # Use info from the configuration file to name job and .sh script
-        job_name = f"{bc['MODEL']}_jaxtrain_sbatch"  # TODO: need to figure out how to get better job names and script names later
-        script = f"{bc['MODEL']}_jaxtrain_sbatch.sh"
-
-        # Create SBATCH metadata
-        sbatch_script = create_sbatch_script(
-            job_name=job_name,
-            output=f"{job_name}.out",
-            error=f"{job_name}.err",
-            time=args.time,
-            command=command,
-            mem="16G",
-        )
-
-        write_sbatch(script, sbatch_script)
-
-        # Generate sbatch only, do not submit job
-        if args.sh_only:
-            logger.info(f"Generated sbatch script: {script}")
-            return
-
-        target.mkdir(exist_ok=True, parents=True)
+    else:
         logger.info(f"Trained networks output folder: {target}")
-
         submit_sbatch(script, logger)
+
+
+@app.command()
+def generate(
+    config_path: Path = typer.Option(
+        ..., help="Path to configuration .yaml file for running commands"
+    ),
+    output_path: Path = typer.Option(
+        ..., help="Path to output folder for simulated data"
+    ),
+    array_size: int = typer.Option(1, help="Size of the job array"),
+    time: str = typer.Option("00:30:00", help="Wall time limit for each job"),
+    sh_only: bool = typer.Option(
+        False, help="Generate the sbatch script without submitting the job"
+    ),
+    log_level: str = typer.Option(
+        "WARNING", help="Set the log level", show_default=True
+    ),
+):
+    handle_job(
+        command_name="generate",
+        config_path=config_path,
+        output_path=output_path,
+        log_level=log_level,
+        time=time,
+        sh_only=sh_only,
+        array_size=array_size,
+    )
+
+
+@app.command()
+def jaxtrain(
+    config_path: Path = typer.Option(
+        ..., help="Path to configuration .yaml file for running commands"
+    ),
+    output_path: Path = typer.Option(
+        ..., help="Path to output folder for trained neural network"
+    ),
+    training_data_folder: Path = typer.Option(
+        ..., help="Path to folder with data to train the neural network on"
+    ),
+    network_id: int = typer.Option(0, help="Id for the neural network to train"),
+    dl_workers: int = typer.Option(
+        1, help="Number of cores to use with the dataloader class"
+    ),
+    time: str = typer.Option("00:30:00", help="Wall time limit for each job"),
+    sh_only: bool = typer.Option(
+        False, help="Generate the sbatch script without submitting the job"
+    ),
+    log_level: str = typer.Option(
+        "WARNING", help="Set the log level", show_default=True
+    ),
+):
+    handle_job(
+        command_name="jaxtrain",
+        config_path=config_path,
+        output_path=output_path,
+        log_level=log_level,
+        time=time,
+        sh_only=sh_only,
+        training_data_folder=training_data_folder,
+        network_id=network_id,
+        dl_workers=dl_workers,
+    )
 
 
 if __name__ == "__main__":
-    main()
+    app()
