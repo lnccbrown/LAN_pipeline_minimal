@@ -4,10 +4,12 @@ version = "0.1.0"
 description = "Environment to create and submit sbatch scripts to generate data with ssm-simulators or train LANs with LANfactory on Oscar"
 readme = "README.md"
 requires-python = ">3.10, <3.13"
-dependencies = [
-    "lanfactory",
-    "pyyaml>=6.0.2",
-]
+dependencies = ["lanfactory>=0.5.1"]
 
 [tool.uv.sources]
 lanfactory = { git = "https://github.com/lnccbrown/lanfactory" }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12.1",
+]
