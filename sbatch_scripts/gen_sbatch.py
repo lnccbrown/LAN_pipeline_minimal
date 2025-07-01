@@ -147,7 +147,7 @@ def handle_job(
     )
     command = create_command(command_name, **params)
     logger.info(f"Generated command: {command}")
-    bc = get_basic_config_from_yaml(params["config_path"])
+    bc = get_basic_config_from_yaml(params["config-path"])
     job_name = f"{bc['MODEL']}_{command_name}_sbatch"
     script = f"{bc['MODEL']}_{command_name}_sbatch.sh"
     sbatch_kwargs = dict(
@@ -160,7 +160,8 @@ def handle_job(
         ntasks=ntasks,
         n_jobs_in_array=n_jobs_in_array,
     )
-
+    if command_name == "generate":
+        sbatch_kwargs["n_jobs_in_array"] = n_jobs_in_array
     sbatch_script = create_sbatch_script(**sbatch_kwargs)
     write_sbatch(script, sbatch_script)
     if script_only:
