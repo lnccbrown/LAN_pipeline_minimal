@@ -160,8 +160,6 @@ def handle_job(
         ntasks=ntasks,
         n_jobs_in_array=n_jobs_in_array,
     )
-    if command_name == "generate":
-        sbatch_kwargs["n_jobs_in_array"] = n_jobs_in_array
     sbatch_script = create_sbatch_script(**sbatch_kwargs)
     write_sbatch(script, sbatch_script)
     if script_only:
