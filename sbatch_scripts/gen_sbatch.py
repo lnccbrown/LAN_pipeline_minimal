@@ -185,40 +185,40 @@ def generate(
     )
 
 
-@app.command()
-def jaxtrain(
-    config_path: Path = typer.Option(
-        ..., help="Path to configuration .yaml file for running commands"
-    ),
-    output_path: Path = typer.Option(
-        ..., help="Path to output folder for trained neural network"
-    ),
-    training_data_folder: Path = typer.Option(
-        ..., help="Path to folder with data to train the neural network on"
-    ),
-    network_id: int = typer.Option(0, help="Id for the neural network to train"),
-    dl_workers: int = typer.Option(
-        1, help="Number of cores to use with the dataloader class"
-    ),
-    time: str = typer.Option("00:30:00", help="Wall time limit for each job"),
-    sh_only: bool = typer.Option(
-        False, help="Generate the sbatch script without submitting the job"
-    ),
-    log_level: str = typer.Option(
-        "WARNING", help="Set the log level", show_default=True
-    ),
-):
-    handle_job(
-        command_name="jaxtrain",
-        config_path=config_path,
-        output_path=output_path,
-        log_level=log_level,
-        time=time,
-        sh_only=sh_only,
-        training_data_folder=training_data_folder,
-        network_id=network_id,
-        dl_workers=dl_workers,
-    )
+def train_command(command_name: str):
+    def train(
+        config_path: Path = typer.Option(
+            ..., help="Path to configuration .yaml file for running commands"
+        ),
+        output_path: Path = typer.Option(
+            ..., help="Path to output folder for trained neural network"
+        ),
+        training_data_folder: Path = typer.Option(
+            ..., help="Path to folder with data to train the neural network on"
+        ),
+        network_id: int = typer.Option(0, help="Id for the neural network to train"),
+        dl_workers: int = typer.Option(
+            1, help="Number of cores to use with the dataloader class"
+        ),
+        time: str = typer.Option("00:30:00", help="Wall time limit for each job"),
+        sh_only: bool = typer.Option(
+            False, help="Generate the sbatch script without submitting the job"
+        ),
+        log_level: str = typer.Option(
+            "WARNING", help="Set the log level", show_default=True
+        ),
+    ):
+        handle_job(
+            command_name=command_name,
+            config_path=config_path,
+            output_path=output_path,
+            log_level=log_level,
+            time=time,
+            sh_only=sh_only,
+            training_data_folder=training_data_folder,
+            network_id=network_id,
+            dl_workers=dl_workers,
+        )
 
 
 if __name__ == "__main__":
