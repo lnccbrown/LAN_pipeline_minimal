@@ -56,7 +56,6 @@ def create_sbatch_script(
     time="01:00:00",
     mem="4G",
     command="",
-    environment="",
     array_size=1,
 ):
     """
