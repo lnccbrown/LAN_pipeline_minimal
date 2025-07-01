@@ -21,7 +21,8 @@ SBATCH_TEMPLATE = """#!/bin/bash
 #SBATCH --time={time}
 #SBATCH --output={output}
 #SBATCH --error={error}
-#SBATCH --array=1-{array_size}
+#SBATCH --ntasks={ntasks}
+#SBATCH --array=1-{n_jobs_in_array}
 
 module load python
 module load gcc
@@ -44,7 +45,8 @@ def create_sbatch_script(
     time="01:00:00",
     mem="4G",
     command="",
-    array_size=1,
+    ntasks=1,
+    n_jobs_in_array=1,
 ):
     sbatch_script = SBATCH_TEMPLATE.format(
         mem=mem,
@@ -53,7 +55,8 @@ def create_sbatch_script(
         output=output,
         error=error,
         command=command,
-        array_size=array_size,
+        ntasks=ntasks,
+        n_jobs_in_array=n_jobs_in_array,
     )
     return sbatch_script
 
@@ -86,6 +89,10 @@ def get_parameters_setup(
     training_data_folder: Path = None,
     network_id: int = 0,
     dl_workers: int = 1,
+    mem: str = "16G",
+    ntasks: int = 1,
+    n_jobs_in_array: int = 1,
+    time: str = "00:30:00",
 ):
     params = {"config-path": config_path.resolve(), "log-level": log_level}
     if command == "generate":
@@ -110,8 +117,10 @@ def handle_job(
     output_path: Path,
     log_level: str,
     time: str,
-    sh_only: bool,
-    array_size: int = 1,
+    script_only: bool,
+    mem: str = "16G",
+    n_jobs_in_array: int = 1,
+    ntasks: int = 1,
     training_data_folder: Path = None,
     network_id: int = 0,
     dl_workers: int = 1,
@@ -124,17 +133,21 @@ def handle_job(
     logger = logging.getLogger("gen_sbatch")
     target = output_path.resolve()
     params = get_parameters_setup(
-        command_name,
-        config_path,
-        output_path,
-        log_level,
-        training_data_folder,
-        network_id,
-        dl_workers,
+        command=command_name,
+        config_path=config_path,
+        output_path=output_path,
+        log_level=log_level,
+        training_data_folder=training_data_folder,
+        network_id=network_id,
+        dl_workers=dl_workers,
+        mem=mem,
+        ntasks=ntasks,
+        n_jobs_in_array=n_jobs_in_array,
+        time=time,
     )
     command = create_command(command_name, **params)
     logger.info(f"Generated command: {command}")
-    bc = get_basic_config_from_yaml(params["config-path"])
+    bc = get_basic_config_from_yaml(params["config_path"])
     job_name = f"{bc['MODEL']}_{command_name}_sbatch"
     script = f"{bc['MODEL']}_{command_name}_sbatch.sh"
     sbatch_kwargs = dict(
@@ -143,13 +156,14 @@ def handle_job(
         error=f"{job_name}.err",
         time=time,
         command=command,
-        mem="16G",
+        mem=mem,
+        ntasks=ntasks,
+        n_jobs_in_array=n_jobs_in_array,
     )
-    if command_name == "generate":
-        sbatch_kwargs["array_size"] = array_size
+
     sbatch_script = create_sbatch_script(**sbatch_kwargs)
     write_sbatch(script, sbatch_script)
-    if sh_only:
+    if script_only:
         logger.info(f"Generated sbatch script: {script}")
         return
     target.mkdir(exist_ok=True, parents=True)
@@ -170,9 +184,11 @@ def generate(
     output_path: Path = typer.Option(
         ..., help="Path to output folder for simulated data"
     ),
-    array_size: int = typer.Option(1, help="Size of the job array"),
+    n_jobs_in_array: int = typer.Option(1, help="Size of the job array"),
+    mem: str = typer.Option("16G", help="Memory limit for each job"),
     time: str = typer.Option("00:30:00", help="Wall time limit for each job"),
-    sh_only: bool = typer.Option(
+    ntasks: int = typer.Option(1, help="Number of tasks (cores) to run in parallel"),
+    script_only: bool = typer.Option(
         False, help="Generate the sbatch script without submitting the job"
     ),
     log_level: str = typer.Option(
@@ -185,8 +201,10 @@ def generate(
         output_path=output_path,
         log_level=log_level,
         time=time,
-        sh_only=sh_only,
-        array_size=array_size,
+        mem=mem,
+        ntasks=ntasks,
+        script_only=script_only,
+        n_jobs_in_array=n_jobs_in_array,
     )
 
 
@@ -206,7 +224,11 @@ def train_command(command_name: str):
             1, help="Number of cores to use with the dataloader class"
         ),
         time: str = typer.Option("00:30:00", help="Wall time limit for each job"),
-        sh_only: bool = typer.Option(
+        mem: str = typer.Option("16G", help="Memory limit for each job"),
+        ntasks: int = typer.Option(
+            1, help="Number of tasks (cores) to run in parallel"
+        ),
+        script_only: bool = typer.Option(
             False, help="Generate the sbatch script without submitting the job"
         ),
         log_level: str = typer.Option(
@@ -219,7 +241,9 @@ def train_command(command_name: str):
             output_path=output_path,
             log_level=log_level,
             time=time,
-            sh_only=sh_only,
+            mem=mem,
+            ntasks=ntasks,
+            script_only=script_only,
             training_data_folder=training_data_folder,
             network_id=network_id,
             dl_workers=dl_workers,
