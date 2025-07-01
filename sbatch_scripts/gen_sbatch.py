@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+Generates and submits individual sbatch job for generating simulated data for a given model, and/or for training neural network on simulated data.
+"""
+
 from pathlib import Path
 import logging
 import subprocess
