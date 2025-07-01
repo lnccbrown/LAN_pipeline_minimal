@@ -147,9 +147,9 @@ def handle_job(
     )
     command = create_command(command_name, **params)
     logger.info(f"Generated command: {command}")
-    bc = get_basic_config_from_yaml(params["config-path"])
-    job_name = f"{bc['MODEL']}_{command_name}_sbatch"
-    script = f"{bc['MODEL']}_{command_name}_sbatch.sh"
+    basic_config = get_basic_config_from_yaml(params["config-path"])
+    job_name = f"{basic_config['MODEL']}_{command_name}_sbatch"
+    script = f"{basic_config['MODEL']}_{command_name}_sbatch.sh"
     sbatch_kwargs = dict(
         job_name=job_name,
         output=f"{job_name}.out",
