@@ -18,9 +18,9 @@ The pipeline works as a two-step process.
 1. Data generation (to generate training data appropriate for specific, or multiple network types)
 2. Network training
 
-To create your own `.sh` scripts for data generation and network training, you can run the `gen_sbatch.py` script, which creates a SBATCH script based on user configurations to either generate data or train a network (using either jaxtrain or torch) on this data.
+To create your own `.sh` scripts for data generation and network training, you can run the `gen_sbatch.py` script, which creates a SBATCH script based on user configurations to either generate data or train a network (using either jax or torch as backends) on this data.
 
-Get started by running the help commands for each of the functions in `gen_sbatch.py`
+Get started by viewing the help for each of the available commands in `gen_sbatch.py`
 
 ```
 uv run sbatch_scipts/gen_sbatch.py --help
