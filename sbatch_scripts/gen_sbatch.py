@@ -94,6 +94,9 @@ def get_parameters_setup(
     n_jobs_in_array: int = 1,
     time: str = "00:30:00",
 ):
+    """
+    Prepare cli arguments for the command based on the command type.
+    """
     params = {"config-path": config_path.resolve(), "log-level": log_level}
     if command == "generate":
         params["output"] = output_path.resolve()
@@ -101,9 +104,7 @@ def get_parameters_setup(
         params.update(
             {
                 "networks-path-base": output_path.resolve(),
-                "training-data-folder": training_data_folder.resolve()
-                if training_data_folder
-                else None,
+                "training-data-folder": training_data_folder.resolve(),
                 "network-id": network_id,
                 "dl-workers": dl_workers,
             }
