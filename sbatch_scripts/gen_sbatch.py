@@ -169,11 +169,10 @@ def handle_job(
     target.mkdir(exist_ok=True, parents=True)
     if command_name == "generate":
         logger.info(f"Simulated data output folder: {target}")
-        submit_sbatch(script, logger)
-        logger.info("Job submitted successfully")
     else:
         logger.info(f"Trained networks output folder: {target}")
-        submit_sbatch(script, logger)
+    submit_sbatch(script, logger)
+    logger.info("Job submitted successfully")
 
 
 @app.command()
