@@ -41,11 +41,3 @@ For *network training* likewise we have one `.yaml` config for a given network t
 
 1. One example for **cpn** networks (`config_network_training_cpn.yaml`) 
 2. One example  for **lan** networks (`config_network_training_lan.yaml`).
-
-### Workflow
-
-The repo is now organized so that there is a common body of code (which can be improved via PRs) and personal config files.
-I left example configs in the `user_configs_examples` folder, but you can put your configs wherever you like. I was thinking about a workflow where you can create your own branch, add 
-your own configs and otherwise keep pulling changes / improvements from the main branch as they come in.
-
-There are other ways and please leave suggestions if you have a better idea.
