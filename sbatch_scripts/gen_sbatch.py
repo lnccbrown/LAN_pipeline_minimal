@@ -15,8 +15,8 @@ app = typer.Typer(add_completion=False)
 SBATCH_TEMPLATE = """#!/bin/bash
 
 #SBATCH --account={account}
-#SBATCH -p={partition}
-#SBATCH -c={cores}
+#SBATCH -p {partition}
+#SBATCH -c {cores}
 #SBATCH --mem={mem}
 #SBATCH -J {job_name}
 #SBATCH --time={time}
