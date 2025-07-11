@@ -231,7 +231,6 @@ def train_command(command_name: str):
         dl_workers: int = typer.Option(1, help="Number of cores to use with the dataloader class"),
         time: str = typer.Option("00:30:00", help="Wall time limit for each job"),
         mem: str = typer.Option("16G", help="Memory limit for each job"),
-        ntasks: int = typer.Option(1, help="Number of tasks (cores) to run in parallel"),
         script_only: bool = typer.Option(False, help="Generate the sbatch script without submitting the job"),
         log_level: str = typer.Option("WARNING", help="Set the log level", show_default=True),
     ):
