@@ -6,8 +6,6 @@ Generates and submits individual sbatch job for generating simulated data for a 
 from pathlib import Path
 import logging
 import subprocess
-
-
 import typer
 import yaml
 
@@ -16,12 +14,14 @@ app = typer.Typer(add_completion=False)
 # SBATCH template
 SBATCH_TEMPLATE = """#!/bin/bash
 
+#SBATCH --account={account}
+#SBATCH -p {partition} --gres=gpu:{num_gpus}
+#SBATCH -c {cores}
 #SBATCH --mem={mem}
 #SBATCH -J {job_name}
 #SBATCH --time={time}
 #SBATCH --output={output}
 #SBATCH --error={error}
-#SBATCH --ntasks={ntasks}
 #SBATCH --array=1-{n_jobs_in_array}
 
 module load python
@@ -31,7 +31,6 @@ pip install uv
 python -m uv run {command}
 """
 
-
 def create_command(command_name: str, **params: dict):
     command = f"{command_name} "
     command += " ".join([f"--{key} {value}" for key, value in params.items()])
@@ -39,32 +38,36 @@ def create_command(command_name: str, **params: dict):
 
 
 def create_sbatch_script(
+    account="default",
+    partition="batch",
+    num_gpus=0,
+    cores=1,
+    mem="4G",
     job_name="job",
     output="output.txt",
     error="error.txt",
     time="01:00:00",
-    mem="4G",
     command="",
-    ntasks=1,
     n_jobs_in_array=1,
 ):
     sbatch_script = SBATCH_TEMPLATE.format(
+        account=account,
+        partition=partition,
+        num_gpus=num_gpus,
+        cores=cores,
         mem=mem,
         job_name=job_name,
         time=time,
         output=output,
         error=error,
         command=command,
-        ntasks=ntasks,
         n_jobs_in_array=n_jobs_in_array,
     )
     return sbatch_script
 
-
 def write_sbatch(script, sbatch_script):
     with open(script, "w") as f:
         f.write(sbatch_script)
-
 
 def submit_sbatch(script, logger):
     try:
@@ -75,11 +78,9 @@ def submit_sbatch(script, logger):
     except Exception as e:
         logger.error(f"Failed to submit job: {e}")
 
-
 def get_basic_config_from_yaml(yaml_config_path: str | Path):
     basic_config = yaml.safe_load(open(yaml_config_path, "rb"))
     return basic_config
-
 
 def get_parameters_setup(
     command: str,
@@ -89,10 +90,6 @@ def get_parameters_setup(
     training_data_folder: Path = None,
     network_id: int = 0,
     dl_workers: int = 1,
-    mem: str = "16G",
-    ntasks: int = 1,
-    n_jobs_in_array: int = 1,
-    time: str = "00:30:00",
 ):
     """
     Prepare cli arguments for the command based on the command type.
@@ -119,9 +116,12 @@ def handle_job(
     log_level: str,
     time: str,
     script_only: bool,
+    account: str = "default",
+    partition: str = "batch",
+    num_gpus: int = 0,
+    cores: int = 1,
     mem: str = "16G",
     n_jobs_in_array: int = 1,
-    ntasks: int = 1,
     training_data_folder: Path = None,
     network_id: int = 0,
     dl_workers: int = 1,
@@ -141,10 +141,6 @@ def handle_job(
         training_data_folder=training_data_folder,
         network_id=network_id,
         dl_workers=dl_workers,
-        mem=mem,
-        ntasks=ntasks,
-        n_jobs_in_array=n_jobs_in_array,
-        time=time,
     )
     command = create_command(command_name, **params)
     logger.info(f"Generated command: {command}")
@@ -152,14 +148,17 @@ def handle_job(
     job_name = f"{basic_config['MODEL']}_{command_name}_sbatch"
     script = f"{basic_config['MODEL']}_{command_name}_sbatch.sh"
     sbatch_kwargs = dict(
+        account=account,
+        partition=partition,
+        num_gpus=num_gpus,
+        cores=cores,
+        mem=mem,
         job_name=job_name,
         output=f"{job_name}.out",
         error=f"{job_name}.err",
         time=time,
         command=command,
-        mem=mem,
-        ntasks=ntasks,
-        n_jobs_in_array=n_jobs_in_array,
+        n_jobs_in_array=n_jobs_in_array
     )
     sbatch_script = create_sbatch_script(**sbatch_kwargs)
     write_sbatch(script, sbatch_script)
@@ -184,9 +183,12 @@ def generate(
         ..., help="Path to output folder for simulated data"
     ),
     n_jobs_in_array: int = typer.Option(1, help="Size of the job array"),
+    account: str = typer.Option("default", help="Condo to run the SBATCH job on"),
+    partition: str = typer.Option("batch", help="Partition to run the SBATCH script on"),
+    num_gpus: int = typer.Option(0, help="Number of GPUs requested (for use on gpu partition)"),
     mem: str = typer.Option("16G", help="Memory limit for each job"),
     time: str = typer.Option("00:30:00", help="Wall time limit for each job"),
-    ntasks: int = typer.Option(1, help="Number of tasks (cores) to run in parallel"),
+    cores: int = typer.Option(1, help="Number of tasks (cores) to run in parallel"),
     script_only: bool = typer.Option(
         False, help="Generate the sbatch script without submitting the job"
     ),
@@ -200,9 +202,12 @@ def generate(
         output_path=output_path,
         log_level=log_level,
         time=time,
-        mem=mem,
-        ntasks=ntasks,
         script_only=script_only,
+        account=account,
+        partition=partition,
+        num_gpus=num_gpus,
+        cores=cores,
+        mem=mem,
         n_jobs_in_array=n_jobs_in_array,
     )
 
@@ -219,20 +224,15 @@ def train_command(command_name: str):
             ..., help="Path to folder with data to train the neural network on"
         ),
         network_id: int = typer.Option(0, help="Id for the neural network to train"),
-        dl_workers: int = typer.Option(
-            1, help="Number of cores to use with the dataloader class"
-        ),
+        account: str = typer.Option("default", help="Condo to run the SBATCH job on"),
+        partition: str = typer.Option("batch", help="Partition to run the SBATCH script on"),
+        num_gpus: int = typer.Option(0, help="Number of GPUs requested (for use on gpu partition)"),
+        cores: int = typer.Option(1, help="Number of tasks (cores) to run in parallel"),
+        dl_workers: int = typer.Option(1, help="Number of cores to use with the dataloader class"),
         time: str = typer.Option("00:30:00", help="Wall time limit for each job"),
         mem: str = typer.Option("16G", help="Memory limit for each job"),
-        ntasks: int = typer.Option(
-            1, help="Number of tasks (cores) to run in parallel"
-        ),
-        script_only: bool = typer.Option(
-            False, help="Generate the sbatch script without submitting the job"
-        ),
-        log_level: str = typer.Option(
-            "WARNING", help="Set the log level", show_default=True
-        ),
+        script_only: bool = typer.Option(False, help="Generate the sbatch script without submitting the job"),
+        log_level: str = typer.Option("WARNING", help="Set the log level", show_default=True),
     ):
         handle_job(
             command_name=command_name,
@@ -240,9 +240,12 @@ def train_command(command_name: str):
             output_path=output_path,
             log_level=log_level,
             time=time,
-            mem=mem,
-            ntasks=ntasks,
             script_only=script_only,
+            account=account,
+            partition=partition,
+            num_gpus=num_gpus,
+            cores=cores,
+            mem=mem,
             training_data_folder=training_data_folder,
             network_id=network_id,
             dl_workers=dl_workers,
