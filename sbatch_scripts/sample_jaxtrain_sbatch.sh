@@ -2,6 +2,9 @@
 
 # specifies sbatch resources needed for the job
 
+#SBATCH --account=default
+#SBATCH -p gpu --gres=gpu:1
+#SBATCH -c 8
 #SBATCH --mem=16G
 #SBATCH -J ddm_jaxtrain_sbatch
 #SBATCH --time=24:00:00
