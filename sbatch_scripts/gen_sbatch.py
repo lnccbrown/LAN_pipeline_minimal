@@ -8,6 +8,13 @@ import logging
 import subprocess
 import typer
 import yaml
+import os
+
+try:
+    import mlflow
+    MLFLOW_AVAILABLE = True
+except ImportError:
+    MLFLOW_AVAILABLE = False
 
 app = typer.Typer(add_completion=False)
 
@@ -26,6 +33,9 @@ SBATCH_TEMPLATE = """#!/bin/bash
 
 module load python
 module load gcc
+
+# Inject MLflow run ID if provided
+{env_vars}
 
 pip install uv
 python -m uv run {command}
@@ -49,6 +59,7 @@ def create_sbatch_script(
     time="01:00:00",
     command="",
     n_jobs_in_array=1,
+    env_vars="",
 ):
     sbatch_script = SBATCH_TEMPLATE.format(
         account=account,
@@ -62,6 +73,7 @@ def create_sbatch_script(
         error=error,
         command=command,
         n_jobs_in_array=n_jobs_in_array,
+        env_vars=env_vars,
     )
     return sbatch_script
 
@@ -90,11 +102,17 @@ def get_parameters_setup(
     training_data_folder: Path = None,
     network_id: int = 0,
     dl_workers: int = 1,
+    mlflow_run_id: str = None,
+    data_generation_experiment_id: str = None,
 ):
     """
     Prepare cli arguments for the command based on the command type.
     """
     params = {"config-path": config_path.resolve(), "log-level": log_level}
+    
+    if mlflow_run_id:
+        params["mlflow-run-id"] = mlflow_run_id
+
     if command == "generate":
         params["output"] = output_path.resolve()
     elif command in ["jaxtrain", "torchtrain"]:
@@ -106,6 +124,10 @@ def get_parameters_setup(
                 "dl-workers": dl_workers,
             }
         )
+        # Add data generation experiment ID for training lineage
+        if data_generation_experiment_id:
+            params["data-generation-experiment-id"] = data_generation_experiment_id
+    
     return params
 
 
@@ -125,6 +147,7 @@ def handle_job(
     training_data_folder: Path = None,
     network_id: int = 0,
     dl_workers: int = 1,
+    data_generation_experiment_id: str = None,
 ):
     logging.basicConfig(
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -133,6 +156,102 @@ def handle_job(
     )
     logger = logging.getLogger("gen_sbatch")
     target = output_path.resolve()
+    
+    # Initialize MLflow run and experiment
+    mlflow_run_id = None
+    mlflow_experiment_id = None
+    env_vars = ""
+    
+    if MLFLOW_AVAILABLE:
+        try:
+            # Set tracking URI from environment or use default (SQLite)
+            tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
+            mlflow.set_tracking_uri(tracking_uri)
+            logger.info(f"MLflow tracking URI: {tracking_uri}")
+            
+            # Get artifact location from environment (optional)
+            artifact_location = os.getenv("MLFLOW_ARTIFACT_LOCATION", None)
+            
+            # Get model name for experiment naming
+            basic_config = get_basic_config_from_yaml(config_path)
+            model_name = basic_config.get("MODEL", "unknown")
+            
+            # Create/get experiment based on command type
+            if command_name == "generate":
+                # Data generation experiment
+                experiment_name = f"{model_name}-data-generation"
+                
+                # Check if experiment exists, create with artifact location if needed
+                experiment = mlflow.get_experiment_by_name(experiment_name)
+                if experiment is None:
+                    if artifact_location:
+                        # Ensure artifact location is absolute path
+                        artifact_location_abs = str(Path(artifact_location).absolute())
+                        mlflow.create_experiment(experiment_name, artifact_location=artifact_location_abs)
+                        logger.info(f"Created experiment: {experiment_name} (artifacts: {artifact_location_abs})")
+                    else:
+                        mlflow.create_experiment(experiment_name)
+                        logger.info(f"Created experiment: {experiment_name} (default artifact location)")
+                    experiment = mlflow.get_experiment_by_name(experiment_name)
+                
+                mlflow.set_experiment(experiment_name)
+                mlflow_experiment_id = experiment.experiment_id
+                logger.info(f"Data generation experiment: {experiment_name} (ID: {mlflow_experiment_id})")
+                
+                # Note: For data generation, we DON'T create a parent run here
+                # Each worker will create its own run in this experiment
+                env_vars = f"export MLFLOW_EXPERIMENT_NAME={experiment_name}\n"
+                env_vars += f"export MLFLOW_TRACKING_URI={tracking_uri}"
+                if artifact_location:
+                    env_vars += f"\nexport MLFLOW_ARTIFACT_LOCATION={artifact_location}"
+                
+            elif command_name in ["jaxtrain", "torchtrain"]:
+                # Training experiment
+                experiment_name = f"{model_name}-training"
+                
+                # Check if experiment exists, create with artifact location if needed
+                experiment = mlflow.get_experiment_by_name(experiment_name)
+                if experiment is None:
+                    if artifact_location:
+                        # Ensure artifact location is absolute path
+                        artifact_location_abs = str(Path(artifact_location).absolute())
+                        mlflow.create_experiment(experiment_name, artifact_location=artifact_location_abs)
+                        logger.info(f"Created experiment: {experiment_name} (artifacts: {artifact_location_abs})")
+                    else:
+                        mlflow.create_experiment(experiment_name)
+                        logger.info(f"Created experiment: {experiment_name} (default artifact location)")
+                    experiment = mlflow.get_experiment_by_name(experiment_name)
+                
+                mlflow.set_experiment(experiment_name)
+                mlflow_experiment_id = experiment.experiment_id
+                logger.info(f"Training experiment: {experiment_name} (ID: {mlflow_experiment_id})")
+                
+                # Create a parent run for the training job
+                run = mlflow.start_run(run_name=f"{command_name}_network_{network_id}")
+                mlflow_run_id = run.info.run_id
+                
+                # Log configuration
+                mlflow.log_param("command", command_name)
+                mlflow.log_param("config_path", str(config_path))
+                mlflow.log_param("output_path", str(output_path))
+                mlflow.log_param("network_id", network_id)
+                
+                # If data_generation_experiment_id is provided, log it
+                if data_generation_experiment_id:
+                    mlflow.set_tag("data_generation_experiment_id", data_generation_experiment_id)
+                    logger.info(f"Linked to data generation experiment: {data_generation_experiment_id}")
+                
+                logger.info(f"MLflow training run initialized: {mlflow_run_id}")
+                
+                # Prepare env vars for sbatch script
+                env_vars = f"export MLFLOW_EXPERIMENT_NAME={experiment_name}\n"
+                env_vars += f"export MLFLOW_TRACKING_URI={tracking_uri}"
+                if artifact_location:
+                    env_vars += f"\nexport MLFLOW_ARTIFACT_LOCATION={artifact_location}"
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize MLflow: {e}")
+    
     params = get_parameters_setup(
         command=command_name,
         config_path=config_path,
@@ -141,6 +260,8 @@ def handle_job(
         training_data_folder=training_data_folder,
         network_id=network_id,
         dl_workers=dl_workers,
+        mlflow_run_id=mlflow_run_id,
+        data_generation_experiment_id=data_generation_experiment_id,
     )
     command = create_command(command_name, **params)
     logger.info(f"Generated command: {command}")
@@ -158,12 +279,15 @@ def handle_job(
         error=f"{job_name}.err",
         time=time,
         command=command,
-        n_jobs_in_array=n_jobs_in_array
+        n_jobs_in_array=n_jobs_in_array,
+        env_vars=env_vars
     )
     sbatch_script = create_sbatch_script(**sbatch_kwargs)
     write_sbatch(script, sbatch_script)
     if script_only:
         logger.info(f"Generated sbatch script: {script}")
+        if MLFLOW_AVAILABLE and mlflow.active_run():
+             mlflow.end_run()
         return
     target.mkdir(exist_ok=True, parents=True)
     if command_name == "generate":
@@ -171,6 +295,17 @@ def handle_job(
     else:
         logger.info(f"Trained networks output folder: {target}")
     submit_sbatch(script, logger)
+    
+    if MLFLOW_AVAILABLE and mlflow.active_run():
+        mlflow.end_run()
+    
+    # Return experiment ID for data generation (useful for chaining to training)
+    if command_name == "generate" and mlflow_experiment_id:
+        logger.info("=" * 60)
+        logger.info(f"DATA GENERATION EXPERIMENT ID: {mlflow_experiment_id}")
+        logger.info("Use this ID with training commands via --data-generation-experiment-id")
+        logger.info("=" * 60)
+
     logger.info("Job submitted successfully")
 
 
@@ -224,6 +359,12 @@ def train_command(command_name: str):
             ..., help="Path to folder with data to train the neural network on"
         ),
         network_id: int = typer.Option(0, help="Id for the neural network to train"),
+        data_generation_experiment_id: str = typer.Option(
+            None,
+            "--data-generation-experiment-id",
+            help="MLflow Experiment ID of the data generation experiment. "
+                 "If provided, training data lineage will be logged.",
+        ),
         account: str = typer.Option("default", help="Condo to run the SBATCH job on"),
         partition: str = typer.Option("batch", help="Partition to run the SBATCH script on"),
         num_gpus: int = typer.Option(0, help="Number of GPUs requested (for use on gpu partition)"),
@@ -249,6 +390,7 @@ def train_command(command_name: str):
             training_data_folder=training_data_folder,
             network_id=network_id,
             dl_workers=dl_workers,
+            data_generation_experiment_id=data_generation_experiment_id,
         )
 
     return train

@@ -10,6 +10,16 @@ user_configs_jl/
 user_configs_av/
 notebooks/
 
+# MLflow tracking artifacts
+mlruns/
+mlflow.db
+mlflow.db-shm
+mlflow.db-wal
+mlflow_artifacts/
+*.db
+*.db-shm
+*.db-wal
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
