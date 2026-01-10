@@ -1,0 +1,19 @@
+# Quick Test Data Generation Configuration
+# Minimal settings for fast local testing (~10-30 seconds)
+
+MODEL: 'ddm'
+GENERATOR_APPROACH: 'lan'
+
+PIPELINE:
+  N_PARAMETER_SETS: 10
+  N_SUBRUNS: 2
+
+SIMULATOR:
+  N_SAMPLES: 1000
+  DELTA_T: 0.001
+
+TRAINING:
+  N_SAMPLES_PER_PARAM: 100
+
+ESTIMATOR:
+  TYPE: 'kde'

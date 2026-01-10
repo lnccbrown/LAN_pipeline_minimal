@@ -1,0 +1,19 @@
+# Data Generation Configuration
+# This config is used by ssm-simulators to generate training data
+
+MODEL: 'ddm'
+GENERATOR_APPROACH: 'lan'
+
+PIPELINE:
+  N_PARAMETER_SETS: 1000
+  N_SUBRUNS: 20
+
+SIMULATOR:
+  N_SAMPLES: 20000
+  DELTA_T: 0.001
+
+TRAINING:
+  N_SAMPLES_PER_PARAM: 2000
+
+ESTIMATOR:
+  TYPE: 'kde'
