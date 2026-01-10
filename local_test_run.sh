@@ -2,61 +2,96 @@
 
 # Local test script for MLflow integration
 # Simulates the end-to-end pipeline without submitting to Slurm
+#
+# This script demonstrates the complete workflow:
+# 1. Data generation with ssm-simulators (creates MLflow runs)
+# 2. Network training with LANfactory (links to data generation via experiment ID)
 
 set -e
 
-# Setup paths
+# Setup paths - use quick_test configs for fast local testing
 TEST_DIR="local_test_data"
-CONFIG_GEN="user_configs_examples/config_data_generation.yaml"
-CONFIG_TRAIN="user_configs_examples/config_network_training_lan.yaml"
+CONFIG_GEN="configs/quick_test/data_generation.yaml"
+CONFIG_TRAIN="configs/quick_test/network_training.yaml"
+
+# MLflow configuration (uses SQLite by default)
+export MLFLOW_TRACKING_URI="sqlite:///mlflow.db"
+export MLFLOW_ARTIFACT_LOCATION="./mlflow_artifacts"
 
 echo "=== Starting Local MLflow Integration Test ==="
+echo "MLflow Tracking URI: $MLFLOW_TRACKING_URI"
+echo "MLflow Artifacts: $MLFLOW_ARTIFACT_LOCATION"
+
+# Clean up previous test data (optional)
+if [ -d "$TEST_DIR" ]; then
+    echo "Removing previous test data..."
+    rm -rf "$TEST_DIR"
+fi
 
 # 1. Data Generation Phase
+echo ""
 echo "[Phase 1] Generating Data..."
-# We manually trigger what sbatch_scripts/gen_sbatch.py would generate inside the sbatch script
-# BUT, we use gen_sbatch.py --sh-only to get the MLflow Run ID created by the orchestrator
+echo "Using config: $CONFIG_GEN"
 
-# Create a dummy run via the orchestrator just to get a Run ID (simulating the submission)
-# Note: In a real local run, we might just want to run the python commands directly.
-# However, to test the linkage, let's try to use the CLI.
+# Read model name from config for experiment naming
+MODEL_NAME=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG_GEN'))['MODEL'])")
+EXPERIMENT_NAME="${MODEL_NAME}-data-generation"
+echo "Experiment name: $EXPERIMENT_NAME"
 
-# Since gen_sbatch.py submits to sbatch, we can't use it easily for local execution unless we mock sbatch.
-# Instead, we will invoke the underlying CLIs directly, which corresponds to what the "worker node" does.
-
-# Start a parent MLflow run for the "Workflow"
-export MLFLOW_RUN_ID=$(python3 -c "import mlflow; print(mlflow.start_run(run_name='local_test_workflow').info.run_id)")
-echo "Workflow Run ID: $MLFLOW_RUN_ID"
-
-echo "Running ssm-simulators generate..."
-# Run generation (this should log to the workflow run or a nested run if we configured it that way)
-# Based on implementation: generate.py takes --mlflow-run-id
-uv run ssm-simulators/ssms/cli/generate.py \
+# Run data generation using ssm-simulators CLI
+# Each run gets a unique name; in local testing we simulate a single worker
+uv run generate \
     --config-path "$CONFIG_GEN" \
     --output "$TEST_DIR" \
-    --n-files 1 \
+    --n-files 2 \
     --log-level INFO \
-    --mlflow-run-id "$MLFLOW_RUN_ID"
+    --mlflow-run-name "local-worker-1" \
+    --mlflow-experiment-name "$EXPERIMENT_NAME"
+
+# Get the experiment ID for linking to training
+EXPERIMENT_ID=$(python3 -c "
+import mlflow
+mlflow.set_tracking_uri('$MLFLOW_TRACKING_URI')
+exp = mlflow.get_experiment_by_name('$EXPERIMENT_NAME')
+print(exp.experiment_id if exp else '')
+")
+
+echo ""
+echo "Data generation experiment ID: $EXPERIMENT_ID"
 
 # 2. Network Training Phase
+echo ""
 echo "[Phase 2] Training Network..."
+echo "Using config: $CONFIG_TRAIN"
 
-# Find the generated data path (hacky for bash, but predictable from config)
-# Assuming default config structure: data/training_data/lan/training_data_n_samples_.../ddm
-# Let's find it dynamically
-DATA_PATH=$(find "$TEST_DIR" -type d -name "ddm" | head -n 1)
+# Find the generated data path
+# The structure is: {output}/{data_subdir}/{model_name}
+DATA_PATH=$(find "$TEST_DIR" -type d -name "$MODEL_NAME" | head -n 1)
+
+if [ -z "$DATA_PATH" ]; then
+    echo "ERROR: Could not find generated data for model '$MODEL_NAME' in '$TEST_DIR'"
+    echo "Available directories:"
+    find "$TEST_DIR" -type d
+    exit 1
+fi
+
 echo "Training on data at: $DATA_PATH"
 
-echo "Running lanfactory jaxtrain..."
-uv run LANfactory/src/lanfactory/cli/jax_train.py \
+# Run network training using LANfactory CLI
+# Link to data generation experiment for lineage tracking
+uv run jaxtrain \
     --config-path "$CONFIG_TRAIN" \
     --training-data-folder "$DATA_PATH" \
     --networks-path-base "$TEST_DIR/networks" \
     --network-id 0 \
     --dl-workers 0 \
     --log-level INFO \
-    --mlflow-run-id "$MLFLOW_RUN_ID"
+    --data-generation-experiment-id "$EXPERIMENT_ID"
 
+echo ""
 echo "=== Test Complete ==="
-echo "Inspect results with: uv run mlflow ui"
-
+echo ""
+echo "To view results in MLflow UI:"
+echo "  uv run mlflow ui --backend-store-uri $MLFLOW_TRACKING_URI"
+echo ""
+echo "Then open http://localhost:5000 in your browser"

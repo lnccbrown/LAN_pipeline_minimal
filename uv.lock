@@ -1037,6 +1037,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "lanfactory" },
     { name = "mlflow" },
+    { name = "ssm-simulators" },
 ]
 
 [package.dev-dependencies]
@@ -1046,8 +1047,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "lanfactory", git = "https://github.com/lnccbrown/lanfactory" },
+    { name = "lanfactory", git = "https://github.com/lnccbrown/lanfactory?branch=main" },
     { name = "mlflow", specifier = ">=3.6.0" },
+    { name = "ssm-simulators", git = "https://github.com/lnccbrown/ssm-simulators?branch=main" },
 ]
 
 [package.metadata.requires-dev]
@@ -1056,7 +1058,7 @@ dev = [{ name = "ruff", specifier = ">=0.12.1" }]
 [[package]]
 name = "lanfactory"
 version = "0.6.0"
-source = { git = "https://github.com/lnccbrown/lanfactory#410d3c183b52d788e9cd16913d3643f75a952b70" }
+source = { git = "https://github.com/lnccbrown/lanfactory?branch=main#01765dbb588e397a9dd5f895beb1d0a99786c22b" }
 dependencies = [
     { name = "flax", version = "0.10.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "flax", version = "0.12.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -2470,7 +2472,7 @@ wheels = [
 [[package]]
 name = "ssm-simulators"
 version = "0.11.3"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/lnccbrown/ssm-simulators?branch=main#b7af1b08b88b0be9be2f755d440b74eae825752e" }
 dependencies = [
     { name = "matplotlib" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -2484,24 +2486,6 @@ dependencies = [
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "tqdm" },
     { name = "typer" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f7/58/9eec6b5e8c7ef262a74c935cda75d536044c799a658bbf47add08b0fc0b0/ssm_simulators-0.11.3.tar.gz", hash = "sha256:174f21c73f17c33c6ed08fd8b8a3bfecc5de90f2c228a316196468fca6838daf", size = 1248317 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/76/a9def40678b532c81ee10073fb14740d06fe89314d244f53a755f2b4d0d3/ssm_simulators-0.11.3-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:363d9ef6e51ddcdf3addb2a17ae7c83f53889df64b4750dee8bd0d1c9ac34916", size = 441009 },
-    { url = "https://files.pythonhosted.org/packages/f0/d8/7b103e282e5fc8544957a1607c8c832744b85ec3ee6059ee9a13d03fff60/ssm_simulators-0.11.3-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:39dc4cac95f80c7d215eb207339db7a11cd53fe316644cca549ca986897b47c8", size = 388446 },
-    { url = "https://files.pythonhosted.org/packages/a3/2d/791d8bb4c4e391a75c5ed5ef7bd86681bcaeaf2c201391c919593c6856e2/ssm_simulators-0.11.3-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:01667475d4d004b191dd4ef59dfcbc41b274db9ebabfb7b9d20aa2aa94877711", size = 2534695 },
-    { url = "https://files.pythonhosted.org/packages/99/6a/45b42847827cb019c363c88f101655c9619e9c475ef1a66c9707f87096c3/ssm_simulators-0.11.3-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:3b91f359c1d0cd9d7393aca3279c7e848f8a235f2a427c761c9371d135729b44", size = 2513087 },
-    { url = "https://files.pythonhosted.org/packages/ae/ec/c6722fd7019c368c35d5f00727b9407fab72fdaba2c01bf6ad5a4ab792a5/ssm_simulators-0.11.3-cp310-cp310-win_amd64.whl", hash = "sha256:5a1ac123915a47ac23a67330f69303f9b9d3732836afacfb1beb03ef62c96d6c", size = 355919 },
-    { url = "https://files.pythonhosted.org/packages/8a/19/681f895fe5c6f7879f2aa77a28b0a57eb3af35ec580b89abe71f3da48cd7/ssm_simulators-0.11.3-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:499e81a2ecd9f39bf80a1faa79d3434cb1f95bede0bea980448c1b1a868acdbc", size = 444051 },
-    { url = "https://files.pythonhosted.org/packages/aa/20/bc3f3bd5d54a9da366f04b782e27c6ed99cfcebde556a209bd77e11d6e9a/ssm_simulators-0.11.3-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7f045c079fc39f3f4ead71d62febcb9dac447976c10745fd3d37e46b60bb7576", size = 395078 },
-    { url = "https://files.pythonhosted.org/packages/0b/1c/56ffcfa63912e9a459fc59d6c6a8060d0db42a848434d010b8c88adeb261/ssm_simulators-0.11.3-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e140fe8c7ae6b1a4238a0f695045ab5e50ba8803f6845be3bf810828a18f6533", size = 2667781 },
-    { url = "https://files.pythonhosted.org/packages/ee/5d/8d3f50fe07c81668835376f584dd40430e9d9151e85c1636bcc06df2944f/ssm_simulators-0.11.3-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:66c0b8161398c923996c5df8440c12ecce876cfc3eece2a7abe47de02839add1", size = 2676653 },
-    { url = "https://files.pythonhosted.org/packages/6d/0d/91a4bc29231c86041870f0503e0c891c3ae9d67d6f7fe155b39a43604241/ssm_simulators-0.11.3-cp311-cp311-win_amd64.whl", hash = "sha256:012b2bb3844efe0647ad21458aad5fbc01dfe0d761852f8761bf3d910ef7e90c", size = 357517 },
-    { url = "https://files.pythonhosted.org/packages/8e/b0/2462e970f0a2ebf64638969bb1b0dac718e448d35e51e0ef3b2272388408/ssm_simulators-0.11.3-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:7d16ce7875c4bc62b4a95e935a6e896fca49c8be9b7b186aa83726f5ccfd9878", size = 412962 },
-    { url = "https://files.pythonhosted.org/packages/50/34/870ac21f23cab9978154d757f80764996fb464c3084b36d74192b204f1e0/ssm_simulators-0.11.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:273249c88672a58349298cede95872aaa3864031d884624a5d717d9c2a99e433", size = 378102 },
-    { url = "https://files.pythonhosted.org/packages/86/5e/6430ef4e9de5572cb71a69966eb26da9316796c118d7d2a8731c56c176f2/ssm_simulators-0.11.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:01cbd48a8003fe1fe64abb97e26777fde3b1b2d0dda93c5a1703a5a1d3854363", size = 2538066 },
-    { url = "https://files.pythonhosted.org/packages/bc/a7/1e2da00c7bf80b93c23459bb8fc40a15f52847e8a0597d1a3d50703653d8/ssm_simulators-0.11.3-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:1127821226e6485f2c4a480851553aa8a0c0e538e467d0ecb349c1adeb36ddbc", size = 2505514 },
-    { url = "https://files.pythonhosted.org/packages/66/ff/50694268001c1a16ab958bc10587808b01ab136e40c231becf73e35e9fae/ssm_simulators-0.11.3-cp312-cp312-win_amd64.whl", hash = "sha256:6145b1dd9ea4bc4e6861207f76f1678b7c67fc949f979cf10cf504de2726f2be", size = 336274 },
 ]
 
 [[package]]
