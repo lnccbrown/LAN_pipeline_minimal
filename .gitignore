@@ -2,6 +2,7 @@
 data/
 data_alt/
 local_tests/
+local_test_data/
 slurm/
 wandb/
 users/
@@ -9,6 +10,7 @@ user_configs_af/
 user_configs_jl/
 user_configs_av/
 notebooks/
+md_files/
 
 # MLflow tracking artifacts
 mlruns/

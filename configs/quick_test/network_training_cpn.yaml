@@ -2,8 +2,8 @@
 # Minimal settings for fast local testing (~30-60 seconds)
 
 NETWORK_TYPE: "cpn"
-CPU_BATCH_SIZE: 100
-GPU_BATCH_SIZE: 1000
+CPU_BATCH_SIZE: 10
+GPU_BATCH_SIZE: 10
 GENERATOR_APPROACH: "lan"
 OPTIMIZER_: "adam"
 N_EPOCHS: 2
