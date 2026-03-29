@@ -88,7 +88,7 @@ then
         do
             echo "NOW TRAINING NETWORK: $i of $n_networks"
             echo "No array ID"
-            
+
             if [ "$backend" == "jax" ]; then
                 python -u ../scripts/jax_training_script.py --config_path $config_path \
                                                          --network_id 0 \
@@ -99,15 +99,15 @@ then
                                                            --network_id 0 \
                                                            --networks_path_base $networks_path_base \
                                                            --dl_workers $dl_workers
-                                                       
+
             fi
         done
 else
     for ((i = 1; i <= $n_networks; i++))
         do
             echo "NOW TRAINING NETWORK: $i of $n_networks"
-            echo "Array ID is $SLURM_ARRAY_TASK_ID" 
-            
+            echo "Array ID is $SLURM_ARRAY_TASK_ID"
+
             if [ "$backend" == "jax" ]; then
                 python -u ../scripts/jax_training_script.py --config_path $config_path \
                                                          --network_id $SLURM_ARRAY_TASK_ID \
@@ -118,7 +118,7 @@ else
                                                            --network_id $SLURM_ARRAY_TASK_ID \
                                                            --networks_path_base $networks_path_base \
                                                            --dl_workers $dl_workers
-                                                       
+
             fi
         done
 fi

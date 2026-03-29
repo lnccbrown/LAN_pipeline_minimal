@@ -446,9 +446,7 @@ def train_command(command_name: str):
         num_gpus: int = typer.Option(
             0, help="Number of GPUs requested (for use on gpu partition)"
         ),
-        cores: int = typer.Option(
-            1, help="Number of tasks (cores) to run in parallel"
-        ),
+        cores: int = typer.Option(1, help="Number of tasks (cores) to run in parallel"),
         dl_workers: int = typer.Option(
             1, help="Number of cores to use with the dataloader class"
         ),

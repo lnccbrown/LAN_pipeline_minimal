@@ -9,11 +9,11 @@ MODEL: "ddm"
 SHUFFLE: True
 LAYER_SIZES: [[100, 100, 100, 1], [100, 100, 100, 100, 1], [100, 100, 100, 100, 100, 1],
               [120, 120, 120, 1], [120, 120, 120, 120, 1], [120, 120, 120, 120, 120, 1]]
-ACTIVATIONS: [['tanh', 'tanh', 'tanh'], 
-              ['tanh', 'tanh', 'tanh', 'tanh'], 
+ACTIVATIONS: [['tanh', 'tanh', 'tanh'],
+              ['tanh', 'tanh', 'tanh', 'tanh'],
               ['tanh', 'tanh', 'tanh', 'tanh', 'tanh'],
-              ['tanh', 'tanh', 'tanh'], 
-              ['tanh', 'tanh', 'tanh', 'tanh'], 
+              ['tanh', 'tanh', 'tanh'],
+              ['tanh', 'tanh', 'tanh', 'tanh'],
               ['tanh', 'tanh', 'tanh', 'tanh', 'tanh']]
 WEIGHT_DECAY: 0.0
 TRAIN_VAL_SPLIT: 0.98
