@@ -44,3 +44,15 @@ jobs:
       # upstream packages against drift.
       - name: End-to-end local pipeline test
         run: bash local_test_run.sh
+
+      # Also exercise the SLURM-script generator (the production entry point) in
+      # no-submit mode, so config parsing + script templating stay covered too.
+      - name: Generate SBATCH scripts (--script-only, no submit)
+        run: |
+          uv run python sbatch_scripts/gen_sbatch.py generate \
+            --config-path configs/quick_test/data_generation.yaml \
+            --output-path /tmp/gen_out --n-jobs-in-array 2 --script-only
+          uv run python sbatch_scripts/gen_sbatch.py jaxtrain \
+            --config-path configs/quick_test/network_training.yaml \
+            --output-path /tmp/net_out --training-data-folder /tmp/data \
+            --network-id 0 --script-only
