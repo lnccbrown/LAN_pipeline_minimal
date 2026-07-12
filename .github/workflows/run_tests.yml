@@ -1,0 +1,46 @@
+name: Run tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  pipeline_end_to_end:
+    name: End-to-end pipeline (quick_test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ssm-simulators is pulled from its git main branch and compiles Cython
+      # extensions that link against GSL (OpenMP ships with gcc).
+      - name: Install GSL (for the ssm-simulators build)
+        run: sudo apt-get update && sudo apt-get install -y libgsl-dev
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      # Pulls ssm-simulators + lanfactory from their main branches (see pyproject
+      # [tool.uv.sources]) and builds them.
+      - name: Install pipeline
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check .
+
+      # Runs the full quick_test workflow — generate training data with
+      # ssm-simulators, then train a network with LANfactory (MLflow-tracked).
+      # This guards the pipeline, its configs, and its integration with the two
+      # upstream packages against drift.
+      - name: End-to-end local pipeline test
+        run: bash local_test_run.sh

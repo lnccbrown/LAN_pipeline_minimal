@@ -34,7 +34,7 @@ echo "[Phase 1] Generating Data..."
 echo "Using config: $CONFIG_GEN"
 
 # Read model name from config for experiment naming
-MODEL_NAME=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG_GEN'))['MODEL'])")
+MODEL_NAME=$(uv run python -c "import yaml; print(yaml.safe_load(open('$CONFIG_GEN'))['MODEL'])")
 EXPERIMENT_NAME="${MODEL_NAME}-data-generation"
 echo "Experiment name: $EXPERIMENT_NAME"
 
@@ -49,7 +49,7 @@ uv run generate \
     --mlflow-experiment-name "$EXPERIMENT_NAME"
 
 # Get the experiment ID for linking to training
-EXPERIMENT_ID=$(python3 -c "
+EXPERIMENT_ID=$(uv run python -c "
 import mlflow
 mlflow.set_tracking_uri('$MLFLOW_TRACKING_URI')
 exp = mlflow.get_experiment_by_name('$EXPERIMENT_NAME')
