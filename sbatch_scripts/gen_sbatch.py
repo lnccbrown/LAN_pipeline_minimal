@@ -43,13 +43,26 @@ module load gcc
 # MLflow environment variables
 {env_vars}
 
-python -m pip install --user uv
+if ! python -m uv --version >/dev/null 2>&1; then
+  if [ -n "${{VIRTUAL_ENV:-}}" ]; then
+    python -m pip install uv
+  else
+    python -m pip install --user uv
+  fi
+fi
 python -m uv run {command}
 """
-# Note on the install line above: `python -m pip`, not bare `pip`. After
-# `module load python` the two can resolve to different interpreters, and uv
-# must land in the one that runs the job. `--user` avoids needing write access
-# to the module's site-packages.
+# Notes on the install block above:
+# - `python -m pip`, not bare `pip`: after `module load python` the two can
+#   resolve to different interpreters, and uv must land in the one that runs
+#   the job on the next line.
+# - `--user` only outside a virtualenv. pip *hard-errors* on `--user` inside
+#   one ("User site-packages are not visible in this virtualenv"), and sbatch
+#   propagates the submitting environment by default — so an unconditional
+#   `--user` fails for anyone submitting from their project venv.
+# - Skipped entirely when uv is already importable, which is the common case
+#   on a node that has it.
+# Braces are doubled because this string is consumed by str.format().
 
 
 def create_command(command_name: str, **params: dict):
@@ -346,8 +359,11 @@ def handle_job(
         cores=cores,
         mem=mem,
         job_name=job_name,
-        output=f"{job_name}.out",
-        error=f"{job_name}.err",
+        # %A_%a = array job id + task index. The template always emits
+        # --array, so every task would otherwise append to one shared pair of
+        # files and interleave its output with the others'.
+        output=f"{job_name}_%A_%a.out",
+        error=f"{job_name}_%A_%a.err",
         time=time,
         command=command,
         n_jobs_in_array=n_jobs_in_array,

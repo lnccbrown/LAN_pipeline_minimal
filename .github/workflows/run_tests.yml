@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   pipeline_end_to_end:
     name: End-to-end pipeline (quick_test)
@@ -14,6 +17,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # This job builds and runs PR-authored code, and no step below
+          # invokes git, so don't leave the checkout token in .git/config.
+          persist-credentials: false
 
       # ssm-simulators is pulled from its git main branch and compiles Cython
       # extensions that link against GSL (OpenMP ships with gcc).
