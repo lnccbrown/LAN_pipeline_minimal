@@ -43,9 +43,13 @@ module load gcc
 # MLflow environment variables
 {env_vars}
 
-pip install uv
+python -m pip install --user uv
 python -m uv run {command}
 """
+# Note on the install line above: `python -m pip`, not bare `pip`. After
+# `module load python` the two can resolve to different interpreters, and uv
+# must land in the one that runs the job. `--user` avoids needing write access
+# to the module's site-packages.
 
 
 def create_command(command_name: str, **params: dict):

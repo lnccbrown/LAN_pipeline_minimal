@@ -30,10 +30,14 @@ jobs:
         with:
           version: "latest"
 
-      # Pulls ssm-simulators + lanfactory from their main branches (see pyproject
-      # [tool.uv.sources]) and builds them.
+      # Builds ssm-simulators + lanfactory from the git commits pinned in
+      # uv.lock (sourced from their main branches, see pyproject
+      # [tool.uv.sources]). --frozen keeps CI reproducible and fails the run if
+      # uv.lock has drifted from pyproject.toml rather than silently re-locking.
+      # Note this pins the upstreams: picking up new upstream commits needs a
+      # deliberate `uv lock --upgrade`, not a CI re-run.
       - name: Install pipeline
-        run: uv sync
+        run: uv sync --frozen
 
       - name: Lint
         run: uv run ruff check .

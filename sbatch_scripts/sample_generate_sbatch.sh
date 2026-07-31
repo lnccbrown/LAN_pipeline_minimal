@@ -20,5 +20,5 @@ module load gcc
 export MLFLOW_EXPERIMENT_NAME=ddm-data-generation
 export MLFLOW_TRACKING_URI=sqlite:///mlflow.db
 
-pip install uv
+python -m pip install --user uv
 python -m uv run generate --config-path configs/examples/data_generation.yaml --log-level WARNING --output /path/to/output --mlflow-run-name ddm-worker-$SLURM_ARRAY_TASK_ID --mlflow-experiment-name ddm-data-generation

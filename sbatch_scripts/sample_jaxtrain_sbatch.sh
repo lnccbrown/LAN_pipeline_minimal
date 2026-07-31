@@ -20,5 +20,5 @@ module load gcc
 export MLFLOW_EXPERIMENT_NAME=ddm-training
 export MLFLOW_TRACKING_URI=sqlite:///mlflow.db
 
-pip install uv
-python -m uv run jaxtrain --config-path configs/examples/network_training_lan.yaml --log-level WARNING --networks-path-base /path/to/networks --training-data-folder /path/to/data --network-id 0 --dl-workers 1 --mlflow-run-id <mlflow-parent-run-id>
+python -m pip install --user uv
+python -m uv run jaxtrain --config-path configs/examples/network_training_lan.yaml --log-level WARNING --networks-path-base /path/to/networks --training-data-folder /path/to/data --network-id 0 --dl-workers 1 --mlflow-run-id PARENT_RUN_ID
