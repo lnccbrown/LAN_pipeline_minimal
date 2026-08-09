@@ -30,12 +30,15 @@ LAN_pipeline_minimal/
 │   ├── quick_test/         # Fast testing configs (~1-2 min)
 │   │   ├── data_generation.yaml
 │   │   └── network_training.yaml
+│   ├── cluster/            # Cluster resource inventories
+│   │   └── oscar.yaml      # Condos, limits, per-job-kind defaults
 │   ├── legacy/             # Archived old workflow configs
 │   └── README.md           # Config documentation
 ├── sbatch_scripts/
 │   ├── gen_sbatch.py       # Main orchestrator script
 │   ├── sample_*.sh         # Example generated SBATCH scripts
 │   └── legacy/             # Archived old sbatch scripts
+├── tests/                  # pytest suite for gen_sbatch
 ├── local_test_run.sh       # Local end-to-end test script
 ├── using_mlflow.md         # MLflow integration guide
 └── pyproject.toml          # Dependencies (from GitHub main branches)
@@ -78,7 +81,8 @@ uv run python sbatch_scripts/gen_sbatch.py generate \
     --config-path configs/examples/data_generation.yaml \
     --output-path /path/to/output \
     --n-jobs-in-array 10 \
-    --partition gpu
+    --n-files 20 \
+    --cluster-config configs/cluster/oscar.yaml
 
 # Or run directly (local)
 uv run generate \
@@ -86,6 +90,31 @@ uv run generate \
     --output ./data \
     --n-files 5
 ```
+
+**Where things land, and what comes back.** The generated script and the
+SLURM `.out`/`.err` files are written to `<output-path>/runs/`, timestamped —
+repeated invocations never overwrite each other. Each invocation prints
+exactly one JSON line on stdout (all logging goes to stderr, so this holds at
+any `--log-level`):
+
+```json
+{"command": "generate --config-path ...", "job_id": 9876543,
+ "mlflow_experiment_id": "42", "mlflow_run_id": null,
+ "sbatch_script": "/path/to/output/runs/20260809T101500_ddm_generate_sbatch.sh",
+ "output_path": "/path/to/output", "account": "carney-frankmj-condo",
+ "partition": "batch"}
+```
+
+That line is the interface for scripted use — `jq -r .job_id` to poll with
+`sacct`, `jq -r .mlflow_experiment_id` to chain into training. A failed
+submission exits non-zero with `"job_id": null`. `--script-only` writes the
+script and prints the same line without submitting, and creates no MLflow
+experiment or run.
+
+**Cluster resources.** `--cluster-config` reads per-job-kind defaults
+(account, partition, cores, memory, GPUs, wall time) from a cluster
+inventory; see `configs/README.md`. Precedence is built-in fallbacks <
+cluster config < explicit flags, so any flag below still wins.
 
 ### Network Training
 
@@ -95,8 +124,8 @@ uv run python sbatch_scripts/gen_sbatch.py jaxtrain \
     --config-path configs/examples/network_training_lan.yaml \
     --output-path /path/to/networks \
     --training-data-folder /path/to/data \
-    --data-generation-experiment-id <exp-id>  # Links to data gen for lineage
-    --partition gpu
+    --data-generation-experiment-id <exp-id> \
+    --cluster-config configs/cluster/oscar.yaml
 
 # Or run directly (local)
 uv run jaxtrain \

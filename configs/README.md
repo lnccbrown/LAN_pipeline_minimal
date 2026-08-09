@@ -8,6 +8,7 @@ This folder contains YAML configuration files for the LAN pipeline.
 configs/
 ├── examples/           # Production-ready example configs
 ├── quick_test/         # Fast testing configs (~1-2 min runtime)
+├── cluster/            # Cluster resource inventories (oscar.yaml)
 └── legacy/             # Archived bash workflow configs (deprecated)
 ```
 
@@ -73,6 +74,40 @@ uv run python sbatch_scripts/gen_sbatch.py generate \
     --config-path configs/examples/data_generation.yaml \
     --output-path /shared/data
 ```
+
+## Cluster Configs (`cluster/oscar.yaml`)
+
+A record of *what we can schedule where*: the condos we hold, their partitions
+and limits, which job kinds each suits, and the sbatch defaults to use for
+each. Pass it with `--cluster-config` so submissions are made with awareness
+of the actual cluster rather than hardcoded guesses:
+
+```bash
+uv run python sbatch_scripts/gen_sbatch.py generate \
+    --config-path configs/examples/data_generation.yaml \
+    --output-path /shared/data \
+    --cluster-config configs/cluster/oscar.yaml
+```
+
+| Section | Purpose |
+|---------|---------|
+| `condos` | Per-account record: `partitions`, `nodes`, `limits`, `suited_for`, `verified` |
+| `job_defaults` | Job kind (`generate`/`jaxtrain`/`torchtrain`) → `account`, `partition`, `cores`, `mem`, `num_gpus`, `time`, optional `modules` |
+| `modules` | Modules loaded at the top of every generated script |
+
+**Precedence:** built-in fallbacks < `job_defaults.<job kind>` < explicit CLI
+flags. For `modules`, a per-job-kind list overrides the top-level one, and an
+explicit empty list (`modules: []`) means "load no modules" — distinct from
+omitting the key, which keeps the defaults.
+
+**Quote your wall times.** YAML 1.1 reads an unquoted `time: 12:00:00` as the
+integer 43200, which SLURM would interpret as 43200 *minutes*. Write
+`time: "12:00:00"`. `gen_sbatch` rejects the unquoted form with an explicit
+error rather than submitting a 30-day request.
+
+Entries carry `verified: false` until they are seeded from a live cluster
+snapshot (`sacctmgr show associations`, `sinfo`, `scontrol show partition`) —
+do not add condos or limits from memory.
 
 ## Legacy Configs
 

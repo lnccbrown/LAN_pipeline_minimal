@@ -49,6 +49,9 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      - name: Unit tests
+        run: uv run pytest tests/ -q
+
       # Runs the full quick_test workflow — generate training data with
       # ssm-simulators, then train a network with LANfactory (MLflow-tracked).
       # This guards the pipeline, its configs, and its integration with the two
