@@ -259,7 +259,7 @@ export MLFLOW_ARTIFACT_LOCATION="./mlflow_artifacts"
 
 # 2. Generate data
 uv run generate \
-    --config-path user_configs_examples/config_data_generation.yaml \
+    --config-path configs/examples/data_generation.yaml \
     --output ./data/output \
     --n-files 5 \
     --mlflow-experiment-name "ddm-data-generation" \
@@ -269,7 +269,7 @@ uv run generate \
 
 # 3. Train network with lineage tracking
 uv run jaxtrain \
-    --config-path user_configs_examples/config_network_training_lan.yaml \
+    --config-path configs/examples/network_training_lan.yaml \
     --networks-path-base ./networks \
     --training-data-folder ./data/output/training_data/lan/.../ddm \
     --data-generation-experiment-id "123456789"
@@ -286,7 +286,7 @@ export MLFLOW_ARTIFACT_LOCATION="/shared/storage/mlflow/artifacts"
 
 # 1. Generate data (10 distributed workers)
 uv run sbatch_scripts/gen_sbatch.py generate \
-    --config-path user_configs_examples/config_data_generation.yaml \
+    --config-path configs/examples/data_generation.yaml \
     --output-path /shared/data/output \
     --n-jobs-in-array 10 \
     --partition gpu \
@@ -300,7 +300,7 @@ uv run sbatch_scripts/gen_sbatch.py generate \
 
 # 2. Train network (after data generation completes)
 uv run sbatch_scripts/gen_sbatch.py jaxtrain \
-    --config-path user_configs_examples/config_network_training_lan.yaml \
+    --config-path configs/examples/network_training_lan.yaml \
     --output-path /shared/networks/output \
     --training-data-folder /shared/data/output/training_data/lan/.../ddm \
     --data-generation-experiment-id 123456789 \

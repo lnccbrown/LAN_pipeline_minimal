@@ -1,0 +1,69 @@
+name: Run tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  pipeline_end_to_end:
+    name: End-to-end pipeline (quick_test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # This job builds and runs PR-authored code, and no step below
+          # invokes git, so don't leave the checkout token in .git/config.
+          persist-credentials: false
+
+      # ssm-simulators is pulled from its git main branch and compiles Cython
+      # extensions that link against GSL (OpenMP ships with gcc).
+      - name: Install GSL (for the ssm-simulators build)
+        run: sudo apt-get update && sudo apt-get install -y libgsl-dev
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      # Builds ssm-simulators + lanfactory from the git commits pinned in
+      # uv.lock (sourced from their main branches, see pyproject
+      # [tool.uv.sources]). --frozen keeps CI reproducible and fails the run if
+      # uv.lock has drifted from pyproject.toml rather than silently re-locking.
+      # Note this pins the upstreams: picking up new upstream commits needs a
+      # deliberate `uv lock --upgrade`, not a CI re-run.
+      - name: Install pipeline
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      # Runs the full quick_test workflow — generate training data with
+      # ssm-simulators, then train a network with LANfactory (MLflow-tracked).
+      # This guards the pipeline, its configs, and its integration with the two
+      # upstream packages against drift.
+      - name: End-to-end local pipeline test
+        run: bash local_test_run.sh
+
+      # Also exercise the SLURM-script generator (the production entry point) in
+      # no-submit mode, so config parsing + script templating stay covered too.
+      - name: Generate SBATCH scripts (--script-only, no submit)
+        run: |
+          uv run python sbatch_scripts/gen_sbatch.py generate \
+            --config-path configs/quick_test/data_generation.yaml \
+            --output-path /tmp/gen_out --n-jobs-in-array 2 --script-only
+          uv run python sbatch_scripts/gen_sbatch.py jaxtrain \
+            --config-path configs/quick_test/network_training.yaml \
+            --output-path /tmp/net_out --training-data-folder /tmp/data \
+            --network-id 0 --script-only
