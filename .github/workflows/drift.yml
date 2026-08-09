@@ -25,6 +25,14 @@ on:
 permissions:
   contents: read
 
+# Whole-run, not just the report job: serializing only the reports still lets a
+# newer failing run file the issue before an older green run reaches its report,
+# which would then close it. cancel-in-progress: false so nothing is lost —
+# a queued run waits rather than dying.
+concurrency:
+  group: drift-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   as-committed:
     permissions:
@@ -57,9 +65,11 @@ jobs:
       - name: Re-lock against current upstreams
         run: uv lock --upgrade
 
+      # --frozen: fail loudly if anything would re-lock, so the artifact
+      # uploaded below is byte-identical to the lock that was just tested.
       - name: Install and test on the upgraded lock
         run: |
-          uv sync
+          uv sync --frozen
           uv run pytest tests/ -q
           bash local_test_run.sh
 
@@ -80,9 +90,6 @@ jobs:
     permissions:
       contents: read
       issues: write
-    concurrency:
-      group: drift-issue-${{ github.repository }}
-      cancel-in-progress: false
     steps:
       - name: Create, update, or close the deduped drift issue
         env:
