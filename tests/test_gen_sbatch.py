@@ -52,8 +52,6 @@ class TestQuoting:
         assert "--config-path '/tmp/my configs/config.yaml'" in cmd
 
     def test_shell_metacharacters_are_neutralized(self):
-        import shlex
-
         cmd = create_command("generate", **{"output": "/tmp/$(rm -rf x); echo"})
         # single-quoted → the shell sees one literal argument, nothing executes
         assert "'/tmp/$(rm -rf x); echo'" in cmd
@@ -451,7 +449,10 @@ class TestGeneratedScriptRuntime:
         repo_root = Path(gen_sbatch.__file__).resolve().parents[1]
         assert f"cd {repo_root} || exit 1" in script
 
-    def test_slurm_log_paths_survive_spaces(self, model_config, tmp_path):
+    def test_output_path_with_spaces_is_rejected_upfront(self, model_config, tmp_path):
+        # SLURM reads #SBATCH --output= literally to end of line and does not
+        # dequote, so whitespace cannot be expressed at all. Fail at
+        # generation time with the reason, not at submission with a parse error.
         out = tmp_path / "out dir with spaces"
         result = runner.invoke(
             app,
@@ -464,15 +465,20 @@ class TestGeneratedScriptRuntime:
                 "--script-only",
             ],
         )
-        assert result.exit_code == 0, result.output
-        script = next((out / "runs").glob("*.sh")).read_text()
-        for line in script.splitlines():
-            if line.startswith("#SBATCH --output=") or line.startswith(
-                "#SBATCH --error="
-            ):
-                value = line.split("=", 1)[1]
-                # one shell word, not split at the space
-                assert len(shlex.split(value)) == 1, line
+        assert result.exit_code != 0
+        assert "whitespace" in result.output
+
+    def test_slurm_log_directives_are_unquoted(self, model_config, tmp_path):
+        script = self.script_for(model_config, tmp_path)
+        directives = [
+            line
+            for line in script.splitlines()
+            if line.startswith(("#SBATCH --output=", "#SBATCH --error="))
+        ]
+        assert len(directives) == 2
+        for line in directives:
+            value = line.split("=", 1)[1]
+            assert not value.startswith(("'", '"')), line
 
     def test_tracking_uri_embedded_absolute(self, model_config, tmp_path, monkeypatch):
         # A relative sqlite URI resolves against each worker's own CWD, so
@@ -553,13 +559,103 @@ class TestResourceValidation:
         assert "43200" in str(excinfo.value)
         assert "12:00:00" in str(excinfo.value)  # the quoted form to use
 
+    def test_bare_integer_time_is_rejected_with_both_readings(self, tmp_path):
+        # `time: 30` is ambiguous after parsing: the user may have written 30
+        # (minutes) or 0:30, which YAML also loads as 30. The message must
+        # offer both quoted forms rather than guess.
+        config = tmp_path / "cluster.yaml"
+        config.write_text("job_defaults:\n  generate:\n    time: 30\n")
+        with pytest.raises(typer.BadParameter) as excinfo:
+            resolve_resources("generate", config, {})
+        message = str(excinfo.value)
+        assert 'time: "30"' in message
+        assert 'time: "00:00:30"' in message
+
     @pytest.mark.parametrize(
         "value", ["30", "4:00", "12:00:00", "1-00", "2-06:30", "1-00:00:00"]
     )
     def test_valid_slurm_time_forms_accepted(self, value, tmp_path):
+        # Quoted strings, including a bare minute count, pass through.
         config = tmp_path / "cluster.yaml"
         config.write_text(f'job_defaults:\n  generate:\n    time: "{value}"\n')
         assert resolve_resources("generate", config, {})["time"] == value
+
+    def test_missing_cluster_config_is_a_clean_cli_error(self, model_config, tmp_path):
+        # A mistyped path must not traceback: the driver would get no JSON.
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(tmp_path / "out"),
+                "--cluster-config",
+                str(tmp_path / "nope.yaml"),
+                "--script-only",
+            ],
+        )
+        assert result.exit_code != 0
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "does not exist" in result.output
+
+
+class TestModelNameSanitization:
+    @pytest.mark.parametrize(
+        ("model", "expected_fragment"),
+        [
+            ("../../etc/ddm", "_.._etc_ddm"),  # leading dots also stripped
+            ("ddm/../../x", "ddm_.._.._x"),
+            ("my ddm", "my_ddm"),
+            ("ddm;rm -rf /", "ddm_rm_-rf__"),
+        ],
+    )
+    def test_hostile_model_names_stay_inside_runs_dir(
+        self, tmp_path, model, expected_fragment
+    ):
+        # MODEL comes from a user-supplied YAML and lands in the script
+        # filename, the SLURM job name and the log filenames.
+        config = tmp_path / "config.yaml"
+        config.write_text(f'MODEL: "{model}"\n')
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(config),
+                "--output-path",
+                str(out),
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        script_path = Path(last_json_line(result.output)["sbatch_script"])
+        assert script_path.parent == (out / "runs").resolve(), script_path
+        assert expected_fragment in script_path.name
+        assert script_path.exists()
+
+    def test_job_name_directive_is_a_single_token(self, tmp_path):
+        config = tmp_path / "config.yaml"
+        config.write_text('MODEL: "my ddm"\n')
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(config),
+                "--output-path",
+                str(out),
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        script = next((out / "runs").glob("*.sh")).read_text()
+        job_line = next(
+            line for line in script.splitlines() if line.startswith("#SBATCH -J ")
+        )
+        assert len(job_line.split()) == 3, job_line
 
 
 class TestLogLevel:

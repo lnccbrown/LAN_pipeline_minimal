@@ -122,6 +122,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _SLURM_TIME_RE = re.compile(r"^(\d+|\d+:\d{2}|\d+:\d{2}:\d{2}|\d+-\d+(:\d{2}){0,2})$")
 
 
+def safe_name(value) -> str:
+    """Reduce a config-supplied name to something safe in a path or job name.
+
+    The model name comes from a user-supplied pipeline YAML and ends up in the
+    generated script's filename, the SLURM job name, and the log filenames.
+    Path separators and ``..`` would let it escape the ``runs/`` directory, and
+    SLURM job names should not contain whitespace or shell metacharacters.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", str(value)).lstrip(".")
+    return cleaned or "unnamed"
+
+
 def absolutize_tracking_uri(uri: str) -> str:
     """Make a relative sqlite MLflow URI absolute.
 
@@ -230,23 +242,51 @@ def resolve_resources(
 def validate_resources(resolved: dict, source) -> None:
     """Reject resource values SLURM would silently misread.
 
-    Chiefly YAML 1.1 sexagesimal: an unquoted ``time: 12:00:00`` loads as the
-    integer 43200, which SLURM reads as 43200 *minutes* — a 60x wall-time
-    request. Fail loudly at generation time instead.
+    Wall times must be **quoted strings** in YAML. Any bare number is
+    ambiguous once PyYAML has parsed it, because YAML 1.1 reads colon-separated
+    digits as sexagesimal: ``12:00:00`` and ``0:30`` load as the integers 43200
+    and 30, indistinguishable from someone writing 43200 or 30 minutes
+    directly. SLURM reads a bare integer as minutes, so an unquoted
+    ``time: 12:00:00`` silently becomes a 30-day request (43200 minutes) and
+    ``time: 4:00``, meant as 4 minutes, becomes 4 hours.
+
+    Rather than guess which reading was intended, require the quoted form.
     """
     time_value = resolved.get("time")
-    if isinstance(time_value, int) or not _SLURM_TIME_RE.match(str(time_value)):
-        hint = ""
-        if isinstance(time_value, int):
-            hours, remainder = divmod(time_value, 3600)
-            minutes, seconds = divmod(remainder, 60)
-            hint = (
-                f" YAML parsed it as the integer {time_value}; quote it "
-                f'("{hours:02d}:{minutes:02d}:{seconds:02d}") in {source}.'
-            )
+    if isinstance(time_value, int):
+        hours, remainder = divmod(time_value, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        raise typer.BadParameter(
+            f"Wall time in {source} must be a quoted string; YAML parsed it as "
+            f"the integer {time_value}. If you meant {time_value} minutes write "
+            f'time: "{time_value}"; if you meant '
+            f"{hours:02d}:{minutes:02d}:{seconds:02d} write "
+            f'time: "{hours:02d}:{minutes:02d}:{seconds:02d}". '
+            "(YAML 1.1 reads 12:00:00 as the integer 43200, which SLURM would "
+            "take as 43200 minutes.)"
+        )
+    if not _SLURM_TIME_RE.match(str(time_value)):
         raise typer.BadParameter(
             f"Invalid SLURM wall time {time_value!r}. Expected forms: "
-            f"MM, HH:MM, HH:MM:SS, D-HH, D-HH:MM, D-HH:MM:SS.{hint}"
+            "MM, MM:SS, HH:MM:SS, D-HH, D-HH:MM, D-HH:MM:SS."
+        )
+
+
+def validate_log_path(path) -> None:
+    """Reject SLURM log paths SLURM cannot express.
+
+    The path is interpolated into ``#SBATCH --output=`` / ``--error=``, whose
+    value SLURM takes literally to the end of the line without dequoting — so
+    there is no quoting that makes whitespace work. Fail at generation time
+    with the reason rather than at submission with a parse error.
+    """
+    text = str(path)
+    if any(character.isspace() for character in text):
+        raise typer.BadParameter(
+            f"Output path {text!r} contains whitespace. SLURM writes job logs "
+            "via #SBATCH --output=/--error=, which it reads literally (no "
+            "quoting or escaping is honored), so a path with spaces cannot be "
+            "expressed. Use a path without whitespace."
         )
 
 
@@ -277,10 +317,12 @@ def create_sbatch_script(
         mem=mem,
         job_name=job_name,
         time=time,
-        # SLURM splits #SBATCH directive lines on whitespace; quoting keeps a
-        # path with spaces in one piece (a no-op for ordinary paths).
-        output=shlex.quote(str(output)),
-        error=shlex.quote(str(error)),
+        # Deliberately NOT quoted: SLURM reads a #SBATCH directive's value
+        # literally and does not dequote it, so quotes would end up in the
+        # filename. Paths containing whitespace are rejected upfront instead
+        # (validate_log_path).
+        output=str(output),
+        error=str(error),
         command=command,
         n_jobs_in_array=n_jobs_in_array,
         env_vars=env_vars,
@@ -600,12 +642,13 @@ def handle_job(
     command = create_command(command_name, **params)
     logger.info(f"Generated command: {command}")
     basic_config = get_basic_config_from_yaml(params["config-path"])
-    job_name = f"{basic_config['MODEL']}_{command_name}_sbatch"
+    job_name = f"{safe_name(basic_config['MODEL'])}_{command_name}_sbatch"
 
     # Scripts and SLURM logs live under <output_path>/runs/, timestamped —
     # repeated invocations never overwrite each other (previously the script
     # landed in CWD under a fixed name).
     runs_dir = target / "runs"
+    validate_log_path(runs_dir)
     runs_dir.mkdir(exist_ok=True, parents=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     script = runs_dir / f"{timestamp}_{job_name}.sh"
@@ -680,6 +723,9 @@ def generate(
     ),
     cluster_config: Path = typer.Option(
         None,
+        exists=True,
+        dir_okay=False,
+        readable=True,
         help="Cluster inventory YAML (e.g. configs/cluster/oscar.yaml); its "
         "job_defaults section supplies account/partition/resources for this "
         "job kind. Explicit flags below override it.",
@@ -752,6 +798,9 @@ def train_command(command_name: str):
         ),
         cluster_config: Path = typer.Option(
             None,
+            exists=True,
+            dir_okay=False,
+            readable=True,
             help="Cluster inventory YAML (e.g. configs/cluster/oscar.yaml); its "
             "job_defaults section supplies account/partition/resources for "
             "this job kind. Explicit flags below override it.",
