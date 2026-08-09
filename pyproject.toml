@@ -3,10 +3,16 @@ name = "lan-pipeline-minimal"
 version = "0.1.0"
 description = "Environment to create and submit sbatch scripts to generate data with ssm-simulators or train LANs with LANfactory on Oscar"
 readme = "README.md"
-requires-python = ">3.10, <3.13"
+# Floor 3.12: lanfactory 0.8+ and ssm-simulators 0.13+ both require >=3.12,
+# so 3.11 was already unsatisfiable in practice.
+requires-python = ">=3.12, <3.13"
 dependencies = [
-    "lanfactory>=0.5.1",
-    "ssm-simulators>=0.11.3",
+    # Floors match the features this pipeline drives: lanfactory 0.8+ ships the
+    # hf/ upload module and (post-0.8.0 main) MLflow run identity + jax->ONNX
+    # export; ssm-simulators 0.13.2+ ships datagen run identity. Both resolve
+    # from git main below, so the lockfile pins exact commits.
+    "lanfactory>=0.8",
+    "ssm-simulators>=0.13.2",
     "mlflow>=3.6.0",
 ]
 
