@@ -289,24 +289,37 @@ uv run sbatch_scripts/gen_sbatch.py generate \
     --config-path configs/examples/data_generation.yaml \
     --output-path /shared/data/output \
     --n-jobs-in-array 10 \
-    --partition gpu \
-    --num-gpus 1
+    --cluster-config configs/cluster/oscar.yaml
 
-# Output shows:
-# ============================================================
-# DATA GENERATION EXPERIMENT ID: 123456789
-# Use this ID with training commands via --data-generation-experiment-id
-# ============================================================
+# Every invocation prints exactly one JSON line on stdout (logging goes to
+# stderr, so this holds at any --log-level). It is the machine-readable
+# handle on the submission:
+# {"command": "generate --config-path ...", "job_id": 9876543,
+#  "mlflow_experiment_id": "123456789", "mlflow_run_id": null,
+#  "sbatch_script": "/shared/data/output/runs/20260809T101500_ddm_generate_sbatch.sh",
+#  "output_path": "/shared/data/output", "account": "carney-frankmj-condo",
+#  "partition": "batch"}
+#
+# Capture the experiment id for the training step:
+EXPERIMENT_ID=$(uv run sbatch_scripts/gen_sbatch.py generate ... | jq -r .mlflow_experiment_id)
+# and the SLURM job id, e.g. to chain with --dependency=afterok:$JOB_ID.
 
 # 2. Train network (after data generation completes)
 uv run sbatch_scripts/gen_sbatch.py jaxtrain \
     --config-path configs/examples/network_training_lan.yaml \
     --output-path /shared/networks/output \
     --training-data-folder /shared/data/output/training_data/lan/.../ddm \
-    --data-generation-experiment-id 123456789 \
-    --partition gpu \
-    --num-gpus 1
+    --data-generation-experiment-id "$EXPERIMENT_ID" \
+    --cluster-config configs/cluster/oscar.yaml
 ```
+
+Note the absolute `sqlite:////...` tracking URI above. A relative URI
+(`sqlite:///mlflow.db`) resolves against each process's working directory, so
+the submitting process and the compute-node workers would end up writing to
+different databases. `gen_sbatch` absolutizes a relative sqlite URI before
+embedding it in the generated script, but setting an absolute one explicitly
+is clearer — and on a shared filesystem it is what makes the runs land in one
+coherent store.
 
 ### Example 3: Viewing Results
 

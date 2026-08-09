@@ -1,0 +1,64 @@
+# Oscar (Brown CCV) cluster resource inventory.
+#
+# PURPOSE
+#   The record of *what we can schedule where*: which condos we hold, their
+#   partitions and limits, and which job kinds they suit. sbatch_scripts/
+#   gen_sbatch.py reads the job_defaults section via --cluster-config, so
+#   submissions are made with full awareness of what's around instead of
+#   hardcoded guesses. Explicit CLI flags always override these defaults.
+#
+# PROVENANCE
+#   Structure is authoritative; VALUES BELOW ARE UNVERIFIED PRIOR ART and must
+#   be refreshed from the cluster itself via HSSMSpine
+#   scripts/cluster/oscar_inventory.sh (sacctmgr show associations, sinfo,
+#   scontrol show partition). Entries carry `verified: false` until that
+#   snapshot lands. Do not add condos or limits from memory.
+#
+# SCHEMA
+#   condos:            per-condo record (account name -> details)
+#     partitions:      partition names usable under this account
+#     nodes:           {cores, mem, gpus: {type, count}} per node class
+#     limits:          {max_walltime, max_cores, max_concurrent_jobs}
+#     suited_for:      job kinds that belong here (generate | jaxtrain | torchtrain)
+#     verified:        false until seeded from an oscar_inventory.sh snapshot
+#   job_defaults:      job kind -> sbatch defaults (account, partition,
+#                      cores, mem, num_gpus, time)
+#   modules:           modules loaded at the top of every generated script
+
+condos:
+  carney-frankmj-condo:
+    partitions: [batch, gpu]
+    nodes: {}          # seed from oscar_inventory.sh
+    limits: {}         # seed from oscar_inventory.sh
+    suited_for: [generate]   # CPU-heavy array simulation
+    verified: false
+
+job_defaults:
+  # Datagen: CPU-bound array jobs, many small workers.
+  generate:
+    account: carney-frankmj-condo
+    partition: batch
+    cores: 1
+    mem: 16G
+    num_gpus: 0
+    time: "04:00:00"
+  # Training: single jobs; GPU placement to be confirmed by the inventory
+  # snapshot (which GPU partition/condo we can actually use).
+  jaxtrain:
+    account: carney-frankmj-condo
+    partition: batch
+    cores: 2
+    mem: 32G
+    num_gpus: 0
+    time: "12:00:00"
+  torchtrain:
+    account: carney-frankmj-condo
+    partition: batch
+    cores: 2
+    mem: 32G
+    num_gpus: 0
+    time: "12:00:00"
+
+modules:
+  - python
+  - gcc

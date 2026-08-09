@@ -22,8 +22,12 @@ ssm-simulators = { git = "https://github.com/lnccbrown/ssm-simulators", branch =
 
 [dependency-groups]
 dev = [
+    "pytest>=8.3.1",
     # <0.16: ruff 0.16 flags pre-existing code repo-wide (B008 on the standard
     # typer.Option idiom, ...). Same pin as ssm-simulators and LANfactory;
     # migrate the ecosystem to 0.16 deliberately, in one dedicated pass.
     "ruff>=0.15.1,<0.16",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

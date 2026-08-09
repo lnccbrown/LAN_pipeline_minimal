@@ -1,0 +1,610 @@
+"""Tests for gen_sbatch: quoting, job-id capture, the JSON contract,
+--script-only purity, and cluster-config resource resolution.
+
+The JSON line on stdout is the laptop driver's API — its shape is the
+load-bearing contract here.
+"""
+
+import json
+import logging
+import shlex
+from pathlib import Path
+
+import pytest
+import typer
+from typer.testing import CliRunner
+
+import gen_sbatch
+from gen_sbatch import (
+    absolutize_tracking_uri,
+    app,
+    create_command,
+    quote_param_value,
+    resolve_resources,
+    submit_sbatch,
+)
+
+runner = CliRunner()
+
+JSON_KEYS = {
+    "command",
+    "job_id",
+    "mlflow_experiment_id",
+    "mlflow_run_id",
+    "sbatch_script",
+    "output_path",
+    "account",
+    "partition",
+}
+
+
+def last_json_line(output: str) -> dict:
+    lines = [ln for ln in output.strip().splitlines() if ln.startswith("{")]
+    assert lines, f"no JSON line on stdout: {output!r}"
+    return json.loads(lines[-1])
+
+
+class TestQuoting:
+    def test_paths_with_spaces_are_quoted(self):
+        cmd = create_command(
+            "generate", **{"config-path": "/tmp/my configs/config.yaml"}
+        )
+        assert "--config-path '/tmp/my configs/config.yaml'" in cmd
+
+    def test_shell_metacharacters_are_neutralized(self):
+        import shlex
+
+        cmd = create_command("generate", **{"output": "/tmp/$(rm -rf x); echo"})
+        # single-quoted → the shell sees one literal argument, nothing executes
+        assert "'/tmp/$(rm -rf x); echo'" in cmd
+        assert shlex.split(cmd) == [
+            "generate",
+            "--output",
+            "/tmp/$(rm -rf x); echo",
+        ]
+
+    def test_mlflow_run_name_keeps_slurm_var_expandable(self):
+        # SLURM substitutes $SLURM_ARRAY_TASK_ID inside the job; single-quoting
+        # would freeze the literal string and every worker would share a name.
+        cmd = create_command(
+            "generate", **{"mlflow-run-name": "ddm-worker-$SLURM_ARRAY_TASK_ID"}
+        )
+        assert '--mlflow-run-name ddm-worker-"$SLURM_ARRAY_TASK_ID"' in cmd
+
+    def test_expandable_value_quotes_literal_part(self):
+        # The SLURM var is isolated in its own double-quoted segment; the
+        # literal part goes through shlex.quote, which adds nothing when the
+        # text is already shell-safe (as an ordinary model name is).
+        assert (
+            quote_param_value("mlflow-run-name", "ddm-worker-$SLURM_ARRAY_TASK_ID")
+            == 'ddm-worker-"$SLURM_ARRAY_TASK_ID"'
+        )
+        # ...and quotes it when it is not
+        assert (
+            quote_param_value("mlflow-run-name", "ddm x-worker-$SLURM_ARRAY_TASK_ID")
+            == "'ddm x-worker-'\"$SLURM_ARRAY_TASK_ID\""
+        )
+
+    @pytest.mark.parametrize(
+        "hostile",
+        [
+            "ddm`id`",
+            "ddm$(id)",
+            "ddm; id",
+            'ddm"; id; "',
+            "ddm$HOME",
+            "ddm\\`id\\`",
+        ],
+    )
+    def test_command_substitution_in_expandable_value_is_inert(self, hostile):
+        """The model name comes from a user-supplied YAML and reaches the run
+        name; nothing in it may execute on the compute node."""
+        import subprocess
+
+        rendered = quote_param_value(
+            "mlflow-run-name", f"{hostile}-worker-$SLURM_ARRAY_TASK_ID"
+        )
+        # Ask a real bash what argument the job would actually receive.
+        out = subprocess.run(
+            ["bash", "-c", f"printf '%s' {rendered}"],
+            capture_output=True,
+            text=True,
+            env={"SLURM_ARRAY_TASK_ID": "7", "PATH": "/usr/bin:/bin"},
+        )
+        assert out.returncode == 0, out.stderr
+        assert out.stdout == f"{hostile}-worker-7", out.stdout
+
+    def test_dollar_in_non_expandable_param_stays_literal(self):
+        import subprocess
+
+        rendered = quote_param_value("output", "/data/$USER/out")
+        out = subprocess.run(
+            ["bash", "-c", f"printf '%s' {rendered}"],
+            capture_output=True,
+            text=True,
+            env={"USER": "someone", "PATH": "/usr/bin:/bin"},
+        )
+        assert out.stdout == "/data/$USER/out"
+
+
+class TestSubmitSbatch:
+    def test_parses_job_id(self, fake_sbatch_ok, tmp_path):
+        job_id = submit_sbatch(tmp_path / "job.sh", logging.getLogger("t"))
+        assert job_id == 12345
+
+    def test_failure_returns_none(self, fake_sbatch_fail, tmp_path):
+        assert submit_sbatch(tmp_path / "job.sh", logging.getLogger("t")) is None
+
+    def test_missing_binary_returns_none(self, monkeypatch, tmp_path):
+        def raise_oserror(cmd, **kwargs):
+            raise FileNotFoundError("sbatch")
+
+        monkeypatch.setattr(gen_sbatch.subprocess, "run", raise_oserror)
+        assert submit_sbatch(tmp_path / "job.sh", logging.getLogger("t")) is None
+
+    def test_unparseable_stdout_returns_none(self, monkeypatch, tmp_path):
+        def fake_run(cmd, **kwargs):
+            class Result:
+                returncode = 0
+                stdout = "something unexpected\n"
+                stderr = ""
+
+            return Result()
+
+        monkeypatch.setattr(gen_sbatch.subprocess, "run", fake_run)
+        assert submit_sbatch(tmp_path / "job.sh", logging.getLogger("t")) is None
+
+
+class TestJsonContract:
+    def test_submit_emits_json_with_job_id(
+        self, model_config, tmp_path, fake_sbatch_ok, isolated_mlflow
+    ):
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            ["generate", "--config-path", str(model_config), "--output-path", str(out)],
+        )
+        assert result.exit_code == 0, result.output
+        record = last_json_line(result.output)
+        assert set(record) == JSON_KEYS
+        assert record["job_id"] == 12345
+        assert record["output_path"] == str(out.resolve())
+        assert record["sbatch_script"].endswith(".sh")
+        # generate creates a per-model experiment; its id is the chaining key
+        assert record["mlflow_experiment_id"] is not None
+
+    def test_json_emitted_even_at_default_log_level(
+        self, model_config, tmp_path, fake_sbatch_ok, isolated_mlflow
+    ):
+        # No --log-level: WARNING suppresses all info logging, the JSON line
+        # must still be there (this was the suppressed-experiment-id bug).
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(tmp_path / "out"),
+            ],
+        )
+        assert result.exit_code == 0
+        assert last_json_line(result.output)["mlflow_experiment_id"] is not None
+
+    def test_submit_failure_exits_nonzero_with_json(
+        self, model_config, tmp_path, fake_sbatch_fail, isolated_mlflow
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(tmp_path / "out"),
+            ],
+        )
+        assert result.exit_code == 1
+        assert last_json_line(result.output)["job_id"] is None
+
+
+class TestScriptOnly:
+    def invoke_script_only(self, model_config, out, extra=()):
+        return runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--script-only",
+                *extra,
+            ],
+        )
+
+    def test_writes_script_under_output_runs(self, model_config, tmp_path):
+        out = tmp_path / "out"
+        result = self.invoke_script_only(model_config, out)
+        assert result.exit_code == 0, result.output
+        record = last_json_line(result.output)
+        scripts = list((out / "runs").glob("*.sh"))
+        assert len(scripts) == 1
+        assert record["sbatch_script"] == str(scripts[0])
+        assert record["job_id"] is None
+
+    def test_repeated_invocations_do_not_overwrite(self, model_config, tmp_path):
+        out = tmp_path / "out"
+        assert self.invoke_script_only(model_config, out).exit_code == 0
+        assert self.invoke_script_only(model_config, out).exit_code == 0
+        assert len(list((out / "runs").glob("*.sh"))) == 2
+
+    def test_no_mlflow_side_effects(self, model_config, tmp_path, isolated_mlflow):
+        # Previously each --script-only train call left an empty orphan run.
+        result = self.invoke_script_only(model_config, tmp_path / "out")
+        assert result.exit_code == 0
+        assert not isolated_mlflow.exists(), "script-only must not touch MLflow"
+
+    def test_train_script_only_no_orphan_run(
+        self, model_config, tmp_path, isolated_mlflow
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "jaxtrain",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(tmp_path / "out"),
+                "--training-data-folder",
+                str(tmp_path),
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert not isolated_mlflow.exists()
+        assert last_json_line(result.output)["mlflow_run_id"] is None
+
+
+class TestResourceResolution:
+    def test_builtin_fallbacks_without_config(self):
+        resources = resolve_resources(
+            "generate",
+            None,
+            dict.fromkeys(("account", "partition", "num_gpus", "cores", "mem", "time")),
+        )
+        assert resources["account"] == "default"
+        assert resources["partition"] == "batch"
+        assert resources["modules"] == ["python", "gcc"]
+
+    def test_cluster_config_supplies_job_kind_defaults(
+        self, model_config, cluster_config, tmp_path
+    ):
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--cluster-config",
+                str(cluster_config),
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        record = last_json_line(result.output)
+        assert record["account"] == "test-condo"
+        assert record["partition"] == "batch"
+        script = (out / "runs").glob("*.sh").__next__().read_text()
+        assert "#SBATCH --account=test-condo" in script
+        assert "#SBATCH -c 4" in script
+        assert "#SBATCH --mem=8G" in script
+        assert "#SBATCH --time=02:00:00" in script
+        assert "module load cuda" in script
+
+    def test_job_kind_selects_its_own_defaults(
+        self, model_config, cluster_config, tmp_path
+    ):
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "jaxtrain",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--training-data-folder",
+                str(tmp_path),
+                "--cluster-config",
+                str(cluster_config),
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        script = (out / "runs").glob("*.sh").__next__().read_text()
+        assert "#SBATCH -p gpu --gres=gpu:1" in script
+        assert record_partition(result) == "gpu"
+
+    def test_explicit_flag_overrides_cluster_config(
+        self, model_config, cluster_config, tmp_path
+    ):
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--cluster-config",
+                str(cluster_config),
+                "--account",
+                "my-other-condo",
+                "--cores",
+                "16",
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert last_json_line(result.output)["account"] == "my-other-condo"
+        script = (out / "runs").glob("*.sh").__next__().read_text()
+        assert "#SBATCH --account=my-other-condo" in script
+        assert "#SBATCH -c 16" in script
+        # non-overridden keys still come from the config
+        assert "#SBATCH --mem=8G" in script
+
+    def test_repo_oscar_yaml_parses_and_resolves(self):
+        from pathlib import Path
+
+        repo_yaml = (
+            Path(__file__).resolve().parent.parent
+            / "configs"
+            / "cluster"
+            / "oscar.yaml"
+        )
+        for kind in ("generate", "jaxtrain", "torchtrain"):
+            resources = resolve_resources(kind, repo_yaml, {})
+            assert resources["account"] == "carney-frankmj-condo"
+            assert set(resources) >= {
+                "account",
+                "partition",
+                "num_gpus",
+                "cores",
+                "mem",
+                "time",
+                "modules",
+            }
+
+
+class TestNFilesPassthrough:
+    def test_n_files_reaches_the_generate_command(self, model_config, tmp_path):
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--n-files",
+                "7",
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        script = (out / "runs").glob("*.sh").__next__().read_text()
+        assert "--n-files 7" in script
+
+    def test_omitted_n_files_is_absent(self, model_config, tmp_path):
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0
+        script = (out / "runs").glob("*.sh").__next__().read_text()
+        assert "--n-files" not in script
+
+
+def record_partition(result) -> str:
+    return last_json_line(result.output)["partition"]
+
+
+class TestGeneratedScriptRuntime:
+    """Properties the script must have when SLURM runs it on a compute node."""
+
+    def script_for(self, model_config, tmp_path, extra=()):
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--script-only",
+                *extra,
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        return next((out / "runs").glob("*.sh")).read_text()
+
+    def test_pins_the_uv_project_directory(self, model_config, tmp_path):
+        # SLURM starts the job in the sbatch submission directory ($HOME for a
+        # driver submitting over ssh); `uv run <cmd>` there fails with
+        # "Failed to spawn" or silently resolves a foreign pyproject.toml.
+        script = self.script_for(model_config, tmp_path)
+        repo_root = Path(gen_sbatch.__file__).resolve().parents[1]
+        assert f"cd {repo_root} || exit 1" in script
+
+    def test_slurm_log_paths_survive_spaces(self, model_config, tmp_path):
+        out = tmp_path / "out dir with spaces"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        script = next((out / "runs").glob("*.sh")).read_text()
+        for line in script.splitlines():
+            if line.startswith("#SBATCH --output=") or line.startswith(
+                "#SBATCH --error="
+            ):
+                value = line.split("=", 1)[1]
+                # one shell word, not split at the space
+                assert len(shlex.split(value)) == 1, line
+
+    def test_tracking_uri_embedded_absolute(self, model_config, tmp_path, monkeypatch):
+        # A relative sqlite URI resolves against each worker's own CWD, so
+        # workers would write to a different database than the one whose
+        # experiment id the JSON contract reports.
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
+        monkeypatch.chdir(tmp_path)
+        assert absolutize_tracking_uri("sqlite:///mlflow.db") == (
+            f"sqlite:///{(tmp_path / 'mlflow.db').resolve()}"
+        )
+
+    def test_absolutize_leaves_server_and_absolute_uris_alone(self):
+        assert (
+            absolutize_tracking_uri("http://localhost:5000") == "http://localhost:5000"
+        )
+        assert (
+            absolutize_tracking_uri("sqlite:////abs/path/mlflow.db")
+            == "sqlite:////abs/path/mlflow.db"
+        )
+
+
+class TestModulesResolution:
+    def write_config(self, tmp_path, payload):
+        import yaml as _yaml
+
+        path = tmp_path / "cluster.yaml"
+        path.write_text(_yaml.safe_dump(payload))
+        return path
+
+    def test_per_job_kind_modules_beat_top_level(self, tmp_path):
+        config = self.write_config(
+            tmp_path,
+            {
+                "job_defaults": {"jaxtrain": {"modules": ["python", "gcc", "cuda"]}},
+                "modules": ["python", "gcc"],
+            },
+        )
+        resources = resolve_resources("jaxtrain", config, {})
+        assert resources["modules"] == ["python", "gcc", "cuda"]
+
+    def test_empty_list_disables_module_loading(self, tmp_path):
+        config = self.write_config(tmp_path, {"modules": []})
+        assert resolve_resources("generate", config, {})["modules"] == []
+
+    def test_empty_modules_emits_no_module_load_lines(self, model_config, tmp_path):
+        config = self.write_config(tmp_path, {"modules": []})
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--cluster-config",
+                str(config),
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        script = next((out / "runs").glob("*.sh")).read_text()
+        assert "module load" not in script
+
+    def test_absent_modules_key_uses_defaults(self, tmp_path):
+        config = self.write_config(tmp_path, {"job_defaults": {}})
+        assert resolve_resources("generate", config, {})["modules"] == ["python", "gcc"]
+
+
+class TestResourceValidation:
+    def test_sexagesimal_time_is_rejected_with_a_hint(self, tmp_path):
+        # PyYAML (YAML 1.1) loads unquoted 12:00:00 as the integer 43200,
+        # which SLURM would read as 43200 MINUTES.
+        config = tmp_path / "cluster.yaml"
+        config.write_text("job_defaults:\n  generate:\n    time: 12:00:00\n")
+        with pytest.raises(typer.BadParameter) as excinfo:
+            resolve_resources("generate", config, {})
+        assert "43200" in str(excinfo.value)
+        assert "12:00:00" in str(excinfo.value)  # the quoted form to use
+
+    @pytest.mark.parametrize(
+        "value", ["30", "4:00", "12:00:00", "1-00", "2-06:30", "1-00:00:00"]
+    )
+    def test_valid_slurm_time_forms_accepted(self, value, tmp_path):
+        config = tmp_path / "cluster.yaml"
+        config.write_text(f'job_defaults:\n  generate:\n    time: "{value}"\n')
+        assert resolve_resources("generate", config, {})["time"] == value
+
+
+class TestLogLevel:
+    def test_lowercase_log_level_works(self, model_config, tmp_path):
+        # The driver passes the same log-level string to both this tool and
+        # the worker CLI; a TypeError traceback here would leave the driver
+        # with no JSON line to parse.
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(tmp_path / "out"),
+                "--script-only",
+                "--log-level",
+                "info",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert last_json_line(result.output)["job_id"] is None
+
+    def test_invalid_log_level_is_a_clean_error(self, model_config, tmp_path):
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(tmp_path / "out"),
+                "--script-only",
+                "--log-level",
+                "VERBOSE",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "Unknown log level" in result.output
+
+
+@pytest.fixture(autouse=True)
+def _no_cwd_litter(tmp_path, monkeypatch):
+    """Every test runs from a scratch CWD; assert nothing is written there."""
+    monkeypatch.chdir(tmp_path)
+    yield
+    stray = [p for p in tmp_path.iterdir() if p.suffix in (".sh", ".out", ".err")]
+    assert not stray, f"artifacts leaked into CWD: {stray}"
