@@ -1,0 +1,149 @@
+name: Drift
+
+# This repo has the ecosystem's inverse drift problem. Everywhere else there
+# is no lockfile, so CI re-resolves on every run and upstream breakage shows
+# up on its own. Here uv.lock is committed AND pins ssm-simulators/lanfactory
+# to git commits, so `uv sync --frozen` is perfectly reproducible — and stays
+# perfectly reproducible while both upstreams move on without us. Nothing
+# fails; the pin just quietly ages.
+#
+# So the weekly run asks two different questions:
+#   as-committed  — does the frozen lock still work? (runner/OS/action drift)
+#   lock-upgrade  — would today's upstreams still work? (the real signal)
+# Only `as-committed` gates the drift issue. lock-upgrade failing means
+# "upgrading is not free yet", which is information, not breakage.
+on:
+  schedule:
+    - cron: "30 5 * * 1" # weekly, staggered after the sibling repos
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: "Exercise the drift-issue path without a real failure"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Whole-run, not just the report job: serializing only the reports still lets a
+# newer failing run file the issue before an older green run reaches its report,
+# which would then close it. cancel-in-progress: false so nothing is lost —
+# a queued run waits rather than dying.
+concurrency:
+  group: drift-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  as-committed:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/run_tests.yml
+
+  lock-upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install GSL (for the ssm-simulators build)
+        run: sudo apt-get update && sudo apt-get install -y libgsl-dev
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      # The whole point: re-resolve instead of --frozen, so the git-pinned
+      # upstreams advance to their current main.
+      - name: Re-lock against current upstreams
+        run: uv lock --upgrade
+
+      # --frozen: fail loudly if anything would re-lock, so the artifact
+      # uploaded below is byte-identical to the lock that was just tested.
+      - name: Install and test on the upgraded lock
+        run: |
+          uv sync --frozen
+          uv run pytest tests/ -q
+          bash local_test_run.sh
+
+      # The healer downloads this instead of re-deriving the upgrade, so the
+      # PR it opens is exactly the lock that just passed.
+      - name: Upload the upgraded lockfile
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uv-lock-upgraded
+          path: uv.lock
+          retention-days: 30
+
+  report:
+    needs: [as-committed, lock-upgrade]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Create, update, or close the deduped drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_COMMITTED: ${{ needs['as-committed'].result }}
+          FORCE_FAIL: ${{ inputs.force_fail }}
+        run: |
+          set -euo pipefail
+          KEY="drift-key: LAN_pipeline_minimal-scheduled"
+          TITLE="drift: LAN_pipeline_minimal scheduled checks failing"
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+          # Only as-committed gates the issue: a failing lock-upgrade means the
+          # upgrade isn't free yet, which the budget tracks separately. And
+          # `cancelled` is never evidence of health — this job runs under
+          # `if: always()`, so treating it as green would close a real issue.
+          FAILED_JOBS=""
+          [ "$RESULT_COMMITTED" = "failure" ] && FAILED_JOBS=" as-committed"
+          if [ "$FORCE_FAIL" = "true" ]; then
+            FAILED_JOBS="$FAILED_JOBS (force_fail rehearsal)"
+          fi
+
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --label drift \
+            --state open --search "in:body \"$KEY\"" \
+            --json number --jq '.[0].number // empty')
+
+          if [ -z "$FAILED_JOBS" ]; then
+            if [ "$RESULT_COMMITTED" = "success" ]; then
+              if [ -n "$EXISTING" ]; then
+                gh issue close "$EXISTING" --repo "$GITHUB_REPOSITORY" \
+                  --comment "Scheduled drift checks green again: $RUN_URL"
+              fi
+            else
+              echo "::notice::Inconclusive run (as-committed: $RESULT_COMMITTED)" \
+                "— drift issue state left unchanged."
+            fi
+            exit 0
+          fi
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" \
+              --body "Still failing (${FAILED_JOBS# }): $RUN_URL"
+          else
+            gh label create drift --repo "$GITHUB_REPOSITORY" \
+              --description "scheduled drift detection failure" \
+              --force 2>/dev/null || true
+            BODY=$(printf '%s\n' \
+              "<!-- $KEY -->" \
+              "Scheduled drift run failed in:${FAILED_JOBS}" \
+              "Run: $RUN_URL" \
+              "" \
+              "\`as-committed\` re-runs the suite on the committed uv.lock, so a failure here is runner/OS/action drift rather than an upstream release — the lock pins ssm-simulators and lanfactory to fixed git commits." \
+              "Check the \`lock-upgrade\` job in the same run: if it passed, its \`uv-lock-upgraded\` artifact is a tested lockfile ready to PR." \
+              "Triage via the spine's audit-drift skill.")
+            gh issue create --repo "$GITHUB_REPOSITORY" --label drift \
+              --title "$TITLE" --body "$BODY"
+          fi
