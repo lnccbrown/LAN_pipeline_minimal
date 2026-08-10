@@ -91,7 +91,7 @@ uv run python sbatch_scripts/gen_sbatch.py generate \
 
 | Section | Purpose |
 |---------|---------|
-| `condos` | Per-account record: `partitions`, `nodes`, `limits`, `suited_for`, `verified` |
+| `condos` | Per-account record: `partitions`, `qos`, `nodes`, `limits`, `suited_for`, `verified_on` |
 | `job_defaults` | Job kind (`generate`/`jaxtrain`/`torchtrain`) → `account`, `partition`, `cores`, `mem`, `num_gpus`, `time`, optional `modules` |
 | `modules` | Modules loaded at the top of every generated script |
 
@@ -105,9 +105,37 @@ integer 43200, which SLURM would interpret as 43200 *minutes*. Write
 `time: "12:00:00"`. `gen_sbatch` rejects the unquoted form with an explicit
 error rather than submitting a 30-day request.
 
-Entries carry `verified: false` until they are seeded from a live cluster
-snapshot (`sacctmgr show associations`, `sinfo`, `scontrol show partition`) —
-do not add condos or limits from memory.
+Every entry carries `verified_on`, the date it was last read off the cluster
+(`sacctmgr show associations user=$USER`, `sacctmgr show qos`, `sinfo`,
+`scontrol show partition`) — do not add condos or limits from memory. Note that
+the real per-user caps live in the **QOS**, not the partition: `scontrol show
+partition` reports `MaxTime=UNLIMITED` for batch, gpu and gpu-he alike.
+
+## Where things go on Oscar
+
+The cluster config deliberately holds **no paths** — paths are per-person, the
+condo is not. Use this convention and pass it per invocation:
+
+```bash
+# The lab's data volume, one tree per user. Home is small (100G) and is the
+# wrong place for run output or an MLflow store; the frankmj volume is sized
+# for it.
+export LAN_PIPELINE_ROOT="/oscar/data/frankmj/$USER/proj_hssm_pipeline"
+export MLFLOW_TRACKING_URI="sqlite:///$LAN_PIPELINE_ROOT/mlflow/mlflow.db"
+export MLFLOW_ARTIFACT_LOCATION="$LAN_PIPELINE_ROOT/mlflow/artifacts"
+
+uv run python sbatch_scripts/gen_sbatch.py generate \
+    --config-path configs/examples/data_generation.yaml \
+    --output-path "$LAN_PIPELINE_ROOT/data" \
+    --cluster-config configs/cluster/oscar.yaml
+```
+
+`gen_sbatch` reads `MLFLOW_TRACKING_URI` from the environment and absolutizes a
+relative sqlite path before embedding it in the job script, so every array
+worker writes to the same database as the submitting process.
+
+Check your own quotas with `checkquota` before a large run — the shared volume
+is sized in TB but is shared across the lab.
 
 ## Legacy Configs
 

@@ -8,8 +8,13 @@
 #   hardcoded guesses. Explicit CLI flags always override these defaults.
 #
 # PROVENANCE
-#   Seeded 2026-08-09 from the cluster itself (sacctmgr show associations /
-#   show qos, sinfo, scontrol show partition, checkquota) on login009.
+#   Seeded from the cluster: `sacctmgr show associations user=$USER`,
+#   `sacctmgr show qos`, `sinfo`, `scontrol show partition`.
+#   Everything here is a property of the cluster and of the lab's condo
+#   allocation, so it is the same for every member and belongs in the repo.
+#   Anything user-specific — storage paths, quotas, tokens — does NOT live
+#   here; pass it per invocation (--output-path, MLFLOW_TRACKING_URI).
+#   See configs/README.md for the storage convention.
 #   Refresh after any condo change. Do not edit limits from memory.
 #
 # SCHEMA
@@ -19,7 +24,7 @@
 #     limits:          per-user caps (these come from the QOS, not the
 #                      partition — partition MaxTime reads UNLIMITED)
 #     suited_for:      job kinds that belong here
-#     verified:        true once seeded from a live snapshot
+#     verified_on:     date this entry was last read off the cluster
 #   job_defaults:      job kind -> sbatch defaults (account, partition,
 #                      cores, mem, num_gpus, time)
 #   modules:           modules loaded at the top of every generated script
@@ -42,7 +47,7 @@ condos:
       batch: {max_cores: 208, max_mem: 2500G, max_walltime: null}
       gpu-he: {max_cores: 160, max_gpus: 75, max_mem: 1920G, max_submit_jobs: 1200}
     suited_for: [generate, jaxtrain, torchtrain]
-    verified: true
+    verified_on: 2026-08-09
 
   # The default (non-condo) account, for smoke tests when the condo is busy.
   # Lower priority; partitions batch/debug/gpu/gpu-debug/vnc.
@@ -52,7 +57,7 @@ condos:
     nodes: {}
     limits: {}
     suited_for: []
-    verified: true
+    verified_on: 2026-08-09
 
 job_defaults:
   # Datagen: CPU-bound array jobs, many small workers. The 208-core cap is
@@ -81,16 +86,6 @@ job_defaults:
     mem: 64G
     num_gpus: 1
     time: "12:00:00"
-
-# Storage (not read by gen_sbatch; recorded here so the runbook has one home).
-#   /users/afengler/data -> /oscar/data/frankmj/afengler
-#   data+frankmj volume: 29.7T of 39T used (2026-08-09), ~9T headroom
-#   home: 87G of 100G used — do NOT put run output or MLflow artifacts there
-#   prior art: ~/data/proj_lan_pipeline_minimal (498G)
-storage:
-  root: /users/afengler/data/proj_hssm_pipeline
-  mlflow_uri: sqlite:////users/afengler/data/proj_hssm_pipeline/mlflow/mlflow.db
-  mlflow_artifacts: /users/afengler/data/proj_hssm_pipeline/mlflow/artifacts
 
 modules:
   - python
