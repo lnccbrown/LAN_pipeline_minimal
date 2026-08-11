@@ -1,0 +1,214 @@
+"""Tests for the validation gate.
+
+The fast tests build tiny ONNX graphs by hand, so they need neither HSSM nor a
+network. The end-to-end test against the real production ddm.onnx is opt-in
+(`-m production`): it downloads from HuggingFace and imports the whole
+inference stack, which does not belong in the default suite.
+"""
+
+import numpy as np
+import onnx
+import pytest
+from onnx import TensorProto, helper
+
+from validate_network import (
+    gate_parity,
+    gate_structure,
+    hellinger,
+    validate_network,
+)
+
+
+def make_onnx(path, input_dims, output_dims=(1, 1), real_out_width=None):
+    """A minimal MatMul graph with the requested input and output dims.
+
+    dims entries may be ints (concrete) or strings (symbolic), which is the
+    distinction G1 exists to enforce. The weight is sized from both, so an
+    output width other than 1 produces a *valid* graph that G1 must reject on
+    the contract rather than on the checker.
+
+    ``real_out_width`` sizes the weight independently of the declared output
+    shape, which is how a graph whose annotation and behaviour disagree gets
+    built — the case that decides whether the gate reads metadata or measures.
+    """
+    in_width = input_dims[-1] if isinstance(input_dims[-1], int) else 6
+    out_width = real_out_width or (
+        output_dims[-1] if isinstance(output_dims[-1], int) else 1
+    )
+
+    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, list(input_dims))
+    y = helper.make_tensor_value_info("y", TensorProto.FLOAT, list(output_dims))
+    weight = helper.make_tensor(
+        "w",
+        TensorProto.FLOAT,
+        [in_width, out_width],
+        np.zeros((in_width, out_width), dtype=np.float32).ravel().tolist(),
+    )
+    node = helper.make_node("MatMul", ["x", "w"], ["y"])
+    graph = helper.make_graph([node], "g", [x], [y], initializer=[weight])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
+    model.ir_version = 8
+    onnx.save(model, str(path))
+    return path
+
+
+def make_two_output_onnx(path, input_dims=(1, 6)):
+    """A valid graph that emits two separate 1-wide tensors."""
+    width = input_dims[-1]
+    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, list(input_dims))
+    outs = [
+        helper.make_tensor_value_info(n, TensorProto.FLOAT, [1, 1]) for n in ("y", "z")
+    ]
+    weight = helper.make_tensor(
+        "w", TensorProto.FLOAT, [width, 1], np.zeros(width, dtype=np.float32).tolist()
+    )
+    nodes = [
+        helper.make_node("MatMul", ["x", "w"], ["y"]),
+        helper.make_node("Identity", ["y"], ["z"]),
+    ]
+    graph = helper.make_graph(nodes, "g", [x], outs, initializer=[weight])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
+    model.ir_version = 8
+    onnx.save(model, str(path))
+    return path
+
+
+class TestStructureGate:
+    def test_accepts_a_concrete_single_trial_graph(self, tmp_path):
+        path = make_onnx(tmp_path / "good.onnx", (1, 6))
+        result = gate_structure(path, expected_input_dim=6)
+        assert result["passed"], result
+        assert result["input_width"] == 6
+
+    def test_rejects_a_symbolic_batch_dim(self, tmp_path):
+        # HSSM's make_jax_func raises on symbolic dims, so this would fail at
+        # load for every user rather than here.
+        path = make_onnx(tmp_path / "dyn.onnx", ("batch", 6))
+        result = gate_structure(path, expected_input_dim=6)
+        assert not result["passed"]
+        assert "symbolic" in result["error"]
+
+    def test_rejects_a_width_that_contradicts_the_parameter_space(self, tmp_path):
+        # ddm has 4 params, so a LAN must take 4 + rt + response = 6.
+        path = make_onnx(tmp_path / "narrow.onnx", (1, 5))
+        result = gate_structure(path, expected_input_dim=6)
+        assert not result["passed"]
+        assert "expected 6" in result["error"]
+
+    def test_rejects_an_output_wider_than_one_log_density(self, tmp_path):
+        # A per-choice output head is a valid ONNX graph and the wrong
+        # likelihood; G2 and G4 would score its first column and say nothing.
+        path = make_onnx(tmp_path / "wide.onnx", (1, 6), output_dims=(1, 2))
+        result = gate_structure(path, expected_input_dim=6)
+        assert not result["passed"]
+        assert "2 values returned for one trial" in result["error"]
+
+    def test_a_symbolic_output_annotation_is_judged_on_what_it_returns(self, tmp_path):
+        # HSSM never reads the declared output shape (onnx2jax validates
+        # graph.input dims and resolves outputs by name), so a symbolic
+        # annotation over a genuinely 1-wide output is cosmetic. The gate runs
+        # the graph instead of trusting either annotation.
+        good = make_onnx(tmp_path / "sym_ok.onnx", (1, 6), output_dims=(1, "d"))
+        assert gate_structure(good, expected_input_dim=6)["passed"]
+
+        # The case metadata cannot catch: annotated 1 wide, actually 2 wide.
+        lying = make_onnx(
+            tmp_path / "lying.onnx", (1, 6), output_dims=(1, 1), real_out_width=2
+        )
+        result = gate_structure(lying, expected_input_dim=6)
+        assert not result["passed"]
+        assert "2 values returned for one trial" in result["error"]
+
+    def test_rejects_a_graph_with_more_than_one_output(self, tmp_path):
+        path = make_two_output_onnx(tmp_path / "two.onnx")
+        result = gate_structure(path, expected_input_dim=6)
+        assert not result["passed"]
+        assert "exactly 1 input and 1 output" in result["error"]
+
+    def test_reports_a_corrupt_file_rather_than_raising(self, tmp_path):
+        path = tmp_path / "junk.onnx"
+        path.write_bytes(b"not an onnx file")
+        result = gate_structure(path, expected_input_dim=6)
+        assert not result["passed"]
+        assert "error" in result
+
+
+class TestParityGate:
+    def test_skips_without_a_flax_state(self, tmp_path):
+        # Torch-trained and downloaded networks have no .jax sibling; that is
+        # a skip, not a failure.
+        result = gate_parity(tmp_path / "m.onnx", None, None, input_width=6)
+        assert result["passed"] and result["skipped"]
+
+
+class TestHellinger:
+    def test_identical_distributions_are_zero(self):
+        assert hellinger([1, 2, 3], [1, 2, 3]) == 0.0
+
+    def test_disjoint_distributions_are_one(self):
+        assert hellinger([1, 0], [0, 1]) == pytest.approx(1.0)
+
+    def test_is_scale_invariant(self):
+        # Inputs are normalized, so unnormalized histograms compare correctly.
+        assert hellinger([1, 1], [50, 50]) == pytest.approx(0.0)
+
+    def test_is_symmetric(self):
+        a, b = [0.7, 0.2, 0.1], [0.3, 0.4, 0.3]
+        assert hellinger(a, b) == pytest.approx(hellinger(b, a))
+
+
+class TestWiring:
+    def test_a_broken_graph_short_circuits_the_expensive_gates(self, tmp_path):
+        """G3/G4 load HSSM and run simulations; there is nothing to learn from
+        running them once the graph itself is unusable."""
+        path = tmp_path / "junk.onnx"
+        path.write_bytes(b"nope")
+        report = validate_network(path, model_name="ddm", network_type="lan")
+        assert not report["passed"]
+        gates = {g["gate"]: g for g in report["gates"]}
+        assert not gates["structure"]["passed"]
+        for later in ("parity", "hssm_load", "density"):
+            assert gates[later].get("skipped"), later
+
+    def test_an_unknown_network_type_is_rejected_not_defaulted(self, tmp_path):
+        # Defaulting to 0 extra inputs would surface as "input width 6 !=
+        # expected 4", blaming the artifact for a mistyped flag.
+        path = make_onnx(tmp_path / "good.onnx", (1, 6))
+        with pytest.raises(ValueError, match="Unknown network_type"):
+            validate_network(path, model_name="ddm", network_type="LAN")
+
+    def test_report_shape_is_stable(self, tmp_path):
+        path = make_onnx(tmp_path / "good.onnx", (1, 6))
+        report = validate_network(
+            path, model_name="ddm", skip_hssm=True, skip_density=True
+        )
+        assert report["schema_version"] == 1
+        assert [g["gate"] for g in report["gates"]] == [
+            "structure",
+            "parity",
+            "hssm_load",
+            "density",
+        ]
+
+
+@pytest.mark.production
+class TestAgainstProduction:
+    """The gate's own acceptance test: it must pass a network that works.
+
+    Opt-in (`-m production`): downloads from HuggingFace and imports HSSM.
+    """
+
+    def test_production_ddm_passes_every_gate(self):
+        from pathlib import Path
+
+        from huggingface_hub import hf_hub_download
+
+        onnx_path = Path(hf_hub_download("franklab/HSSM", "ddm.onnx"))
+        report = validate_network(onnx_path, model_name="ddm", network_type="lan")
+        gates = {g["gate"]: g for g in report["gates"]}
+        assert gates["structure"]["passed"], gates["structure"]
+        assert gates["hssm_load"]["passed"], gates["hssm_load"]
+        assert gates["density"]["passed"], gates["density"]
+        # Comfortably inside the bound, not scraping it.
+        assert gates["density"]["worst_ratio"] < 2.5
+        assert report["passed"]
