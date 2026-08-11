@@ -8,8 +8,9 @@ Four gates, cheapest first, each independently reported so a failure says
 which property broke:
 
     G1 structure  — ONNX loads, onnxruntime builds a session, every input dim
-                    is concrete, and the input width matches the parameter
-                    space (the ecosystem's single-trial contract).
+                    is concrete, exactly one tensor goes in and one log-density
+                    comes out, and the input width matches the parameter space
+                    (the ecosystem's single-trial contract).
     G2 parity     — ONNX output equals the trainer's own jax forward pass,
                     when the *_train_state.jax sibling is present.
     G3 hssm-load  — hssm.HSSM accepts it as a likelihood and produces a finite
@@ -22,6 +23,12 @@ which property broke:
 G1-G3 are mechanical. G4 is statistical, and it calibrates itself against the
 sampling noise of the simulator rather than against a fixed number — see
 DEFAULT_HELLINGER_RATIO_MAX.
+
+Trust: G2 unpickles the ``*_network_config.pickle`` sitting next to the ONNX,
+because that is the only format lanfactory writes it in, and unpickling runs
+whatever the file says. Point this at artifact folders you produced or fetched
+from a repository you control. G2 skips itself when the flax sibling is absent,
+so validating a bare downloaded ``{model}.onnx`` reads no pickle at all.
 """
 
 from __future__ import annotations
@@ -97,10 +104,24 @@ def gate_structure(onnx_path: Path, expected_input_dim: int | None) -> dict:
 
     try:
         session = ort.InferenceSession(str(onnx_path))
-        input_shape = session.get_inputs()[0].shape
+        inputs, outputs = session.get_inputs(), session.get_outputs()
     except Exception as e:  # noqa: BLE001
         return _result("structure", False, input_dims=dims, error=f"ORT: {e}")
 
+    # One tensor in, one out. Everything downstream reads element [0] of each,
+    # so an extra tensor would be checked, compared and scored against the
+    # wrong one instead of being reported. All 18 published networks are 1/1.
+    if len(inputs) != 1 or len(outputs) != 1:
+        return _result(
+            "structure",
+            False,
+            error=(
+                f"expected exactly 1 input and 1 output, got {len(inputs)} "
+                f"and {len(outputs)}; the single-trial contract assumes one of each"
+            ),
+        )
+
+    input_shape, output_shape = inputs[0].shape, outputs[0].shape
     width = int(input_shape[-1])
     if expected_input_dim is not None and width != expected_input_dim:
         return _result(
@@ -113,10 +134,24 @@ def gate_structure(onnx_path: Path, expected_input_dim: int | None) -> dict:
             ),
         )
 
+    # One log-density per trial. A wider output is not the likelihood HSSM
+    # calls, and both G2 and G4 would quietly score column 0 alone. A symbolic
+    # output width is left alone: there is nothing to compare it against.
+    out_width = output_shape[-1] if output_shape else None
+    if isinstance(out_width, int) and out_width != 1:
+        return _result(
+            "structure",
+            False,
+            input_shape=list(input_shape),
+            output_shape=list(output_shape),
+            error=f"output width {out_width} != 1 (one log-density per trial)",
+        )
+
     return _result(
         "structure",
         True,
         input_shape=list(input_shape),
+        output_shape=list(output_shape),
         input_width=width,
         ops=sorted({node.op_type for node in model.graph.node}),
     )
@@ -159,12 +194,21 @@ def gate_parity(
 
         rng = np.random.default_rng(0)
         draws = rng.standard_normal((n_draws, input_width)).astype(np.float32)
-        jax_out = np.asarray(forward(jnp.asarray(draws))).reshape(-1)
+        jax_out = np.asarray(forward(jnp.asarray(draws))).reshape(n_draws, -1)
 
+        # One row per session.run, necessarily: the graph's batch dim is the
+        # concrete 1 that G1 just enforced, so ORT rejects a stacked feed
+        # outright. jax is shape-polymorphic and does the whole batch at once.
         max_err = 0.0
         for i in range(n_draws):
-            onnx_out = session.run(None, {input_name: draws[i : i + 1]})[0]
-            max_err = max(max_err, float(np.abs(onnx_out.reshape(-1)[0] - jax_out[i])))
+            row = session.run(None, {input_name: draws[i : i + 1]})[0].reshape(-1)
+            if row.shape != jax_out[i].shape:
+                return _result(
+                    "parity",
+                    False,
+                    error=f"width mismatch: onnx {row.shape} vs jax {jax_out[i].shape}",
+                )
+            max_err = max(max_err, float(np.max(np.abs(row - jax_out[i]))))
     except Exception as e:  # noqa: BLE001
         return _result("parity", False, error=str(e))
 
@@ -259,6 +303,7 @@ def gate_density(
         )
         span = upper - lower
         lower_in, upper_in = lower + shrink * span, upper - shrink * span
+        declared_choices = list(model_config["choices"])
 
         session = ort.InferenceSession(str(onnx_path))
         input_name = session.get_inputs()[0].name
@@ -283,10 +328,14 @@ def gate_density(
             # a per-choice maximum would report that noise as a failure of the
             # network. The joint comparison weights each choice by how often
             # it actually happens, which is also what the likelihood is.
+            # Iterate the model's DECLARED choices, not the sampled ones. A
+            # choice the simulator happened not to produce still has network
+            # mass, and skipping it would hide exactly the failure this gate
+            # exists to catch: a network putting weight where nothing happens.
             total_mass = 0.0
             empirical_joint = []
             network_joint = []
-            for choice in np.unique(choices):
+            for choice in declared_choices:
                 share = float(np.mean(choices == choice))
                 counts, _ = np.histogram(rts[choices == choice], bins=edges)
                 empirical_density = counts.astype(float)
@@ -326,7 +375,7 @@ def gate_density(
             rts_b = np.asarray(sim_b["rts"]).reshape(-1)
             choices_b = np.asarray(sim_b["choices"]).reshape(-1)
             floor_joint = []
-            for choice in np.unique(choices):
+            for choice in declared_choices:
                 share_b = float(np.mean(choices_b == choice))
                 counts_b, _ = np.histogram(rts_b[choices_b == choice], bins=edges)
                 density_b = counts_b.astype(float)
@@ -354,8 +403,10 @@ def gate_density(
 
     worst_mass = max(per_draw, key=lambda d: abs(d["total_mass"] - 1.0))["total_mass"]
     worst_ratio = max(d["ratio"] for d in per_draw)
+    # Every draw must be in range, not just the one furthest from 1.0: with an
+    # asymmetric mass_range the furthest draw can be the only one inside it.
     passed = (
-        mass_range[0] <= worst_mass <= mass_range[1]
+        all(mass_range[0] <= d["total_mass"] <= mass_range[1] for d in per_draw)
         and worst_ratio <= hellinger_ratio_max
     )
     return _result(
@@ -388,14 +439,20 @@ def validate_network(
     onnx_path = Path(onnx_path)
     folder = onnx_path.parent
 
+    # A closed set. Defaulting a typo to 0 extra inputs makes G1 fail with
+    # "input width 6 != expected 4", which blames the artifact for a bad flag.
+    if network_type not in EXTRA_INPUTS_BY_NETWORK_TYPE:
+        raise ValueError(
+            f"Unknown network_type {network_type!r}; expected one of "
+            f"{sorted(EXTRA_INPUTS_BY_NETWORK_TYPE)}."
+        )
+
     expected_input_dim = None
     try:
         import ssms
 
         n_params = len(ssms.config.model_config[model_name]["params"])
-        expected_input_dim = n_params + EXTRA_INPUTS_BY_NETWORK_TYPE.get(
-            network_type, 0
-        )
+        expected_input_dim = n_params + EXTRA_INPUTS_BY_NETWORK_TYPE[network_type]
     except Exception as e:  # noqa: BLE001 - an unknown model just weakens G1
         logger.warning(f"Could not resolve the parameter space for {model_name}: {e}")
 
@@ -443,15 +500,21 @@ def validate_network(
 @app.command()
 def main(
     onnx_path: Path = typer.Option(
-        ..., exists=True, dir_okay=False, help="The .onnx artifact to validate."
+        ...,
+        exists=True,
+        dir_okay=False,
+        help=(
+            "The .onnx artifact to validate. Its folder must be trusted: the "
+            "parity gate unpickles the *_network_config.pickle sibling."
+        ),
     ),
     model_name: str = typer.Option(..., help="ssm-simulators model name, e.g. ddm."),
     network_type: str = typer.Option("lan", help="lan | cpn | opn | gonogo."),
-    report_path: Path = typer.Option(
+    report_path: Path | None = typer.Option(
         None, help="Where to write validation_report.json [default: next to the ONNX]."
     ),
-    skip_density: bool = typer.Option(False, "--skip-density", is_flag=True),
-    skip_hssm: bool = typer.Option(False, "--skip-hssm", is_flag=True),
+    skip_density: bool = typer.Option(False, "--skip-density"),
+    skip_hssm: bool = typer.Option(False, "--skip-hssm"),
     hellinger_ratio_max: float = typer.Option(
         DEFAULT_HELLINGER_RATIO_MAX,
         help="Max Hellinger relative to the measured sampling floor.",
@@ -464,25 +527,35 @@ def main(
         raise typer.BadParameter(f"Unknown log level {log_level!r}.")
     logging.basicConfig(level=level)
 
-    report = validate_network(
-        onnx_path=onnx_path,
-        model_name=model_name,
-        network_type=network_type,
-        skip_density=skip_density,
-        skip_hssm=skip_hssm,
-        hellinger_ratio_max=hellinger_ratio_max,
-    )
+    try:
+        report = validate_network(
+            onnx_path=onnx_path,
+            model_name=model_name,
+            network_type=network_type,
+            skip_density=skip_density,
+            skip_hssm=skip_hssm,
+            hellinger_ratio_max=hellinger_ratio_max,
+        )
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
 
     destination = report_path or onnx_path.parent / "validation_report.json"
     destination.write_text(json.dumps(report, indent=2) + "\n")
 
-    # One JSON line on stdout, matching gen_sbatch's driver contract.
+    # One JSON line on stdout, matching gen_sbatch's driver contract. Gates are
+    # tri-state, not boolean: a skipped parity gate reports passed=True in the
+    # report, and a driver that saw only that would claim it was checked.
     print(
         json.dumps(
             {
                 "passed": report["passed"],
                 "report": str(destination),
-                "gates": {g["gate"]: g["passed"] for g in report["gates"]},
+                "gates": {
+                    g["gate"]: "skipped"
+                    if g.get("skipped")
+                    else ("passed" if g["passed"] else "failed")
+                    for g in report["gates"]
+                },
             }
         )
     )

@@ -20,30 +20,47 @@ from validate_network import (
 
 
 def make_onnx(path, input_dims, output_dims=(1, 1)):
-    """A minimal Identity-shaped graph with the requested input dims.
+    """A minimal MatMul graph with the requested input and output dims.
 
     dims entries may be ints (concrete) or strings (symbolic), which is the
-    distinction G1 exists to enforce.
+    distinction G1 exists to enforce. The weight is sized from both, so an
+    output width other than 1 produces a *valid* graph that G1 must reject on
+    the contract rather than on the checker.
     """
+    in_width = input_dims[-1] if isinstance(input_dims[-1], int) else 6
+    out_width = output_dims[-1] if isinstance(output_dims[-1], int) else 1
 
-    def dim_list(dims):
-        return [d if isinstance(d, int) else d for d in dims]
-
-    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, dim_list(input_dims))
-    y = helper.make_tensor_value_info("y", TensorProto.FLOAT, dim_list(output_dims))
+    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, list(input_dims))
+    y = helper.make_tensor_value_info("y", TensorProto.FLOAT, list(output_dims))
     weight = helper.make_tensor(
         "w",
         TensorProto.FLOAT,
-        [input_dims[-1] if isinstance(input_dims[-1], int) else 6, 1],
-        np.zeros(
-            (input_dims[-1] if isinstance(input_dims[-1], int) else 6, 1),
-            dtype=np.float32,
-        )
-        .ravel()
-        .tolist(),
+        [in_width, out_width],
+        np.zeros((in_width, out_width), dtype=np.float32).ravel().tolist(),
     )
     node = helper.make_node("MatMul", ["x", "w"], ["y"])
     graph = helper.make_graph([node], "g", [x], [y], initializer=[weight])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
+    model.ir_version = 8
+    onnx.save(model, str(path))
+    return path
+
+
+def make_two_output_onnx(path, input_dims=(1, 6)):
+    """A valid graph that emits two separate 1-wide tensors."""
+    width = input_dims[-1]
+    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, list(input_dims))
+    outs = [
+        helper.make_tensor_value_info(n, TensorProto.FLOAT, [1, 1]) for n in ("y", "z")
+    ]
+    weight = helper.make_tensor(
+        "w", TensorProto.FLOAT, [width, 1], np.zeros(width, dtype=np.float32).tolist()
+    )
+    nodes = [
+        helper.make_node("MatMul", ["x", "w"], ["y"]),
+        helper.make_node("Identity", ["y"], ["z"]),
+    ]
+    graph = helper.make_graph(nodes, "g", [x], outs, initializer=[weight])
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
     model.ir_version = 8
     onnx.save(model, str(path))
@@ -71,6 +88,20 @@ class TestStructureGate:
         result = gate_structure(path, expected_input_dim=6)
         assert not result["passed"]
         assert "expected 6" in result["error"]
+
+    def test_rejects_an_output_wider_than_one_log_density(self, tmp_path):
+        # A per-choice output head is a valid ONNX graph and the wrong
+        # likelihood; G2 and G4 would score its first column and say nothing.
+        path = make_onnx(tmp_path / "wide.onnx", (1, 6), output_dims=(1, 2))
+        result = gate_structure(path, expected_input_dim=6)
+        assert not result["passed"]
+        assert "output width 2" in result["error"]
+
+    def test_rejects_a_graph_with_more_than_one_output(self, tmp_path):
+        path = make_two_output_onnx(tmp_path / "two.onnx")
+        result = gate_structure(path, expected_input_dim=6)
+        assert not result["passed"]
+        assert "exactly 1 input and 1 output" in result["error"]
 
     def test_reports_a_corrupt_file_rather_than_raising(self, tmp_path):
         path = tmp_path / "junk.onnx"
@@ -116,6 +147,13 @@ class TestWiring:
         assert not gates["structure"]["passed"]
         for later in ("parity", "hssm_load", "density"):
             assert gates[later].get("skipped"), later
+
+    def test_an_unknown_network_type_is_rejected_not_defaulted(self, tmp_path):
+        # Defaulting to 0 extra inputs would surface as "input width 6 !=
+        # expected 4", blaming the artifact for a mistyped flag.
+        path = make_onnx(tmp_path / "good.onnx", (1, 6))
+        with pytest.raises(ValueError, match="Unknown network_type"):
+            validate_network(path, model_name="ddm", network_type="LAN")
 
     def test_report_shape_is_stable(self, tmp_path):
         path = make_onnx(tmp_path / "good.onnx", (1, 6))
