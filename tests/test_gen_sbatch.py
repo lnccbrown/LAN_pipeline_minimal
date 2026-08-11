@@ -367,7 +367,8 @@ class TestResourceResolution:
         )
         for kind in ("generate", "jaxtrain", "torchtrain"):
             resources = resolve_resources(kind, repo_yaml, {})
-            assert resources["account"] == "carney-frankmj-condo"
+            # Real account, seeded from sacctmgr (not the placeholder guess).
+            assert resources["account"] == "carney-mjfrank-condo2"
             assert set(resources) >= {
                 "account",
                 "partition",

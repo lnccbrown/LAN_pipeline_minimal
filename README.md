@@ -32,13 +32,11 @@ LAN_pipeline_minimal/
 │   │   └── network_training.yaml
 │   ├── cluster/            # Cluster resource inventories
 │   │   └── oscar.yaml      # Condos, limits, per-job-kind defaults
-│   ├── legacy/             # Archived old workflow configs
 │   └── README.md           # Config documentation
 ├── sbatch_scripts/
 │   ├── gen_sbatch.py       # Main orchestrator script
-│   ├── sample_*.sh         # Example generated SBATCH scripts
-│   └── legacy/             # Archived old sbatch scripts
-├── tests/                  # pytest suite for gen_sbatch
+│   └── sample_*.sh         # Example generated SBATCH scripts
+├── tests/                  # pytest suite for gen_sbatch + validation gate
 ├── local_test_run.sh       # Local end-to-end test script
 ├── using_mlflow.md         # MLflow integration guide
 └── pyproject.toml          # Dependencies (from GitHub main branches)
@@ -101,7 +99,7 @@ any `--log-level`):
 {"command": "generate --config-path ...", "job_id": 9876543,
  "mlflow_experiment_id": "42", "mlflow_run_id": null,
  "sbatch_script": "/path/to/output/runs/20260809T101500_ddm_generate_sbatch.sh",
- "output_path": "/path/to/output", "account": "carney-frankmj-condo",
+ "output_path": "/path/to/output", "account": "carney-mjfrank-condo2",
  "partition": "batch"}
 ```
 
