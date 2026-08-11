@@ -110,6 +110,93 @@ Every entry carries `verified_on`, the date it was last read off the cluster
 the real per-user caps live in the **QOS**, not the partition: `scontrol show
 partition` reports `MaxTime=UNLIMITED` for batch, gpu and gpu-he alike.
 
+## Personalising: two files, one committed, one not
+
+Cluster config is split by *who it is true for*:
+
+| file | committed? | holds |
+|------|-----------|-------|
+| `cluster/oscar.yaml` | yes | the cluster and the lab's condo: partitions, QOS caps, node inventory, modules, per-job-kind resources — identical for every member |
+| `cluster/oscar.local.yaml` | **no** (gitignored) | *your* associations, lane caps and choices |
+
+`gen_sbatch` merges the local file over the committed one automatically
+whenever you pass `--cluster-config .../oscar.yaml`; there is no second flag.
+Precedence end to end:
+
+```
+built-in fallbacks  <  oscar.yaml  <  oscar.local.yaml  <  explicit CLI flags
+```
+
+That is why no path, quota or account of yours needs to be committed to share
+this repo with the rest of the lab.
+
+### Step 1 — discover what you can actually schedule
+
+```bash
+# from a login node
+uv run python scripts/discover_cluster.py
+
+# or from a laptop, through your ssh config entry
+uv run python scripts/discover_cluster.py --ssh-host oscar
+```
+
+It asks SLURM which associations you hold and what each one's QOS allows, then
+writes `configs/cluster/oscar.local.yaml`. Output looks like:
+
+```
+Found 4 lanes:
+  <your-condo>               batch      qos=<condo-qos>   priority=10000  208 cores
+  <your-condo>               gpu-he     qos=<condo-gqos>  priority=10000  160 cores, 75 gpus
+  default                    batch      qos=normal        priority=0      64 cores
+  default                    gpu        qos=norm-gpu      priority=0      12 cores, 2 gpus
+  -> 272 CPU cores usable for datagen across 2 lane(s)
+```
+
+Re-run it whenever your allocations change. Never hand-edit the generated file
+— it is overwritten, and hand-edits are exactly the personal values that used
+to leak into the repo.
+
+**Why discovery rather than documentation:** the numbers that matter are
+`MaxTRESPU` on the *QOS*, and nothing else surfaces them. `scontrol show
+partition` reports `MaxTime=UNLIMITED` for every partition on this cluster, so
+reading partition limits tells you nothing.
+
+### Step 2 — use every lane you have
+
+A **lane** is one (account, partition) pair you may submit to. SLURM applies
+each QOS's cap *per QOS*, so two lanes are two independent budgets and their
+capacity genuinely adds up. `--use-all-lanes` splits an array across them in
+proportion to their core caps:
+
+```bash
+uv run python sbatch_scripts/gen_sbatch.py generate \
+    --config-path configs/examples/data_generation.yaml \
+    --output-path "$LAN_PIPELINE_ROOT/data" \
+    --cluster-config configs/cluster/oscar.yaml \
+    --n-jobs-in-array 100 \
+    --use-all-lanes
+```
+
+```json
+{"lane": 0, "n_lanes": 2, "account": "<your-condo>", "array_size": 77, "job_id": 9876543, ...}
+{"lane": 1, "n_lanes": 2, "account": "default",      "array_size": 23, "job_id": 9876544, ...}
+```
+
+One JSON line per lane. Without the flag you get exactly one line and one
+submission, as before — fan-out is opt-in because it changes how many jobs
+land on the cluster.
+
+**Read the priorities before relying on this.** A condo lane typically has
+priority 10000 and the general `default` lane has 0, so spillover tasks queue
+behind everyone else's work. Treat the extra lanes as *opportunistic* capacity
+— excellent for an overnight sweep, unreliable when you need results in an
+hour. If any lane fails to submit, the command exits non-zero and the JSON
+lines tell you which ones did land.
+
+Training is deliberately **not** fanned out: a single job cannot use two lanes,
+so discovery maps `jaxtrain`/`torchtrain` onto one GPU on your highest-priority
+GPU lane instead.
+
 ## Where things go on Oscar
 
 The cluster config deliberately holds **no paths** — paths are per-person, the
