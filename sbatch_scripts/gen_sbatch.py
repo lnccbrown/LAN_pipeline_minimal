@@ -195,6 +195,59 @@ def create_command(command_name: str, **params) -> str:
     return " ".join(parts)
 
 
+def load_cluster_config(cluster_config_path: Path) -> dict:
+    """The committed cluster config, with the per-user file merged over it.
+
+    `<name>.yaml` holds facts that are the same for the whole lab; the
+    gitignored `<name>.local.yaml` beside it holds one person's associations,
+    caps and lanes, written by scripts/discover_cluster.py. Merging here means
+    nobody has to remember to pass a second flag, and no personal value ever
+    needs to be committed.
+    """
+    with open(cluster_config_path, "rb") as f:
+        config = yaml.safe_load(f) or {}
+
+    local_path = cluster_config_path.with_suffix(".local.yaml")
+    if not local_path.exists():
+        return config
+
+    with open(local_path, "rb") as f:
+        local = yaml.safe_load(f) or {}
+    for key, value in local.items():
+        if key == "job_defaults" and isinstance(value, dict):
+            merged = dict(config.get("job_defaults") or {})
+            for kind, overrides in value.items():
+                merged[kind] = {**(merged.get(kind) or {}), **(overrides or {})}
+            config["job_defaults"] = merged
+        else:
+            config[key] = value
+    return config
+
+
+def split_across_lanes(lanes: list[dict], n_jobs: int) -> list[tuple[dict, int]]:
+    """Divide an array job across lanes in proportion to their core caps.
+
+    Each lane's cap is a separate SLURM budget, so the capacity really adds up
+    — but lanes differ in priority, and a low-priority lane may sit in the
+    queue. Bigger, higher-priority lanes therefore get proportionally more of
+    the array, and the remainder goes to the best lane.
+    """
+    usable = [x for x in lanes if x.get("max_cores")]
+    if len(usable) < 2 or n_jobs < 2:
+        return [(lanes[0] if lanes else {}, n_jobs)]
+
+    ordered = sorted(usable, key=lambda x: (-x.get("priority", 0), -x["max_cores"]))
+    total = sum(x["max_cores"] for x in ordered)
+    shares = [max(1, n_jobs * x["max_cores"] // total) for x in ordered]
+
+    # Trim or pad to land exactly on n_jobs, always adjusting the best lane.
+    while sum(shares) > n_jobs:
+        biggest = shares.index(max(shares))
+        shares[biggest] -= 1
+    shares[0] += n_jobs - sum(shares)
+    return [(lane, size) for lane, size in zip(ordered, shares) if size > 0]
+
+
 def resolve_resources(
     command_name: str,
     cluster_config_path: Path | None,
@@ -214,11 +267,10 @@ def resolve_resources(
     modules = list(DEFAULT_MODULES)
 
     if cluster_config_path is not None:
-        with open(cluster_config_path, "rb") as f:
-            cluster_config = yaml.safe_load(f) or {}
+        cluster_config = load_cluster_config(cluster_config_path)
         job_defaults = (cluster_config.get("job_defaults") or {}).get(command_name, {})
 
-        known = set(resolved) | {"modules"}
+        known = set(resolved) | {"modules", "lanes"}
         unknown = set(job_defaults) - known
         if unknown and logger is not None:
             logger.warning(
@@ -226,6 +278,8 @@ def resolve_resources(
                 f"{cluster_config_path}: {sorted(unknown)}"
             )
         resolved.update({k: v for k, v in job_defaults.items() if k in resolved})
+        if job_defaults.get("lanes"):
+            resolved["lanes"] = job_defaults["lanes"]
 
         # Presence, not truthiness: `modules: []` disables module loading.
         if "modules" in cluster_config:
@@ -443,6 +497,7 @@ def handle_job(
     cluster_config: Path = None,
     n_jobs_in_array: int = 1,
     n_files: int = None,
+    use_all_lanes: bool = False,
     training_data_folder: Path = None,
     network_id: int = 0,
     dl_workers: int = 1,
@@ -624,25 +679,8 @@ def handle_job(
         except Exception as e:
             logger.error(f"Failed to initialize MLflow: {e}")
 
-    params = get_parameters_setup(
-        command=command_name,
-        config_path=config_path,
-        output_path=output_path,
-        log_level=log_level,
-        training_data_folder=training_data_folder,
-        network_id=network_id,
-        dl_workers=dl_workers,
-        mlflow_run_name=mlflow_run_name,
-        mlflow_experiment_name=mlflow_experiment_name,
-        mlflow_run_id=mlflow_run_id,
-        data_generation_experiment_id=data_generation_experiment_id,
-    )
-    if command_name == "generate" and n_files is not None:
-        params["n-files"] = n_files
-    command = create_command(command_name, **params)
-    logger.info(f"Generated command: {command}")
-    basic_config = get_basic_config_from_yaml(params["config-path"])
-    job_name = f"{safe_name(basic_config['MODEL'])}_{command_name}_sbatch"
+    basic_config = get_basic_config_from_yaml(config_path.resolve())
+    job_name_base = f"{safe_name(basic_config['MODEL'])}_{command_name}_sbatch"
 
     # Scripts and SLURM logs live under <output_path>/runs/, timestamped —
     # repeated invocations never overwrite each other (previously the script
@@ -651,60 +689,120 @@ def handle_job(
     validate_log_path(runs_dir)
     runs_dir.mkdir(exist_ok=True, parents=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-    script = runs_dir / f"{timestamp}_{job_name}.sh"
 
-    sbatch_kwargs = dict(
-        account=resources["account"],
-        partition=resources["partition"],
-        num_gpus=resources["num_gpus"],
-        cores=resources["cores"],
-        mem=resources["mem"],
-        job_name=job_name,
-        # %A_%a = array job id + task index. The template always emits
-        # --array, so every task would otherwise append to one shared pair of
-        # files and interleave its output with the others'.
-        output=str(runs_dir / f"{job_name}_%A_%a.out"),
-        error=str(runs_dir / f"{job_name}_%A_%a.err"),
-        time=resources["time"],
-        command=command,
-        n_jobs_in_array=n_jobs_in_array,
-        env_vars=env_vars,
-        modules=resources["modules"],
-    )
-    sbatch_script = create_sbatch_script(**sbatch_kwargs)
-    write_sbatch(script, sbatch_script)
+    # One submission per lane. A lane is an (account, partition) pair whose
+    # SLURM budget is independent of the others', so splitting an array across
+    # lanes really does buy extra parallelism — see split_across_lanes.
+    if use_all_lanes and resources.get("lanes"):
+        plan = split_across_lanes(resources["lanes"], n_jobs_in_array)
+    else:
+        plan = [({}, n_jobs_in_array)]
+    fanned_out = len(plan) > 1
 
-    # The one machine-readable line on stdout, regardless of log level: the
-    # laptop driver's API. Logging goes to stderr, so stdout carries only this.
-    result_record = {
-        "command": command,
-        "job_id": None,
-        "mlflow_experiment_id": mlflow_experiment_id,
-        "mlflow_run_id": mlflow_run_id,
-        "sbatch_script": str(script),
-        "output_path": str(target),
-        "account": resources["account"],
-        "partition": resources["partition"],
-    }
+    if fanned_out:
+        logger.warning(
+            f"Fanning {n_jobs_in_array} array tasks across {len(plan)} lanes: "
+            + ", ".join(
+                f"{lane.get('account')}/{lane.get('partition')}={size}"
+                for lane, size in plan
+            )
+        )
+
+    failures = 0
+    for index, (lane, array_size) in enumerate(plan):
+        account = lane.get("account", resources["account"])
+        partition = lane.get("partition", resources["partition"])
+
+        lane_run_name = mlflow_run_name
+        if fanned_out and mlflow_run_name:
+            # Two arrays both number their tasks from 1, so without the lane
+            # index the MLflow run names would collide across lanes.
+            lane_run_name = mlflow_run_name.replace("-worker-", f"-worker-l{index}-")
+
+        params = get_parameters_setup(
+            command=command_name,
+            config_path=config_path,
+            output_path=output_path,
+            log_level=log_level,
+            training_data_folder=training_data_folder,
+            network_id=network_id,
+            dl_workers=dl_workers,
+            mlflow_run_name=lane_run_name,
+            mlflow_experiment_name=mlflow_experiment_name,
+            mlflow_run_id=mlflow_run_id,
+            data_generation_experiment_id=data_generation_experiment_id,
+        )
+        if command_name == "generate" and n_files is not None:
+            params["n-files"] = n_files
+        command = create_command(command_name, **params)
+        logger.info(f"Generated command: {command}")
+
+        job_name = f"{job_name_base}_l{index}" if fanned_out else job_name_base
+        script = runs_dir / f"{timestamp}_{job_name}.sh"
+
+        sbatch_script = create_sbatch_script(
+            account=account,
+            partition=partition,
+            num_gpus=resources["num_gpus"],
+            cores=resources["cores"],
+            mem=resources["mem"],
+            job_name=job_name,
+            # %A_%a = array job id + task index. The template always emits
+            # --array, so every task would otherwise append to one shared pair
+            # of files and interleave its output with the others'.
+            output=str(runs_dir / f"{job_name}_%A_%a.out"),
+            error=str(runs_dir / f"{job_name}_%A_%a.err"),
+            time=resources["time"],
+            command=command,
+            n_jobs_in_array=array_size,
+            env_vars=env_vars,
+            modules=resources["modules"],
+        )
+        write_sbatch(script, sbatch_script)
+
+        # One machine-readable line per submission, regardless of log level:
+        # the laptop driver's API. Logging goes to stderr, so stdout carries
+        # only these. A single-lane run emits exactly one line, as before.
+        result_record = {
+            "command": command,
+            "job_id": None,
+            "mlflow_experiment_id": mlflow_experiment_id,
+            "mlflow_run_id": mlflow_run_id,
+            "sbatch_script": str(script),
+            "output_path": str(target),
+            "account": account,
+            "partition": partition,
+            "array_size": array_size,
+            "lane": index,
+            "n_lanes": len(plan),
+        }
+
+        if script_only:
+            logger.info(f"Generated sbatch script: {script}")
+            print(json.dumps(result_record))
+            continue
+
+        job_id = submit_sbatch(script, logger)
+        result_record["job_id"] = job_id
+        print(json.dumps(result_record))
+        if job_id is None:
+            failures += 1
+
+    if MLFLOW_AVAILABLE and mlflow.active_run():
+        mlflow.end_run()
 
     if script_only:
-        logger.info(f"Generated sbatch script: {script}")
-        print(json.dumps(result_record))
         return
 
     if command_name == "generate":
         logger.info(f"Simulated data output folder: {target}")
     else:
         logger.info(f"Trained networks output folder: {target}")
-    job_id = submit_sbatch(script, logger)
-    result_record["job_id"] = job_id
 
-    if MLFLOW_AVAILABLE and mlflow.active_run():
-        mlflow.end_run()
-
-    print(json.dumps(result_record))
-    if job_id is None:
-        logger.error("Job submission failed")
+    if failures:
+        # Partial success is still a failure for the caller: some lanes are
+        # running and some are not, and only the JSON lines say which.
+        logger.error(f"{failures} of {len(plan)} lane submissions failed")
         raise typer.Exit(code=1)
     logger.info("Job submitted successfully")
 
@@ -728,7 +826,19 @@ def generate(
         readable=True,
         help="Cluster inventory YAML (e.g. configs/cluster/oscar.yaml); its "
         "job_defaults section supplies account/partition/resources for this "
-        "job kind. Explicit flags below override it.",
+        "job kind. A gitignored <name>.local.yaml beside it, written by "
+        "scripts/discover_cluster.py, is merged over it. Explicit flags "
+        "below override both.",
+    ),
+    use_all_lanes: bool = typer.Option(
+        False,
+        "--use-all-lanes",
+        is_flag=True,
+        help="Split the job array across every lane in the cluster config, "
+        "proportional to each lane's core cap. Lane budgets are independent "
+        "in SLURM, so this adds capacity — but lower-priority lanes queue "
+        "longer, so treat the extra as spillover. Emits one JSON line per "
+        "lane.",
     ),
     account: str = typer.Option(
         None, help="Condo to run the SBATCH job on [default: from cluster config]"
@@ -775,6 +885,7 @@ def generate(
         mem=mem,
         n_jobs_in_array=n_jobs_in_array,
         n_files=n_files,
+        use_all_lanes=use_all_lanes,
     )
 
 

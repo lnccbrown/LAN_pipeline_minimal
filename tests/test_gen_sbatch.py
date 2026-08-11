@@ -18,6 +18,8 @@ import gen_sbatch
 from gen_sbatch import (
     absolutize_tracking_uri,
     app,
+    load_cluster_config,
+    split_across_lanes,
     create_command,
     quote_param_value,
     resolve_resources,
@@ -35,6 +37,11 @@ JSON_KEYS = {
     "output_path",
     "account",
     "partition",
+    # Added with lane fan-out. Additive: a single-lane run still emits exactly
+    # one line, with lane=0 and n_lanes=1, so existing consumers are unaffected.
+    "array_size",
+    "lane",
+    "n_lanes",
 }
 
 
@@ -705,3 +712,216 @@ def _no_cwd_litter(tmp_path, monkeypatch):
     yield
     stray = [p for p in tmp_path.iterdir() if p.suffix in (".sh", ".out", ".err")]
     assert not stray, f"artifacts leaked into CWD: {stray}"
+
+
+CONDO = {"account": "my-condo", "partition": "batch", "max_cores": 208, "priority": 10000}
+SPILL = {"account": "default", "partition": "batch", "max_cores": 64, "priority": 0}
+
+
+class TestLaneSplit:
+    def test_splits_in_proportion_to_core_caps(self):
+        plan = split_across_lanes([CONDO, SPILL], 100)
+        assert [(lane["account"], size) for lane, size in plan] == [
+            ("my-condo", 77),
+            ("default", 23),
+        ]
+
+    @pytest.mark.parametrize("n_jobs", [2, 3, 5, 7, 10, 33, 100, 501])
+    def test_every_task_is_allocated_exactly_once(self, n_jobs):
+        plan = split_across_lanes([CONDO, SPILL], n_jobs)
+        assert sum(size for _, size in plan) == n_jobs
+        assert all(size > 0 for _, size in plan)
+
+    def test_highest_priority_lane_leads(self):
+        # Passed worst-first; the split must still favour the condo.
+        plan = split_across_lanes([SPILL, CONDO], 100)
+        assert plan[0][0]["account"] == "my-condo"
+        assert plan[0][1] > plan[1][1]
+
+    def test_a_single_task_does_not_fan_out(self):
+        # Splitting one task across two lanes would just add queue latency.
+        assert len(split_across_lanes([CONDO, SPILL], 1)) == 1
+
+    def test_lanes_without_a_cap_are_ignored(self):
+        plan = split_across_lanes([CONDO, {"account": "vnc", "partition": "vnc"}], 10)
+        assert len(plan) == 1
+
+
+class TestLocalConfigLayering:
+    def write(self, path, payload):
+        import yaml as _yaml
+
+        path.write_text(_yaml.safe_dump(payload))
+        return path
+
+    def test_local_file_merges_over_the_committed_one(self, tmp_path):
+        shared = self.write(
+            tmp_path / "oscar.yaml",
+            {
+                "job_defaults": {"generate": {"account": "lab-condo", "cores": 1}},
+                "modules": ["python", "gcc"],
+            },
+        )
+        self.write(
+            tmp_path / "oscar.local.yaml",
+            {"job_defaults": {"generate": {"account": "my-condo", "lanes": [CONDO]}}},
+        )
+        merged = load_cluster_config(shared)
+        generate = merged["job_defaults"]["generate"]
+        assert generate["account"] == "my-condo"  # personal wins
+        assert generate["cores"] == 1  # shared survives
+        assert generate["lanes"] == [CONDO]
+        assert merged["modules"] == ["python", "gcc"]
+
+    def test_absent_local_file_is_not_an_error(self, tmp_path):
+        shared = self.write(tmp_path / "oscar.yaml", {"modules": ["python"]})
+        assert load_cluster_config(shared)["modules"] == ["python"]
+
+    def test_local_lanes_reach_the_resolver(self, tmp_path):
+        shared = self.write(
+            tmp_path / "oscar.yaml", {"job_defaults": {"generate": {"cores": 2}}}
+        )
+        self.write(
+            tmp_path / "oscar.local.yaml",
+            {"job_defaults": {"generate": {"lanes": [CONDO, SPILL]}}},
+        )
+        resources = resolve_resources("generate", shared, {})
+        assert len(resources["lanes"]) == 2
+        assert resources["cores"] == 2
+
+
+class TestFanOut:
+    def cluster_files(self, tmp_path, lanes):
+        import yaml as _yaml
+
+        shared = tmp_path / "oscar.yaml"
+        shared.write_text(
+            _yaml.safe_dump(
+                {
+                    "job_defaults": {
+                        "generate": {
+                            "account": "lab-condo",
+                            "partition": "batch",
+                            "cores": 1,
+                            "mem": "16G",
+                            "num_gpus": 0,
+                            "time": "04:00:00",
+                        }
+                    }
+                }
+            )
+        )
+        (tmp_path / "oscar.local.yaml").write_text(
+            _yaml.safe_dump({"job_defaults": {"generate": {"lanes": lanes}}})
+        )
+        return shared
+
+    def invoke(self, model_config, tmp_path, extra=()):
+        cluster = self.cluster_files(tmp_path, [CONDO, SPILL])
+        out = tmp_path / "out"
+        return runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--cluster-config",
+                str(cluster),
+                "--n-jobs-in-array",
+                "100",
+                "--script-only",
+                *extra,
+            ],
+        ), out
+
+    def test_one_json_line_per_lane(self, model_config, tmp_path):
+        result, out = self.invoke(model_config, tmp_path, ["--use-all-lanes"])
+        assert result.exit_code == 0, result.output
+        records = [
+            json.loads(ln) for ln in result.output.splitlines() if ln.startswith("{")
+        ]
+        assert len(records) == 2
+        assert [r["account"] for r in records] == ["my-condo", "default"]
+        assert sum(r["array_size"] for r in records) == 100
+        assert {r["n_lanes"] for r in records} == {2}
+        # distinct scripts, distinct array sizes in the emitted sbatch headers
+        scripts = sorted((out / "runs").glob("*.sh"))
+        assert len(scripts) == 2
+        arrays = sorted(
+            line
+            for script in scripts
+            for line in script.read_text().splitlines()
+            if line.startswith("#SBATCH --array")
+        )
+        assert arrays == ["#SBATCH --array=1-23", "#SBATCH --array=1-77"]
+
+    def test_without_the_flag_it_stays_single_lane(self, model_config, tmp_path):
+        """Fan-out must be opt-in: it changes how many jobs land on the cluster."""
+        result, out = self.invoke(model_config, tmp_path)
+        assert result.exit_code == 0, result.output
+        records = [
+            json.loads(ln) for ln in result.output.splitlines() if ln.startswith("{")
+        ]
+        assert len(records) == 1
+        assert records[0]["account"] == "lab-condo"
+        assert records[0]["array_size"] == 100
+        assert records[0]["n_lanes"] == 1
+        assert len(list((out / "runs").glob("*.sh"))) == 1
+
+    def test_worker_run_names_do_not_collide_across_lanes(
+        self, model_config, tmp_path, fake_sbatch_ok, isolated_mlflow
+    ):
+        """Both arrays number tasks from 1, so the lane must enter the name."""
+        cluster = self.cluster_files(tmp_path, [CONDO, SPILL])
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(tmp_path / "out"),
+                "--cluster-config",
+                str(cluster),
+                "--n-jobs-in-array",
+                "10",
+                "--use-all-lanes",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        names = [
+            ln.split("--mlflow-run-name ")[1].split(" --")[0]
+            for ln in result.output.splitlines()
+            if "--mlflow-run-name" in ln
+        ]
+        assert len(names) == 2 and names[0] != names[1], names
+
+    def test_a_failed_lane_makes_the_whole_submission_fail(
+        self, model_config, tmp_path, fake_sbatch_fail, isolated_mlflow
+    ):
+        """Partial success is failure: some lanes run, some do not, and only
+        the JSON lines say which."""
+        cluster = self.cluster_files(tmp_path, [CONDO, SPILL])
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(tmp_path / "out"),
+                "--cluster-config",
+                str(cluster),
+                "--n-jobs-in-array",
+                "10",
+                "--use-all-lanes",
+            ],
+        )
+        assert result.exit_code == 1
+        records = [
+            json.loads(ln) for ln in result.output.splitlines() if ln.startswith("{")
+        ]
+        assert len(records) == 2
+        assert all(r["job_id"] is None for r in records)
