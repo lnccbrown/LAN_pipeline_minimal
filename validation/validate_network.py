@@ -134,17 +134,31 @@ def gate_structure(onnx_path: Path, expected_input_dim: int | None) -> dict:
             ),
         )
 
-    # One log-density per trial. A wider output is not the likelihood HSSM
-    # calls, and both G2 and G4 would quietly score column 0 alone. A symbolic
-    # output width is left alone: there is nothing to compare it against.
-    out_width = output_shape[-1] if output_shape else None
-    if isinstance(out_width, int) and out_width != 1:
+    # One log-density per trial, measured rather than read off the graph.
+    # HSSM never inspects the declared output shape — onnx2jax validates
+    # graph.input dims and resolves outputs by name — so an exporter that left
+    # the output symbolic says nothing about the artifact. Feeding one row and
+    # counting what comes back is definitive, and the session already exists.
+    try:
+        probe = np.zeros([int(d) for d in input_shape], dtype=np.float32)
+        n_out = int(np.asarray(session.run(None, {inputs[0].name: probe})[0]).size)
+    except Exception as e:  # noqa: BLE001 - a graph that cannot run is a failure
+        return _result(
+            "structure",
+            False,
+            input_shape=list(input_shape),
+            error=f"inference on a single trial failed: {e}",
+        )
+    if n_out != 1:
         return _result(
             "structure",
             False,
             input_shape=list(input_shape),
             output_shape=list(output_shape),
-            error=f"output width {out_width} != 1 (one log-density per trial)",
+            error=(
+                f"{n_out} values returned for one trial, expected 1 "
+                "(a single log-density)"
+            ),
         )
 
     return _result(

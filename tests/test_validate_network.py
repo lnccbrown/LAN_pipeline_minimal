@@ -19,16 +19,22 @@ from validate_network import (
 )
 
 
-def make_onnx(path, input_dims, output_dims=(1, 1)):
+def make_onnx(path, input_dims, output_dims=(1, 1), real_out_width=None):
     """A minimal MatMul graph with the requested input and output dims.
 
     dims entries may be ints (concrete) or strings (symbolic), which is the
     distinction G1 exists to enforce. The weight is sized from both, so an
     output width other than 1 produces a *valid* graph that G1 must reject on
     the contract rather than on the checker.
+
+    ``real_out_width`` sizes the weight independently of the declared output
+    shape, which is how a graph whose annotation and behaviour disagree gets
+    built — the case that decides whether the gate reads metadata or measures.
     """
     in_width = input_dims[-1] if isinstance(input_dims[-1], int) else 6
-    out_width = output_dims[-1] if isinstance(output_dims[-1], int) else 1
+    out_width = real_out_width or (
+        output_dims[-1] if isinstance(output_dims[-1], int) else 1
+    )
 
     x = helper.make_tensor_value_info("x", TensorProto.FLOAT, list(input_dims))
     y = helper.make_tensor_value_info("y", TensorProto.FLOAT, list(output_dims))
@@ -95,7 +101,23 @@ class TestStructureGate:
         path = make_onnx(tmp_path / "wide.onnx", (1, 6), output_dims=(1, 2))
         result = gate_structure(path, expected_input_dim=6)
         assert not result["passed"]
-        assert "output width 2" in result["error"]
+        assert "2 values returned for one trial" in result["error"]
+
+    def test_a_symbolic_output_annotation_is_judged_on_what_it_returns(self, tmp_path):
+        # HSSM never reads the declared output shape (onnx2jax validates
+        # graph.input dims and resolves outputs by name), so a symbolic
+        # annotation over a genuinely 1-wide output is cosmetic. The gate runs
+        # the graph instead of trusting either annotation.
+        good = make_onnx(tmp_path / "sym_ok.onnx", (1, 6), output_dims=(1, "d"))
+        assert gate_structure(good, expected_input_dim=6)["passed"]
+
+        # The case metadata cannot catch: annotated 1 wide, actually 2 wide.
+        lying = make_onnx(
+            tmp_path / "lying.onnx", (1, 6), output_dims=(1, 1), real_out_width=2
+        )
+        result = gate_structure(lying, expected_input_dim=6)
+        assert not result["passed"]
+        assert "2 values returned for one trial" in result["error"]
 
     def test_rejects_a_graph_with_more_than_one_output(self, tmp_path):
         path = make_two_output_onnx(tmp_path / "two.onnx")
