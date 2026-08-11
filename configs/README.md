@@ -8,8 +8,7 @@ This folder contains YAML configuration files for the LAN pipeline.
 configs/
 ├── examples/           # Production-ready example configs
 ├── quick_test/         # Fast testing configs (~1-2 min runtime)
-├── cluster/            # Cluster resource inventories (oscar.yaml)
-└── legacy/             # Archived bash workflow configs (deprecated)
+└── cluster/            # Cluster resource inventories (oscar.yaml)
 ```
 
 ## Configuration Files
@@ -137,7 +136,17 @@ worker writes to the same database as the submitting process.
 Check your own quotas with `checkquota` before a large run — the shared volume
 is sized in TB but is shared across the lab.
 
-## Legacy Configs
+## The old bash workflow
 
-The `legacy/` folder contains bash-style configuration files from an older workflow.
-These are kept for reference but are **not used** by the current `gen_sbatch.py` workflow.
+The pre-`gen_sbatch.py` bash configs and sbatch scripts used to live in
+`configs/legacy/` and `sbatch_scripts/legacy/`. They were removed: nothing
+referenced them, everything they did is handled by `gen_sbatch.py` and the
+cluster config, and they hardcoded one person's home directory and conda
+environment — which reads as an endorsed pattern rather than a dead one.
+
+Git still has them if you need to look:
+
+```bash
+git show 7764979:sbatch_scripts/legacy/sbatch_network_training.sh
+git log --diff-filter=D -- 'configs/legacy/*' 'sbatch_scripts/legacy/*'
+```

@@ -297,7 +297,7 @@ uv run sbatch_scripts/gen_sbatch.py generate \
 # {"command": "generate --config-path ...", "job_id": 9876543,
 #  "mlflow_experiment_id": "123456789", "mlflow_run_id": null,
 #  "sbatch_script": "/shared/data/output/runs/20260809T101500_ddm_generate_sbatch.sh",
-#  "output_path": "/shared/data/output", "account": "carney-frankmj-condo",
+#  "output_path": "/shared/data/output", "account": "carney-mjfrank-condo2",
 #  "partition": "batch"}
 #
 # Capture the experiment id for the training step:
