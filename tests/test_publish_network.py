@@ -52,6 +52,14 @@ class TestGateVerdict:
         ok, reason = gate_verdict(report(**{**ALL_RAN, "parity": (True, True)}))
         assert ok, reason
 
+    def test_a_gate_missing_from_the_report_is_not_a_pass(self):
+        # A truncated report or a schema change leaves no trace in the gate
+        # list, so absent has to count the same as skipped.
+        without_density = {k: v for k, v in ALL_RAN.items() if k != "density"}
+        ok, reason = gate_verdict(report(**without_density))
+        assert not ok
+        assert "density" in reason
+
     def test_a_failed_gate_is_reported_with_its_error(self):
         failing = {**ALL_RAN, "density": (False, False)}
         r = report(**failing)
@@ -116,6 +124,19 @@ class TestStaging:
         with pytest.raises(PublishError, match="does not exist"):
             stage_artifacts(tmp_path / "nope", "a" * 32, tmp_path / "staged")
 
+    def test_refuses_a_staging_directory_that_already_has_files(self, tmp_path):
+        # The whole staging dir is uploaded, so a leftover from a previous run
+        # would be published as part of this network and land in the manifest.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        (staged / "leftover_from_another_run.pickle").write_bytes(b"x")
+
+        with pytest.raises(PublishError, match="not empty"):
+            stage_artifacts(source, "a" * 32, staged)
+        assert (staged / "leftover_from_another_run.pickle").exists()
+
 
 class TestProductionGuard:
     def test_the_production_repo_is_named(self):
@@ -126,5 +147,22 @@ class TestProductionGuard:
     def test_publishing_to_production_is_refused(self):
         from publish.publish_network import run_publish
 
+        with pytest.raises(PublishError, match="production repo"):
+            run_publish(hf_repo="franklab/HSSM", model="ddm", network_type="lan")
+
+    def test_the_guard_runs_before_any_heavy_import(self, monkeypatch):
+        # A safety check an ImportError can preempt is not a safety check.
+        import builtins
+
+        from publish.publish_network import run_publish
+
+        real_import = builtins.__import__
+
+        def explode(name, *args, **kwargs):
+            if name.split(".")[0] in {"lanfactory", "validation", "tempfile"}:
+                raise ImportError(f"pretend {name} is not installed")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", explode)
         with pytest.raises(PublishError, match="production repo"):
             run_publish(hf_repo="franklab/HSSM", model="ddm", network_type="lan")

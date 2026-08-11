@@ -128,6 +128,17 @@ def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
     if not source.is_dir():
         raise PublishError(f"Artifact directory does not exist: {source}")
 
+    # Everything in here is uploaded, so a leftover file from a previous run
+    # would be published as part of this one and recorded in the manifest as
+    # this network's artifact set. Refusing rather than clearing: this path is
+    # user-supplied and deleting its contents is not ours to decide.
+    if destination.exists() and any(destination.iterdir()):
+        raise PublishError(
+            f"Staging directory {destination} is not empty. Its whole contents "
+            "get uploaded, so leftovers would be published as part of this "
+            "network. Remove it or pass a different --staging-dir."
+        )
+
     # Both trainers embed the uuid but in opposite positions —
     # jax: {uuid}_{nt}_{model}__{kind}, torch: {model}_{nt}_{uuid}_{kind} —
     # so it has to be matched anywhere in the name.
@@ -167,11 +178,15 @@ def gate_verdict(report: dict) -> tuple[bool, str]:
         )
         return False, f"gate failed — {details}"
 
-    unchecked = [n for n in REQUIRED_GATES if gates.get(n, {}).get("skipped")]
+    # Absent counts the same as skipped. A report missing a gate entirely — a
+    # schema change, a truncated file — is exactly the "looks passed, proves
+    # nothing" case this function exists to catch.
+    absent = {"skipped": True}
+    unchecked = [n for n in REQUIRED_GATES if gates.get(n, absent).get("skipped")]
     if unchecked:
         return False, (
             f"not actually checked: {', '.join(unchecked)}. "
-            "A skipped gate is not a passed gate."
+            "A skipped or missing gate is not a passed gate."
         )
     return True, "all required gates ran and passed"
 
@@ -226,6 +241,11 @@ def publish_network(
     import mlflow
 
     published_at = datetime.now(timezone.utc).isoformat()
+    # An unconfirmed sha is a lead, not a fact. Recording it under hf_commit
+    # would put a possibly-wrong value in the field everything else trusts, so
+    # it goes somewhere that reads as uncertain.
+    commit_key = "hf_commit" if hf_commit_verified else "hf_commit_candidate"
+
     with mlflow.start_run(
         experiment_id=_publish_experiment_id(artifact_location),
         run_name=f"publish-{model}-{network_type}",
@@ -235,7 +255,7 @@ def publish_network(
                 "model": model,
                 "network_type": network_type,
                 "hf_repo": repo_id,
-                "hf_commit": hf_commit or "unknown",
+                commit_key: hf_commit or "unknown",
                 "source_training_run_id": training_run_id or "unknown",
                 "source_run_uuid": run_uuid or "unknown",
                 "onnx_filename": Path(onnx_path).name,
@@ -284,7 +304,7 @@ def publish_network(
         client.set_tag(training_run_id, "published_at", published_at)
         client.set_tag(training_run_id, "publish_run_id", publish_run_id)
         if hf_commit:
-            client.set_tag(training_run_id, "hf_commit", hf_commit)
+            client.set_tag(training_run_id, commit_key, hf_commit)
         client.set_tag(training_run_id, "hf_repo", repo_id)
 
     return publish_run_id
@@ -360,6 +380,15 @@ def run_publish(
     allow_production: bool = False,
 ) -> dict:
     """The whole flow, importable so it can be tested without a CLI."""
+    # Before any import: a safety check that an ImportError can preempt is not
+    # a safety check, and this way the refusal is testable without the whole
+    # inference stack installed.
+    if hf_repo in PRODUCTION_REPOS and not allow_production:
+        raise PublishError(
+            f"{hf_repo} is the production repo every released HSSM downloads "
+            "from. Publish to a staging repo and promote deliberately."
+        )
+
     import tempfile
 
     from lanfactory.hf import VALID_NETWORK_TYPES
@@ -370,12 +399,6 @@ def run_publish(
     )
 
     from validation.validate_network import validate_network
-
-    if hf_repo in PRODUCTION_REPOS and not allow_production:
-        raise PublishError(
-            f"{hf_repo} is the production repo every released HSSM downloads "
-            "from. Publish to a staging repo and promote deliberately."
-        )
 
     run = resolve_training_run(run_id=run_id, model=model, network_type=network_type)
     run_uuid = run.data.tags["run_uuid"]
@@ -487,7 +510,9 @@ def run_publish(
     return {
         "published": True,
         "hf_url": hf_url,
-        "hf_commit": hf_commit,
+        # Same rule as the MLflow record: a driver reading hf_commit gets a sha
+        # that was confirmed, or no hf_commit at all.
+        ("hf_commit" if verified else "hf_commit_candidate"): hf_commit,
         "hf_commit_verified": verified,
         "publish_run_id": publish_run_id,
         **plan,
