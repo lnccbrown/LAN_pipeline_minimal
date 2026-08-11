@@ -714,7 +714,12 @@ def _no_cwd_litter(tmp_path, monkeypatch):
     assert not stray, f"artifacts leaked into CWD: {stray}"
 
 
-CONDO = {"account": "my-condo", "partition": "batch", "max_cores": 208, "priority": 10000}
+CONDO = {
+    "account": "my-condo",
+    "partition": "batch",
+    "max_cores": 208,
+    "priority": 10000,
+}
 SPILL = {"account": "default", "partition": "batch", "max_cores": 64, "priority": 0}
 
 
@@ -925,3 +930,31 @@ class TestFanOut:
         ]
         assert len(records) == 2
         assert all(r["job_id"] is None for r in records)
+
+
+class TestUvResolution:
+    """The generated script has to find uv on a real cluster node.
+
+    Oscar's `module load python` gives a spack Python 3.13 with neither pip
+    nor uv, so the original `python -m uv` + pip-bootstrap died on "No module
+    named pip" while a working uv sat unused in ~/.local/bin.
+    """
+
+    def test_prefers_the_uv_binary_over_the_python_module(self):
+        script = gen_sbatch.SBATCH_TEMPLATE
+        binary_check = script.index("command -v uv")
+        module_check = script.index("python -m uv --version")
+        assert binary_check < module_check
+
+    def test_puts_the_user_install_dir_on_path(self):
+        # A non-interactive batch shell does not read the profile that adds it.
+        assert 'export PATH="$HOME/.local/bin:$PATH"' in gen_sbatch.SBATCH_TEMPLATE
+
+    def test_fails_with_the_install_command_when_uv_cannot_be_found(self):
+        script = gen_sbatch.SBATCH_TEMPLATE
+        assert "astral.sh/uv/install.sh" in script
+        assert "exit 1" in script.split("No uv on PATH")[1]
+
+    def test_runs_through_the_resolved_uv(self):
+        # Not a hardcoded `python -m uv run`, which is what broke.
+        assert "$UV run {command}" in gen_sbatch.SBATCH_TEMPLATE
