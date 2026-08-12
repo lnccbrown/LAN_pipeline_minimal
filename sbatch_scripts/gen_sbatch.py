@@ -51,16 +51,48 @@ cd {project_root} || exit 1
 # MLflow environment variables
 {env_vars}
 
-if ! python -m uv --version >/dev/null 2>&1; then
-  if [ -n "${{VIRTUAL_ENV:-}}" ]; then
-    python -m pip install uv
-  else
-    python -m pip install --user uv
+# uv's own installer puts it here, and a batch shell does not read the rc file
+# that would normally add it.
+export PATH="$HOME/.local/bin:$PATH"
+
+resolve_uv() {{
+  if command -v uv >/dev/null 2>&1; then UV="uv"; return 0; fi
+  if python -m uv --version >/dev/null 2>&1; then UV="python -m uv"; return 0; fi
+  return 1
+}}
+
+if ! resolve_uv; then
+  if python -m pip --version >/dev/null 2>&1; then
+    if [ -n "${{VIRTUAL_ENV:-}}" ]; then
+      python -m pip install uv
+    else
+      python -m pip install --user uv
+    fi
+    hash -r   # a newly installed binary is not in bash's command hash yet
   fi
 fi
-python -m uv run {command}
+
+# Re-resolve rather than assuming the install worked. pip can fail for reasons
+# that have nothing to do with this script — compute nodes frequently have no
+# outbound network — and assuming success here would land us back at the
+# ModuleNotFoundError this whole block exists to prevent.
+if ! resolve_uv; then
+  echo "uv is not on PATH, not importable, and could not be installed." >&2
+  echo "The loaded python is: $(command -v python)" >&2
+  echo "Install uv once on the cluster, then resubmit:" >&2
+  echo "  curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+  exit 1
+fi
+
+$UV run {command}
 """
-# Notes on the install block above:
+# Notes on the uv resolution block above:
+# - The binary comes first. Oscar's `module load python` provides a spack
+#   Python 3.13 with neither pip nor uv, so `python -m uv` is not a dependable
+#   entry point *and* the pip bootstrap has nothing to bootstrap with — the
+#   job died on "No module named pip" while a working uv sat in ~/.local/bin.
+# - $HOME/.local/bin is prepended because a non-interactive batch shell skips
+#   the profile that usually adds it.
 # - `python -m pip`, not bare `pip`: after `module load python` the two can
 #   resolve to different interpreters, and uv must land in the one that runs
 #   the job on the next line.
@@ -68,8 +100,8 @@ python -m uv run {command}
 #   one ("User site-packages are not visible in this virtualenv"), and sbatch
 #   propagates the submitting environment by default — so an unconditional
 #   `--user` fails for anyone submitting from their project venv.
-# - Skipped entirely when uv is already importable, which is the common case
-#   on a node that has it.
+# - The last branch fails loudly with the install command rather than letting
+#   the job die two lines later on a confusing ModuleNotFoundError.
 # Braces are doubled because this string is consumed by str.format().
 
 
