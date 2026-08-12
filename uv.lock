@@ -2586,7 +2586,7 @@ wheels = [
 [[package]]
 name = "ssm-simulators"
 version = "0.13.2"
-source = { git = "https://github.com/lnccbrown/ssm-simulators?branch=main#ea96172b78b0cb2c14730b4b4f30f3e396424abe" }
+source = { git = "https://github.com/lnccbrown/ssm-simulators?branch=main#7f6f5c2cc75f551493b6a670a96e09fd4a850cb6" }
 dependencies = [
     { name = "cloudpickle" },
     { name = "matplotlib" },

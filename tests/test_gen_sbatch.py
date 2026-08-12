@@ -978,3 +978,53 @@ class TestUvResolution:
     def test_runs_through_the_resolved_uv(self):
         # Not a hardcoded `python -m uv run`, which is what broke.
         assert "$UV run {command}" in gen_sbatch.SBATCH_TEMPLATE
+
+
+class TestNCpusPassthrough:
+    """The generate command states its worker count instead of inferring it.
+
+    ssm-simulators defaults n_cpus to "all", which reads sched_getaffinity —
+    correct under SLURM, but it grabs the whole machine anywhere else, and
+    either way the number never reaches the submission record.
+    """
+
+    def test_n_cpus_matches_the_requested_cores(self, model_config, tmp_path):
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--cores",
+                "12",
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        script = next((out / "runs").glob("*.sh")).read_text()
+        # The CLI value and the SBATCH directive must not drift apart.
+        assert "--n-cpus 12" in script
+        assert "#SBATCH -c 12" in script
+
+    def test_training_commands_do_not_get_n_cpus(self, model_config, tmp_path):
+        # jaxtrain/torchtrain have no such option; passing it would be an error.
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "jaxtrain",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--training-data-folder",
+                str(tmp_path / "data"),
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        script = next((out / "runs").glob("*.sh")).read_text()
+        assert "--n-cpus" not in script
