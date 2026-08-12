@@ -14,11 +14,34 @@ dependencies = [
     "lanfactory>=0.8",
     "ssm-simulators>=0.13.2",
     "mlflow>=3.6.0",
+    # Declared so the CUDA-build pin in [tool.uv.sources] binds to it — uv
+    # sources only apply to *direct* dependencies. lanfactory pulls torch in
+    # regardless; this only controls which wheel is chosen.
+    "torch>=2.4",
 ]
+
+# torch arrives via lanfactory, and PyPI's default wheel now targets CUDA 13.
+# Oscar's GPU nodes run driver 575.57.08, which tops out at CUDA 12.9, so that
+# wheel cannot initialise CUDA — and torch does not fail, it falls back to CPU.
+# The job then holds a GPU allocation at 0% utilisation and trains on the host,
+# which for a production LAN is the difference between hours and a week.
+#
+# cu128 is the portable choice, not the narrow one: CUDA minor-version
+# compatibility means a cu12x build runs on any driver >= its minimum,
+# including newer ones. Defaulting to the newest build is what breaks.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [tool.uv.sources]
 lanfactory = { git = "https://github.com/lnccbrown/lanfactory", branch = "main" }
 ssm-simulators = { git = "https://github.com/lnccbrown/ssm-simulators", branch = "main" }
+# Linux only: there are no macOS CUDA wheels, so an unconditional pin would
+# make the lock unresolvable on a laptop. Sources apply to *declared*
+# dependencies, which is why torch is listed above even though lanfactory
+# already pulls it.
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
 
 [dependency-groups]
 # The gate loads a candidate network through HSSM itself — this is the one repo
