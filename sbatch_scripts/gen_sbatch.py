@@ -766,6 +766,14 @@ def handle_job(
         )
         if command_name == "generate" and n_files is not None:
             params["n-files"] = n_files
+        if command_name == "generate":
+            # State the worker count instead of letting the generator infer it.
+            # Its "all" default reads sched_getaffinity, which is correct under
+            # SLURM but grabs the whole machine anywhere else — and either way
+            # the number never appears in the submission record. Passing the
+            # cores we actually requested keeps the two in step and puts the
+            # value in the generated script and the JSON line.
+            params["n-cpus"] = resources["cores"]
         command = create_command(command_name, **params)
         logger.info(f"Generated command: {command}")
 
