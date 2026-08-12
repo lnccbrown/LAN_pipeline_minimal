@@ -34,8 +34,8 @@ LAN_pipeline_minimal/
 │   │   └── oscar.yaml      # Condos, limits, per-job-kind defaults
 │   └── README.md           # Config documentation
 ├── sbatch_scripts/
-│   ├── gen_sbatch.py       # Main orchestrator script
-│   └── sample_*.sh         # Example generated SBATCH scripts
+│   └── gen_sbatch.py       # Main orchestrator script
+│                           # (for an example script, use --script-only)
 ├── tests/                  # pytest suite for gen_sbatch + validation gate
 ├── local_test_run.sh       # Local end-to-end test script
 ├── using_mlflow.md         # MLflow integration guide
@@ -107,7 +107,8 @@ That line is the interface for scripted use — `jq -r .job_id` to poll with
 `sacct`, `jq -r .mlflow_experiment_id` to chain into training. A failed
 submission exits non-zero with `"job_id": null`. `--script-only` writes the
 script and prints the same line without submitting, and creates no MLflow
-experiment or run.
+experiment or run — it is also the way to see an example script, since one
+generated on demand cannot be out of date the way a checked-in copy can.
 
 **Cluster resources.** `--cluster-config` reads per-job-kind defaults
 (account, partition, cores, memory, GPUs, wall time) from a cluster
