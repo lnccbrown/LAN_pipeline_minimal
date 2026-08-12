@@ -953,7 +953,27 @@ class TestUvResolution:
     def test_fails_with_the_install_command_when_uv_cannot_be_found(self):
         script = gen_sbatch.SBATCH_TEMPLATE
         assert "astral.sh/uv/install.sh" in script
-        assert "exit 1" in script.split("No uv on PATH")[1]
+        assert "exit 1" in script.split("could not be installed")[1]
+
+    def test_the_pip_bootstrap_is_verified_before_being_trusted(self):
+        """pip can fail — compute nodes often have no outbound network.
+
+        The first version set UV="python -m uv" straight after the install and
+        fell through to `$UV run`, landing back at the ModuleNotFoundError this
+        block exists to prevent. Resolution must happen *after* the install.
+        """
+        script = gen_sbatch.SBATCH_TEMPLATE
+        install = script.index("pip install")
+        # The last resolve_uv call, and the failure branch, both come after it.
+        assert script.rindex("if ! resolve_uv; then") > install
+        assert script.index("could not be installed") > install
+        # And nothing assigns UV unconditionally on the way out of the install.
+        assert 'UV="python -m uv"\nfi' not in script
+
+    def test_resolution_is_defined_once(self):
+        # One helper, one failure message — the earlier shape duplicated both.
+        assert gen_sbatch.SBATCH_TEMPLATE.count("resolve_uv() {{") == 1
+        assert gen_sbatch.SBATCH_TEMPLATE.count("could not be installed") == 1
 
     def test_runs_through_the_resolved_uv(self):
         # Not a hardcoded `python -m uv run`, which is what broke.
