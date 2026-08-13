@@ -184,3 +184,6 @@ cython_debug/
 # Per-user cluster lanes written by scripts/discover_cluster.py.
 # Personal allocations and paths never belong in the repo.
 configs/cluster/*.local.yaml
+
+# marimo scratch output
+__marimo__/
