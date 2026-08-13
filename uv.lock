@@ -1179,8 +1179,9 @@ wheels = [
 [[package]]
 name = "lan-pipeline-minimal"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
+    { name = "huggingface-hub" },
     { name = "lanfactory" },
     { name = "mlflow" },
     { name = "ssm-simulators" },
@@ -1201,6 +1202,7 @@ validate = [
 
 [package.metadata]
 requires-dist = [
+    { name = "huggingface-hub", specifier = ">=0.20" },
     { name = "lanfactory", git = "https://github.com/lnccbrown/lanfactory?branch=main" },
     { name = "mlflow", specifier = ">=3.6.0" },
     { name = "ssm-simulators", git = "https://github.com/lnccbrown/ssm-simulators?branch=main" },
@@ -1222,7 +1224,7 @@ validate = [
 [[package]]
 name = "lanfactory"
 version = "0.8.0"
-source = { git = "https://github.com/lnccbrown/lanfactory?branch=main#1276ad26f6cc2c2f3af946f87fdcf299af89fd91" }
+source = { git = "https://github.com/lnccbrown/lanfactory?branch=main#a50850befbc64550347317e21d7b6e60116c06ed" }
 dependencies = [
     { name = "flax" },
     { name = "frozendict" },
