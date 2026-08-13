@@ -85,6 +85,15 @@ def resolve_training_run(
     else:
         if not (model and network_type):
             raise PublishError("Pass --run-id, or both --model and --network-type.")
+        # MLflow's filter grammar has no working escape for the quote that
+        # delimits a value, so a quote in either name produces a parser error —
+        # an MlflowException, which is not a PublishError and so escapes main's
+        # handler along with its print-JSON-on-stdout contract.
+        if "'" in model or "'" in network_type:
+            raise PublishError(
+                f"Quotes are not allowed in --model or --network-type "
+                f"(model={model!r}, network_type={network_type!r})."
+            )
         filter_string = (
             f"params.model = '{model}' and params.network_type = '{network_type}'"
         )
@@ -128,16 +137,8 @@ def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
     if not source.is_dir():
         raise PublishError(f"Artifact directory does not exist: {source}")
 
-    # Everything in here is uploaded, so a leftover file from a previous run
-    # would be published as part of this one and recorded in the manifest as
-    # this network's artifact set. Refusing rather than clearing: this path is
-    # user-supplied and deleting its contents is not ours to decide.
-    if destination.exists() and any(destination.iterdir()):
-        raise PublishError(
-            f"Staging directory {destination} is not empty. Its whole contents "
-            "get uploaded, so leftovers would be published as part of this "
-            "network. Remove it or pass a different --staging-dir."
-        )
+    if destination.exists() and not destination.is_dir():
+        raise PublishError(f"Staging path {destination} is not a directory.")
 
     # Both trainers embed the uuid but in opposite positions —
     # jax: {uuid}_{nt}_{model}__{kind}, torch: {model}_{nt}_{uuid}_{kind} —
@@ -148,6 +149,28 @@ def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
             f"No artifacts matching run_uuid {run_uuid} in {source}. "
             "If training ran on the cluster, fetch them first and pass "
             "--artifact-dir."
+        )
+
+    # Everything in here is uploaded, so a file from a *different* run would be
+    # published as part of this one and recorded in the manifest as this
+    # network's artifact set. What this call is about to write is not that: a
+    # dry run or a failed gate leaves exactly these names behind, and making
+    # the operator clear them before the real publish buys no safety and costs
+    # them the report they were about to read. Refusing rather than clearing
+    # anything else — the path is user-supplied, and deleting its contents is
+    # not ours to decide.
+    ours = {p.name for p in matches} | {"validation_report.json"}
+    leftovers = (
+        sorted(p.name for p in destination.iterdir() if p.name not in ours)
+        if destination.exists()
+        else []
+    )
+    if leftovers:
+        raise PublishError(
+            f"Staging directory {destination} holds files this publish did not "
+            f"produce ({', '.join(leftovers[:5])}). Its whole contents get "
+            "uploaded, so they would be published as part of this network. "
+            "Remove them or pass a different --staging-dir."
         )
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -170,8 +193,11 @@ def gate_verdict(report: dict) -> tuple[bool, str]:
     Not the same as ``report["passed"]``: a skipped gate reports passed=True,
     so a report where everything skipped is "passed" and proves nothing.
     """
-    gates = {g["gate"]: g for g in report["gates"]}
-    failed = [name for name, g in gates.items() if not g["passed"]]
+    # .get throughout: the reports this function is defending against are the
+    # malformed ones, so a missing "gates" key or a gate with no "passed" has
+    # to come out as a refusal, not a KeyError that main does not catch.
+    gates = {g["gate"]: g for g in report.get("gates", [])}
+    failed = [name for name, g in gates.items() if not g.get("passed")]
     if failed:
         details = "; ".join(
             f"{n}: {gates[n].get('error', 'did not pass')}" for n in failed
@@ -299,13 +325,24 @@ def publish_network(
         publish_run_id = publish_run.info.run_id
 
     if training_run_id:
-        client = mlflow.MlflowClient()
-        client.set_tag(training_run_id, "published", "true")
-        client.set_tag(training_run_id, "published_at", published_at)
-        client.set_tag(training_run_id, "publish_run_id", publish_run_id)
-        if hf_commit:
-            client.set_tag(training_run_id, commit_key, hf_commit)
-        client.set_tag(training_run_id, "hf_repo", repo_id)
+        # Back-references only — the publish run above already records which
+        # training run this came from, and the upload is already live. A store
+        # that refuses these writes (a read-only mirror, a deleted run) must
+        # not cost the caller the hf_url of a publish that did succeed: main
+        # catches PublishError alone, so anything else here would exit with a
+        # traceback and no JSON at all.
+        try:
+            client = mlflow.MlflowClient()
+            client.set_tag(training_run_id, "published", "true")
+            client.set_tag(training_run_id, "published_at", published_at)
+            client.set_tag(training_run_id, "publish_run_id", publish_run_id)
+            if hf_commit:
+                client.set_tag(training_run_id, commit_key, hf_commit)
+            client.set_tag(training_run_id, "hf_repo", repo_id)
+        except Exception as e:  # noqa: BLE001 - the upload already happened
+            logger.warning(
+                f"Published, but could not stamp training run {training_run_id}: {e}"
+            )
 
     return publish_run_id
 
@@ -328,7 +365,14 @@ def main(
     staging_dir: Path = typer.Option(
         None, help="Where to assemble this run's files [default: a temp dir]."
     ),
-    skip_density: bool = typer.Option(False, help="Skip G4 (not for a real publish)."),
+    skip_density: bool = typer.Option(
+        False,
+        # Density is a required gate, so skipping it makes gate_verdict refuse.
+        # The flag cannot produce a publish at all — it only saves the cost of
+        # the slowest gate while dry-running the resolve/stage/plan path.
+        help="Skip G4. No publish is possible with this set; it only "
+        "shortens --dry-run.",
+    ),
     dry_run: bool = typer.Option(
         False, help="Validate and show the plan; touch neither HF nor MLflow."
     ),
@@ -383,7 +427,15 @@ def run_publish(
     # Before any import: a safety check that an ImportError can preempt is not
     # a safety check, and this way the refusal is testable without the whole
     # inference stack installed.
-    if hf_repo in PRODUCTION_REPOS and not allow_production:
+    # Normalized once and used from here on, not compared raw: HuggingFace
+    # namespaces are case-insensitively unique, so "Franklab/HSSM" is not some
+    # other repo — it is this one with a capital letter, and a raw string match
+    # lets it walk past the only check standing in front of an irreversible
+    # write. Surrounding whitespace and a trailing slash survive a copy-paste
+    # and name the same repo too.
+    hf_repo = hf_repo.strip().strip("/")
+    production = {repo.casefold() for repo in PRODUCTION_REPOS}
+    if hf_repo.casefold() in production and not allow_production:
         raise PublishError(
             f"{hf_repo} is the production repo every released HSSM downloads "
             "from. Publish to a staging repo and promote deliberately."
@@ -406,6 +458,15 @@ def run_publish(
     # output layer and can write 'unknown' into the name.
     model = run.data.params.get("model", model)
     network_type = run.data.params.get("network_type", network_type)
+    # network_type has a closed set to check against; model has none, but it
+    # has to at least exist — it becomes a path segment and the root filename
+    # HSSM downloads by, so an unset one gets as far as a TypeError building
+    # the artifact path, or a network published as "None.onnx".
+    if not model:
+        raise PublishError(
+            f"Run {run.info.run_id} records no model param and none was given. "
+            "Pass --model."
+        )
     if network_type not in VALID_NETWORK_TYPES:
         raise PublishError(
             f"network_type {network_type!r} is not one of {list(VALID_NETWORK_TYPES)}."
