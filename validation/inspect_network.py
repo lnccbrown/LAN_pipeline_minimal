@@ -85,10 +85,26 @@ def _(mo):
     report_path = onnx_path.parent / "validation_report.json"
     report = json.loads(report_path.read_text()) if report_path.exists() else None
 
+    # The report is directory-scoped but the artifact is not, and LANfactory
+    # writes every run of a model into one flat folder — so the report sitting
+    # here may well describe a different network. Rendering its verdict under
+    # this artifact's name would be the worst kind of wrong. Matched on
+    # filename rather than full path: the names carry the run_uuid, and a
+    # report fetched from the cluster records the path it was gated at there.
+    _describes = Path(report.get("onnx", "")).name if report else None
+    report_note = "not found — showing plots only"
+    if report and _describes != onnx_path.name:
+        report_note = (
+            f"**ignored — it describes `{_describes or 'an unnamed artifact'}`**"
+        )
+        report = None
+    elif report:
+        report_note = "found"
+
     mo.md(f"""
     **Artifact** `{onnx_path.name}`
     **Model** `{model_name}`
-    **Gate report** {"found" if report else "not found — showing plots only"}
+    **Gate report** {report_note}
     """)
     return json, model_name, onnx_path, report
 
@@ -97,7 +113,7 @@ def _(mo):
 def _(mo, report):
     def _verdict_table(report):
         if not report:
-            return mo.md("_No gate report alongside this artifact._")
+            return mo.md("_No gate report for this artifact._")
         rows = []
         for gate in report["gates"]:
             scores = {
@@ -133,6 +149,17 @@ def _(model_name, onnx_path):
     _session = ort.InferenceSession(str(onnx_path))
     _input_name = _session.get_inputs()[0].name
 
+    # Checked once, here: everything below reads column zero of the first
+    # output, so a graph with a second output — or a wider one — would still
+    # plot, showing a slice of something that is not this network's
+    # log-density. A LAN returns exactly one value per trial.
+    if len(_session.get_outputs()) != 1:
+        raise ValueError(
+            f"{onnx_path.name} has {len(_session.get_outputs())} outputs; a "
+            "LAN has one log-density output. This is not a network these "
+            "plots can read."
+        )
+
     def predict_on_batch(batch):
         """Adapt a single-trial ONNX to the inspectors' batch predictor.
 
@@ -142,7 +169,7 @@ def _(model_name, onnx_path):
         `evaluate_network` indexes with `[:, 0]`.
         """
         rows = np.asarray(batch, dtype=np.float32)
-        return np.stack(
+        out = np.stack(
             [
                 np.asarray(
                     _session.run(None, {_input_name: rows[i : i + 1]})[0]
@@ -150,6 +177,13 @@ def _(model_name, onnx_path):
                 for i in range(rows.shape[0])
             ]
         )
+        if out.shape[1] != 1:
+            raise ValueError(
+                f"{onnx_path.name} returned {out.shape[1]} values per trial, "
+                "not one log-density. The plots index column zero and would "
+                "quietly show a slice of it."
+            )
+        return out
 
     import ssms
 
