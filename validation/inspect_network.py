@@ -64,7 +64,20 @@ def _(mo):
     import os
     from pathlib import Path
 
-    onnx_path = Path(os.environ["INSPECT_ONNX"]).expanduser()
+    # The notebook's entire input is this one variable, so say so rather than
+    # letting a bare KeyError land in the cell output of a human-facing tool.
+    _onnx_env = os.environ.get("INSPECT_ONNX")
+    if not _onnx_env:
+        raise RuntimeError(
+            "Set INSPECT_ONNX to the artifact to inspect, then reopen:\n"
+            "    export INSPECT_ONNX=/path/to/..._model.onnx\n"
+            "    export INSPECT_MODEL=ddm_sdv   # optional, defaults to ddm"
+        )
+    onnx_path = Path(_onnx_env).expanduser()
+    if not onnx_path.is_file():
+        # Caught here rather than in the onnxruntime cell below, so the cells
+        # in between do not render a confident header for a file that is absent.
+        raise FileNotFoundError(f"INSPECT_ONNX does not exist: {onnx_path}")
     model_name = os.environ.get("INSPECT_MODEL", "ddm")
 
     # The gate writes this next to the artifact when it runs. Optional: the
@@ -155,16 +168,21 @@ def _(lower, mo, np, param_names, upper):
     # failures that say nothing about ordinary use. Same 10% the gate uses.
     _shrink = 0.1
     _span = upper - lower
-    _lo, _hi = lower + _shrink * _span, upper - _shrink * _span
+    # Not underscore-prefixed like the rest: marimo keeps `_`-names cell-local,
+    # and the manifold sweep below has to land inside the same box these draws
+    # come from.
+    lo_shrunk, hi_shrunk = lower + _shrink * _span, upper - _shrink * _span
 
     _rng = np.random.default_rng(0)
     n_parameter_sets = 3
     parameter_df = pd.DataFrame(
-        _lo + (_hi - _lo) * _rng.uniform(size=(n_parameter_sets, len(param_names))),
+        lo_shrunk
+        + (hi_shrunk - lo_shrunk)
+        * _rng.uniform(size=(n_parameter_sets, len(param_names))),
         columns=param_names,
     )
     mo.ui.table(parameter_df.round(3), label="Parameter vectors under inspection")
-    return parameter_df, pd
+    return hi_shrunk, lo_shrunk, parameter_df, pd
 
 
 @app.cell
@@ -201,16 +219,29 @@ def _(mo):
 
 
 @app.cell
-def _(model_name, np, param_names, parameter_df, predict_on_batch):
+def _(
+    hi_shrunk,
+    lo_shrunk,
+    model_name,
+    np,
+    param_names,
+    parameter_df,
+    predict_on_batch,
+):
     from lanfactory.network_inspectors import lan_manifold
 
     # Sweep drift where the model has it, otherwise the first parameter, so
-    # this cell does not assume a particular model's parameterisation.
+    # this cell does not assume a particular model's parameterisation — and
+    # sweep it across its own trained range rather than a fixed window. The
+    # models without a `v` lead with a strictly positive parameter (race `v0`,
+    # lba `A`, poisson_race `r1`), where a hardcoded -1.5..1.5 is mostly
+    # domain the network was never shown.
     _sweep = "v" if "v" in param_names else param_names[0]
+    _i = param_names.index(_sweep)
 
     lan_manifold(
         parameter_df=parameter_df,
-        vary_dict={_sweep: list(np.linspace(-1.5, 1.5, 9))},
+        vary_dict={_sweep: list(np.linspace(lo_shrunk[_i], hi_shrunk[_i], 9))},
         model=model_name,
         torch_mlp_predict=predict_on_batch,
     )
