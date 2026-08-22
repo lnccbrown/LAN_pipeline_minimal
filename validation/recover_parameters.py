@@ -244,7 +244,7 @@ def main(
     ),
     onnx_path: Path | None = typer.Option(None, help="Required for the network arm."),
     out_dir: Path = typer.Option(Path("."), help="Where the shard JSON is written."),
-    draws: int = typer.Option(500),
+    draws: int = typer.Option(1000),
     tune: int = typer.Option(1000),
     chains: int = typer.Option(2),
     target_accept: float = typer.Option(0.9),

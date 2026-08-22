@@ -27,16 +27,16 @@ class TestDesigns:
             assert design.n_trials % design.n_conditions == 0
 
     def test_l0_has_no_condition_column_and_l1_does(self):
-        l0, _ = rd.build_dataset(rd.DESIGNS["L0_n1000"], seed=1)
-        l1, _ = rd.build_dataset(rd.DESIGNS["L1_n1000"], seed=1)
+        l0, _ = rd.build_dataset(rd.DESIGNS["L0_n500"], seed=1)
+        l1, _ = rd.build_dataset(rd.DESIGNS["L1_n500"], seed=1)
         assert "condition" not in l0.columns
         assert sorted(l1["condition"].unique()) == [0, 1, 2, 3]
-        assert len(l0) == len(l1) == 1000
+        assert len(l0) == len(l1) == 500
 
     def test_conditions_are_balanced(self):
-        data, _ = rd.build_dataset(rd.DESIGNS["L1_n4000"], seed=2)
+        data, _ = rd.build_dataset(rd.DESIGNS["L1_n2000"], seed=2)
         counts = data["condition"].value_counts().to_numpy()
-        assert set(counts.tolist()) == {1000}
+        assert set(counts.tolist()) == {500}
 
     def test_truth_lands_inside_hssm_bounds_not_the_training_box(self):
         # sv is the one that matters: HSSM caps the ONNX likelihood at 1.0
@@ -53,8 +53,8 @@ class TestDesigns:
             assert truth["sv"] <= 1.0
 
     def test_drift_varies_by_condition_only_in_l1(self):
-        l0 = rd.draw_truth(rd.DESIGNS["L0_n1000"], seed=3)
-        l1 = rd.draw_truth(rd.DESIGNS["L1_n1000"], seed=3)
+        l0 = rd.draw_truth(rd.DESIGNS["L0_n500"], seed=3)
+        l1 = rd.draw_truth(rd.DESIGNS["L1_n500"], seed=3)
         assert isinstance(l0["v"], float)
         assert isinstance(l1["v"], list) and len(l1["v"]) == 4
         # Everything else stays shared, which is the point of the design.
@@ -62,7 +62,7 @@ class TestDesigns:
             assert isinstance(l1[param], float)
 
     def test_same_seed_gives_identical_data_so_arms_are_paired(self):
-        design = rd.DESIGNS["L0_n1000"]
+        design = rd.DESIGNS["L0_n500"]
         first, truth_a = rd.build_dataset(design, seed=7)
         second, truth_b = rd.build_dataset(design, seed=7)
         assert truth_a == truth_b
@@ -71,7 +71,7 @@ class TestDesigns:
     def test_model_spec_pins_priors_to_the_onnx_box_for_every_parameter(self):
         # Both arms must share priors, or the comparison is not paired: the
         # analytical likelihood's own default bounds leave sv unbounded above.
-        spec = rd.model_spec(rd.DESIGNS["L1_n1000"])
+        spec = rd.model_spec(rd.DESIGNS["L1_n500"])
         by_name = {entry["name"]: entry for entry in spec["include"]}
         assert set(by_name) == set(rd.PARAM_ORDER)
         assert by_name["sv"]["prior"] == {"name": "Uniform", "lower": 0.0, "upper": 1.0}
@@ -79,13 +79,13 @@ class TestDesigns:
         assert "formula" not in by_name["a"]
 
     def test_posterior_names_match_the_formula(self):
-        assert rd.posterior_names(rd.DESIGNS["L0_n1000"])["v"] == ["v"]
-        assert rd.posterior_names(rd.DESIGNS["L1_n1000"])["v"] == ["v_C(condition)"]
+        assert rd.posterior_names(rd.DESIGNS["L0_n500"])["v"] == ["v"]
+        assert rd.posterior_names(rd.DESIGNS["L1_n500"])["v"] == ["v_C(condition)"]
 
 
 def shard(
     likelihood,
-    design="L0_n1000",
+    design="L0_n500",
     index=0,
     *,
     covered=True,
@@ -132,7 +132,7 @@ class TestAggregation:
     def test_non_converged_fits_are_excluded_not_failed(self):
         shards = [shard("analytical", index=i, rhat=1.5) for i in range(5)]
         summary = agg.summarise(shards)
-        cell = summary["cells"]["analytical|L0_n1000|v"]
+        cell = summary["cells"]["analytical|L0_n500|v"]
         assert cell["n_fits"] == 5
         assert cell["n_converged"] == 0
         assert cell["coverage"] is None
@@ -141,12 +141,12 @@ class TestAggregation:
         shards = [shard("analytical", index=0, divergence_rate=0.5)]
         summary = agg.summarise(shards)
         assert summary["cells"] == {}
-        assert summary["excluded_for_divergences"]["analytical|L0_n1000"] == 1
+        assert summary["excluded_for_divergences"]["analytical|L0_n500"] == 1
 
     def test_errored_shards_are_collected_rather_than_crashing(self):
         shards = [
             {
-                "design": "L0_n1000",
+                "design": "L0_n500",
                 "likelihood": "analytical",
                 "dataset_index": 3,
                 "error": "boom",
@@ -154,7 +154,7 @@ class TestAggregation:
         ]
         summary = agg.summarise(shards)
         assert summary["errors"][0]["error"] == "boom"
-        assert summary["attempted"]["analytical|L0_n1000"] == 1
+        assert summary["attempted"]["analytical|L0_n500"] == 1
 
     def test_a_network_missing_coverage_the_analytical_arm_reaches_fails(self):
         shards = [shard("analytical", index=i, covered=True) for i in range(20)]
@@ -185,7 +185,7 @@ class TestAggregation:
         summary = agg.summarise(shards)
         passed, _ = agg.verdict(summary)
         assert passed
-        assert summary["cells"]["approx_differentiable|L0_n1000|v"][
+        assert summary["cells"]["approx_differentiable|L0_n500|v"][
             "median_contraction"
         ] == pytest.approx(0.95)
 
@@ -215,7 +215,7 @@ class TestAggregation:
         # the only difference between L0 and L1. If the shared parameters also
         # drifted between levels, "L1 recovers sv better" could just mean "L1
         # drew an easier sv", and the whole comparison would be worthless.
-        for n in (1000, 4000):
+        for n in (500, 2000):
             l0 = rd.draw_truth(rd.DESIGNS[f"L0_n{n}"], seed=11)
             l1 = rd.draw_truth(rd.DESIGNS[f"L1_n{n}"], seed=11)
             for param in ("a", "z", "t", "sv"):

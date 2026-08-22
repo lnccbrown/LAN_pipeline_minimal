@@ -6,18 +6,20 @@ densities. But a recovery failure has two causes that look identical from the
 outside — the network is wrong, or the *model is not identifiable under that
 design* — and only one of them is our problem.
 
-The ladder here exists to separate them. Every level draws the same ground
-truth and holds the trial count fixed; only the experimental structure changes:
+The ladder here exists to separate them, by crossing two axes:
 
     L0  one condition, all five parameters free. The naive test, and the one
         most likely to leave `sv` weakly determined.
     L1  four conditions where the drift rate varies and everything else is
-        shared. Ratcliff & McKoon report ~200 trials per condition as the floor
-        for reliable recovery of this family, so 250/condition is the smallest
-        rung worth running.
+        shared — the LAN paper's remedy for weak identifiability.
 
-If L0 fails and L1 recovers, the design was the problem. If both fail, compare
-against the analytical arm before blaming the network.
+    x   500 and 2000 total trials, so "not enough data" and "not enough design"
+        are distinguishable rather than confounded.
+
+Truths for the shared parameters are held identical across all four cells at a
+given dataset index, so a difference between cells is the design, never the
+draw. If L0 fails and L1 recovers, the design was the problem. If both fail,
+compare against the analytical arm before blaming the network.
 
 Ground truth is drawn from **HSSM's** declared bounds for the ONNX likelihood,
 not from the box the networks were trained on. Those disagree: HSSM caps `sv`
@@ -70,13 +72,29 @@ class Design:
         return self.n_trials // self.n_conditions
 
 
+# 500 and 2000 total trials, crossed with 1 and 4 conditions. The counts are
+# deliberately modest: a real experiment is a few hundred trials per subject,
+# and a ladder calibrated at 4000 would prove identifiability nobody can buy.
+#
+# Crossing the two axes rather than only varying structure is what separates
+# "not enough data" from "not enough design". Read the 2x2:
+#
+#                   1 condition        4 conditions
+#     500 total     L0_n500            L1_n500   (125/condition)
+#     2000 total    L0_n2000           L1_n2000  (500/condition)
+#
+# Down a column, only the design changes at fixed data. Along the bottom row
+# sits the realistic case: 500 trials per condition, which is what you would
+# actually run. L1_n500's 125/condition is deliberately below Ratcliff &
+# McKoon's ~200/condition floor, so the ladder should visibly fail there — a
+# ladder that never fails is not measuring anything.
 DESIGNS: dict[str, Design] = {
     d.name: d
     for d in (
-        Design("L0_n1000", n_trials=1000, n_conditions=1),
-        Design("L0_n4000", n_trials=4000, n_conditions=1),
-        Design("L1_n1000", n_trials=1000, n_conditions=4),
-        Design("L1_n4000", n_trials=4000, n_conditions=4),
+        Design("L0_n500", n_trials=500, n_conditions=1),
+        Design("L0_n2000", n_trials=2000, n_conditions=1),
+        Design("L1_n500", n_trials=500, n_conditions=4),
+        Design("L1_n2000", n_trials=2000, n_conditions=4),
     )
 }
 
