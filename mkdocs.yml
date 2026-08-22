@@ -1,0 +1,98 @@
+site_name: LAN pipeline
+site_description: Generate simulation data, train likelihood networks, and promote validated artifacts.
+site_url: https://lnccbrown.github.io/LAN_pipeline_minimal/
+repo_name: lnccbrown/LAN_pipeline_minimal
+repo_url: https://github.com/lnccbrown/LAN_pipeline_minimal
+edit_uri: edit/main/docs/
+
+nav:
+  - Home: index.md
+  - Learn:
+      - Learning path: learn/index.md
+      - Run the CI-backed local workflow: learn/local-workflow.md
+  - How-to guides:
+      - Operator guide: how-to/index.md
+  - Explanations:
+      - Concepts: explanations/index.md
+  - Reference:
+      - Interface reference: reference/index.md
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+plugins:
+  - search
+  - redirects
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  logo: images/navlogo.png
+  favicon: images/navlogo.png
+  features:
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.path
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - content.code.copy
+    - content.action.view
+    - content.action.edit
+    - header.autohide
+  palette:
+    - media: "(prefers-color-scheme)"
+      scheme: ocean
+      primary: custom
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: ocean
+      primary: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to automatic mode
+
+copyright: >-
+  Copyright &copy; 2026 FRANK LAB // LNCC. LAN_pipeline_minimal is distributed
+  under the MIT License.
+
+extra:
+  homepage: https://lnccbrown.github.io/LAN_pipeline_minimal/
+  release_announcement: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/lnccbrown/LAN_pipeline_minimal
+    - icon: material/forum
+      link: https://github.com/lnccbrown/HSSM/discussions
+
+extra_css:
+  - styles/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg

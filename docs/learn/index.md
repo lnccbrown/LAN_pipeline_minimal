@@ -1,0 +1,48 @@
+# Learning path
+
+This path is for someone who can run Python commands but has not operated the
+LAN training pipeline before. Work through it in order: each step introduces an
+interface that the next step relies on.
+
+## Before you begin
+
+You need:
+
+- Python 3.12 and [uv](https://docs.astral.sh/uv/);
+- a checkout of this repository with its tracked `uv.lock`;
+- GSL and a working C compiler, because ssm-simulators builds native extensions;
+- access to a Slurm cluster only when you move beyond the local tutorial.
+
+The repository installs ssm-simulators and LANfactory from the git revisions in
+`uv.lock`. Treat that lockfile as part of the workflow, not generated clutter.
+
+## 1. Establish a local baseline
+
+[Run the CI-backed local workflow](local-workflow.md). It generates a tiny DDM
+dataset, trains a small JAX LAN, and records the handoff in MLflow. You should be
+able to identify the generated data, the trained artifacts, and the two MLflow
+experiments before continuing.
+
+## 2. Learn the operator controls
+
+Next, use the how-to guides to:
+
+1. discover the cluster lanes attached to your own account;
+2. turn the quick-test commands into inspectable Slurm scripts;
+3. move MLflow metadata and artifacts onto shared storage;
+4. validate and inspect a candidate network;
+5. dry-run the staging and publication plan.
+
+The local workflow proves the package integration. A generated Slurm script
+proves the orchestration plan. Neither result proves a network is scientifically
+fit to publish; the validation and promotion steps provide that boundary.
+
+## 3. Read the contracts before automating
+
+The explanation pages describe why experiment-level lineage, single-run staging,
+and a fail-closed promotion gate exist. The reference pages then define the CLI,
+YAML, environment, and JSON interfaces that drivers can depend on.
+
+When you finish, you should be able to trace one network backward from its
+publication record to its training run, its generation experiment, its configs,
+and the exact dependency revisions in `uv.lock`.
