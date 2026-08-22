@@ -12,6 +12,11 @@ nav:
       - Run the CI-backed local workflow: learn/local-workflow.md
   - How-to guides:
       - Operator guide: how-to/index.md
+      - Configure cluster resources: how-to/configure-cluster.md
+      - Generate and submit Slurm jobs: how-to/submit-slurm-jobs.md
+      - Track runs with MLflow: how-to/track-with-mlflow.md
+      - Validate and inspect a network: how-to/validate-network.md
+      - Stage and publish a network: how-to/stage-and-publish.md
   - Explanations:
       - Concepts: explanations/index.md
   - Reference:

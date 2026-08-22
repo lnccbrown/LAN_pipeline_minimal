@@ -27,11 +27,14 @@ experiments before continuing.
 
 Next, use the how-to guides to:
 
-1. discover the cluster lanes attached to your own account;
-2. turn the quick-test commands into inspectable Slurm scripts;
-3. move MLflow metadata and artifacts onto shared storage;
-4. validate and inspect a candidate network;
-5. dry-run the staging and publication plan.
+1. [discover the cluster lanes](../how-to/configure-cluster.md) attached to your
+   own account;
+2. turn the quick-test commands into
+   [inspectable Slurm scripts](../how-to/submit-slurm-jobs.md);
+3. move [MLflow metadata and artifacts](../how-to/track-with-mlflow.md) onto
+   shared storage;
+4. [validate and inspect](../how-to/validate-network.md) a candidate network;
+5. [dry-run the staging and publication plan](../how-to/stage-and-publish.md).
 
 The local workflow proves the package integration. A generated Slurm script
 proves the orchestration plan. Neither result proves a network is scientifically
