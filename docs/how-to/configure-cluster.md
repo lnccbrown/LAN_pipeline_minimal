@@ -42,12 +42,10 @@ uv run python sbatch_scripts/gen_sbatch.py generate \
   --script-only
 ```
 
-`gen_sbatch` automatically merges the adjacent local overlay. Resource values
-resolve in this order:
-
-```text
-built-in fallback < committed cluster config < personal overlay < CLI flag
-```
+`gen_sbatch` automatically merges the adjacent local overlay. The
+[configuration reference](../reference/configuration.md#personal-overlay-and-precedence)
+owns the exact merge and precedence contract; explicit CLI resource flags are
+the final overrides.
 
 Review the JSON object's `account` and `partition`, then read the generated
 script to confirm cores, memory, GPU count, wall time, and loaded modules.

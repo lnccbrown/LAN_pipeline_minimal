@@ -4,6 +4,9 @@
 artifacts into an isolated directory, runs the validation gate, uploads to a
 non-production Hugging Face repository, and records the result in MLflow.
 
+The [Promotion safety](../explanations/promotion-safety.md) explanation describes
+why the staging, validation, and destination guardrails fail closed.
+
 The command is intended to run on an operator machine, not a compute node. Keep
 the Hugging Face credential there and point MLflow at the authoritative store.
 

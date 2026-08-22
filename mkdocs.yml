@@ -4,6 +4,8 @@ site_url: https://lnccbrown.github.io/LAN_pipeline_minimal/
 repo_name: lnccbrown/LAN_pipeline_minimal
 repo_url: https://github.com/lnccbrown/LAN_pipeline_minimal
 edit_uri: edit/main/docs/
+exclude_docs: |
+  overrides/
 
 nav:
   - Home: index.md
@@ -11,7 +13,7 @@ nav:
       - Learning path: learn/index.md
       - Run the CI-backed local workflow: learn/local-workflow.md
   - How-to guides:
-      - Operator guide: how-to/index.md
+      - Choose an operator task: how-to/index.md
       - Configure cluster resources: how-to/configure-cluster.md
       - Generate and submit Slurm jobs: how-to/submit-slurm-jobs.md
       - Track runs with MLflow: how-to/track-with-mlflow.md
@@ -19,8 +21,15 @@ nav:
       - Stage and publish a network: how-to/stage-and-publish.md
   - Explanations:
       - Concepts: explanations/index.md
+      - Pipeline architecture: explanations/architecture.md
+      - Data lineage and run identity: explanations/data-lineage.md
+      - Promotion safety: explanations/promotion-safety.md
   - Reference:
       - Interface reference: reference/index.md
+      - Command-line interface: reference/cli.md
+      - Configuration: reference/configuration.md
+      - Environment variables: reference/environment.md
+      - JSON output contracts: reference/json-output.md
 
 validation:
   omitted_files: warn

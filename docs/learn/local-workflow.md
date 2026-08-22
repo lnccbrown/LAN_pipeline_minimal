@@ -65,8 +65,9 @@ Start the UI against the same tracking database:
 uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
 ```
 
-Open `http://localhost:5000`. Find the `{model}-data-generation` experiment and
-the `{model}-training` experiment. The training run should carry the
+Open the MLflow UI at localhost port 5000. Find the
+`{model}-data-generation` experiment and the `{model}-training` experiment. The
+training run should carry the
 `data_generation_experiment_id` that points back to the generation experiment.
 
 Stop the UI with `Ctrl+C` when you are done.

@@ -42,9 +42,13 @@ fit to publish; the validation and promotion steps provide that boundary.
 
 ## 3. Read the contracts before automating
 
-The explanation pages describe why experiment-level lineage, single-run staging,
-and a fail-closed promotion gate exist. The reference pages then define the CLI,
-YAML, environment, and JSON interfaces that drivers can depend on.
+Read the [architecture](../explanations/architecture.md),
+[data-lineage](../explanations/data-lineage.md), and
+[promotion-safety](../explanations/promotion-safety.md) explanations before
+building a driver. Then use the [CLI](../reference/cli.md),
+[configuration](../reference/configuration.md),
+[environment](../reference/environment.md), and
+[JSON](../reference/json-output.md) references as the stable interface map.
 
 When you finish, you should be able to trace one network backward from its
 publication record to its training run, its generation experiment, its configs,

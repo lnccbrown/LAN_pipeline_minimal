@@ -1,4 +1,4 @@
-# Operator guides
+# Choose an operator task
 
 These task-oriented guides cover the work that surrounds simulation and network
 training: discovering resources, submitting jobs, preserving lineage, checking

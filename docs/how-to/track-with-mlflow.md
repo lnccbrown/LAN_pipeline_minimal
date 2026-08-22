@@ -3,6 +3,8 @@
 The pipeline uses MLflow to connect distributed generation workers, one
 training run, and a later publication record. Set the tracking and artifact
 locations before invoking the orchestrator; the generated job inherits them.
+For the rationale behind its experiment- and run-level identifiers, read
+[Data lineage and run identity](../explanations/data-lineage.md).
 
 ## Choose one authoritative store
 

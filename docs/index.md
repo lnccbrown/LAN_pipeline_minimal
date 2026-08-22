@@ -13,6 +13,18 @@ and training, validate candidate ONNX artifacts, and publish an approved network
     allocation. Start with the local quick workflow, inspect every generated
     script, and validate a candidate before publishing it.
 
+## Install and verify
+
+With Python 3.12, uv, GSL, and a compiler available:
+
+```bash
+uv sync --locked
+bash local_test_run.sh
+```
+
+The [local workflow tutorial](learn/local-workflow.md) explains the generated
+data, trained artifacts, and MLflow lineage, plus platform-specific prerequisites.
+
 ## Where the pipeline fits
 
 | Stage | Owned by | What this repository adds |
