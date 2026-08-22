@@ -1,0 +1,52 @@
+name: Docs
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/docs.yml"
+      - ".lychee.toml"
+      - "configs/**"
+      - "docs/**"
+      - "local_test_run.sh"
+      - "mkdocs.yml"
+      - "publish/**"
+      - "pyproject.toml"
+      - "README.md"
+      - "sbatch_scripts/**"
+      - "scripts/discover_cluster.py"
+      - "scripts/docs.sh"
+      - "using_mlflow.md"
+      - "uv.lock"
+      - "validation/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/docs.yml"
+      - ".lychee.toml"
+      - "configs/**"
+      - "docs/**"
+      - "local_test_run.sh"
+      - "mkdocs.yml"
+      - "publish/**"
+      - "pyproject.toml"
+      - "README.md"
+      - "sbatch_scripts/**"
+      - "scripts/discover_cluster.py"
+      - "scripts/docs.sh"
+      - "using_mlflow.md"
+      - "uv.lock"
+      - "validation/**"
+  schedule:
+    - cron: "37 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  docs:
+    uses: lnccbrown/HSSMSpine/.github/workflows/reusable-docs.yml@1c8129bb4c0997ada5b4d062e05357757c86eb90
+    with:
+      system-profile: none

@@ -79,9 +79,7 @@ theme:
         icon: material/brightness-4
         name: Switch to automatic mode
 
-copyright: >-
-  Copyright &copy; 2026 FRANK LAB // LNCC. LAN_pipeline_minimal is distributed
-  under the MIT License.
+copyright: Copyright © 2023 Alexander Fengler. MIT License.
 
 extra:
   homepage: https://lnccbrown.github.io/LAN_pipeline_minimal/
