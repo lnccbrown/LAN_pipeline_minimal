@@ -73,6 +73,26 @@ jobs:
       - name: Verify Pages output
         run: test -f site/index.html
 
+      # GitHub project sites are served below /<repository>/. Mount site/ at
+      # that path so Lychee can resolve Material's root-relative URLs against
+      # the current artifact instead of requiring an already-deployed site.
+      - name: Mount rendered site at Pages path
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            echo "Unsupported repository name: $GITHUB_REPOSITORY" >&2
+            exit 2
+          fi
+          docs_project="${GITHUB_REPOSITORY#*/}"
+          if [[ "$docs_project" == "." || "$docs_project" == ".." ]]; then
+            echo "Unsupported Pages project path: $docs_project" >&2
+            exit 2
+          fi
+          docs_link_root="$RUNNER_TEMP/docs-link-root"
+          mkdir -p -- "$docs_link_root"
+          ln -s -- "$GITHUB_WORKSPACE/site" "$docs_link_root/$docs_project"
+
       # Link-check rendered HTML so generated reference and notebook links are
       # covered. Schedules and manual dispatches remain in the caller workflow.
       - name: Check rendered links
@@ -81,7 +101,7 @@ jobs:
         with:
           args: >-
             --config '${{ github.workspace }}/.lychee.toml'
-            --root-dir '${{ github.workspace }}/site'
+            --root-dir '${{ runner.temp }}/docs-link-root'
             --no-progress
             '${{ github.workspace }}/site/**/*.html'
           fail: true
