@@ -44,6 +44,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import statistics
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -262,8 +263,9 @@ def summarise(shards: list[dict]) -> dict:
             entry["coverage_band"] = list(_binomial_band(n, n_tests=n_tests))
             entry["bias_rate"] = sum(abs(r["z"]) > MAX_ABS_Z for r in usable) / n
             entry["mean_abs_z"] = sum(abs(r["z"]) for r in usable) / n
-            contractions = sorted(r["contraction"] for r in usable)
-            entry["median_contraction"] = contractions[n // 2]
+            entry["median_contraction"] = statistics.median(
+                r["contraction"] for r in usable
+            )
             entry["truth_recovered_corr"] = _corr(
                 [r["truth"] for r in usable], [r["mean"] for r in usable]
             )
@@ -367,6 +369,20 @@ def _rung_recovers(cells: dict, model: str, arm: str, rung: str, label: str) -> 
     )
 
 
+def _errors_for(summary: dict, model: str, arm: str, design: str) -> int:
+    """How many shards of THIS cell died.
+
+    Filtering on the arm alone counts errors from every model and design that
+    happens to share an arm label, which inflates the one number an operator
+    reads to decide whether a sweep is worth rerunning.
+    """
+    return sum(
+        1
+        for e in summary["errors"]
+        if (e.get("model"), e.get("arm"), e.get("design")) == (model, arm, design)
+    )
+
+
 def verdict(summary: dict) -> tuple[bool, list[str]]:
     """Judge each network arm against nominal coverage and a no-network reference.
 
@@ -454,7 +470,7 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
             continue
         failures.append(
             f"{model}/{arm}/{design}: {n_attempted} fits attempted, none usable "
-            f"({len([e for e in summary['errors'] if e.get('arm') == arm])} errored) "
+            f"({_errors_for(summary, model, arm, design)} errored) "
             "-- nothing to judge"
         )
 
@@ -478,7 +494,9 @@ def _explain_coverage(cells, key, entry, reference, low) -> list[str]:
                 f"and the exact-likelihood arm has only {reference['n_converged']} "
                 "converged fits -- inconclusive, fix the reference arm first"
             ]
-        if reference["coverage"] < low:
+        # Against its OWN floor, not the network's: the two arms can have
+        # different numbers of converged fits, and the floor depends on n.
+        if reference["coverage"] < reference["coverage_band"][0]:
             return []  # the exact arm misses it too: not the network
         return [
             f"{where}: coverage {entry['coverage']:.2f} below the {low:.2f} floor "

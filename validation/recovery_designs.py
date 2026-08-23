@@ -54,8 +54,10 @@ The recipe
 
 The ladder
 ----------
-Two axes crossed, with total trials held constant down each column so that
-"not enough data" and "not enough design" cannot be confused:
+Two axes crossed. Each ROW holds the trial budget fixed and changes only the
+design, which is the comparison the ladder exists to make; each COLUMN holds the
+design fixed and raises the budget. Keeping both axes is what stops "not enough
+data" and "not enough design" being confused:
 
                        1 condition     several conditions
         250 total      L0_n250         L1_n250    (2 x 125)
@@ -181,8 +183,9 @@ def _default_condition_param(params: tuple[str, ...]) -> str:
     Drift wins the default because it is what experiments usually manipulate,
     not because the ladder is about drift.
     """
-    # ponytail: name-prefix heuristic. Replace with an explicit per-model entry
-    # only once a model appears whose drift is not spelled `v...`.
+    # A name-prefix heuristic, deliberately. Worth replacing with an explicit
+    # per-model table only once a model appears whose drift is not spelled
+    # `v...` and whose first parameter is also wrong.
     drifts = [p for p in params if p.startswith("v")]
     return drifts[0] if drifts else params[0]
 
@@ -224,11 +227,14 @@ def load_model(
             f"{sorted(config['list_params'])} vs {sorted(params)}."
         )
 
-    bounds = likelihoods[loglik_kind].get("bounds")
-    if not bounds:
+    bounds = likelihoods[loglik_kind].get("bounds") or {}
+    # Checked before the comprehension below, which would otherwise raise a
+    # bare KeyError naming one parameter instead of the real problem.
+    missing = [p for p in params if p not in bounds]
+    if missing:
         raise ValueError(
-            f"{name}/{loglik_kind} declares no bounds, so there is no box to "
-            "draw truths from."
+            f"{name}/{loglik_kind} declares no bounds for {missing}, so there is "
+            "no box to draw truths from."
         )
 
     return ModelUnderTest(
@@ -270,12 +276,12 @@ class Design:
 # The condition count is NOT fixed at 4, and the reason is the bottom rung.
 # 250 trials split four ways is 62 per condition, which is useless — and 250 is
 # not divisible by 4 anyway, so a fixed 4 would quietly drop two trials and
-# break the "same total down the column" guarantee the ladder rests on. At a
+# break the "same total across the row" guarantee the ladder rests on. At a
 # 250-trial budget 2 x 125 is simply the better design, so that is what
-# L1_n250 is. The cost is that the condition count varies UP the L1 column,
-# which is worth knowing when reading two L1 rungs against each other; DOWN a
-# column, which is where the ladder's comparison actually lives, only the
-# structure changes.
+# L1_n250 is. The cost is that the condition count varies down the L1 column, so
+# two L1 rungs differ in structure as well as budget; ACROSS a row, which is
+# where the ladder's comparison actually lives, the budget is identical and only
+# the structure changes.
 #
 # 125 per condition is below Ratcliff & McKoon's ~200/condition floor on
 # purpose, so the ladder should visibly fail at the bottom — a ladder that
@@ -398,14 +404,23 @@ def build_dataset(model: ModelUnderTest, design: Design, seed: int):
     # network arms must see byte-identical data, or the paired comparison that
     # makes recovery interpretable is gone.
     # Upstream: ssm-simulators should thread random_state into the mappings.
+    # Saved and restored: the seeding is needed for the duration of the call
+    # and nothing longer. Left in place it silently makes the CALLER's later
+    # np.random draws deterministic — a sweep looping over models, or a test
+    # session sharing a process, would couple through it.
+    entropy = np.random.get_state()
     np.random.seed(seed)
-    sim = simulator(
-        theta=theta,
-        model=model.name,
-        n_samples=1,
-        random_state=seed,
-        max_t=SIMULATOR_MAX_T,
-    )
+    try:
+        sim = simulator(
+            theta=theta,
+            model=model.name,
+            n_samples=1,
+            random_state=seed,
+            max_t=SIMULATOR_MAX_T,
+        )
+    finally:
+        np.random.set_state(entropy)
+
     data = pd.DataFrame(
         {
             "rt": np.asarray(sim["rts"]).reshape(-1),

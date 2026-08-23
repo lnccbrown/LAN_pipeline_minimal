@@ -67,8 +67,10 @@ their priors as well as their likelihoods are not paired.
 
 Weak identifiability is usually a property of the design, and the standard
 remedy is structure: several conditions in which one parameter varies while the
-rest are shared. Total trials are held constant down each column, so "not
-enough data" and "not enough design" stay distinguishable.
+rest are shared. Each **row** holds the trial budget fixed and changes only the
+design — that is the comparison the ladder exists to make. Each **column** holds
+the design fixed and raises the budget. Keeping both axes is what stops "not
+enough data" and "not enough design" being confused.
 
 | total trials | 1 condition | several conditions   |
 | ------------ | ----------- | -------------------- |
@@ -84,9 +86,10 @@ at all" question but is not in `DEFAULT_LADDER`.
 The condition count is not fixed at 4. 250 split four ways is 62 per condition,
 which is useless, and 250 is not divisible by 4 anyway — a fixed 4 would
 silently drop two trials and break the constant-total guarantee. At that budget
-2 × 125 is the better design. So the condition count varies *up* the L1 column,
-which matters when reading two L1 rungs against each other; *down* a column,
-where the comparison actually lives, only the structure changes.
+2 × 125 is the better design. So the condition count varies *down* the L1
+column, meaning two L1 rungs differ in structure as well as budget; *across* a
+row, where the comparison actually lives, the budget is identical and only the
+structure changes.
 125/condition sits below Ratcliff and McKoon's ~200 floor deliberately — a
 ladder that never fails is not measuring anything.
 

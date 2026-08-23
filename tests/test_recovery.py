@@ -112,6 +112,29 @@ class TestModelUnderTest:
                 condition_param="v",
             )
 
+    def test_a_likelihood_missing_one_parameters_bounds_names_it(self):
+        # The dict comprehension in load_model would otherwise raise a bare
+        # KeyError on one parameter, which reads as a harness bug rather than
+        # as the model config being incomplete.
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
+        import hssm.modelconfig as mc
+
+        real = mc.get_default_model_config
+
+        def without_sv(name):
+            config = real(name)
+            bounds = dict(config["likelihoods"]["approx_differentiable"]["bounds"])
+            bounds.pop("sv")
+            config["likelihoods"]["approx_differentiable"]["bounds"] = bounds
+            return config
+
+        mc.get_default_model_config = without_sv
+        try:
+            with pytest.raises(ValueError, match=r"no bounds for \['sv'\]"):
+                rd.load_model("ddm_sdv")
+        finally:
+            mc.get_default_model_config = real
+
     def test_missing_bounds_are_refused_at_construction(self):
         with pytest.raises(ValueError, match="no bounds"):
             rd.ModelUnderTest(
@@ -174,6 +197,16 @@ class TestDesigns:
         # Optional rungs stay addressable -- they are just not swept.
         assert rd.DESIGNS["L1_n2000"].optional
         assert "L1_n2000" not in rd.DEFAULT_LADDER
+
+    def test_simulating_does_not_leave_the_global_rng_seeded(self):
+        # The scipy-global-RNG workaround has to be scoped to the call. Left in
+        # place it makes the CALLER's later draws deterministic, which couples
+        # a sweep looping over models -- or a test session sharing a process.
+        np.random.seed(999)
+        before = np.random.random()
+        np.random.seed(999)
+        rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n250"], seed=3)
+        assert np.random.random() == before
 
     def test_the_bottom_rung_trades_conditions_for_trials_per_condition(self):
         # 250 split four ways is 62 per condition, which is useless. Down a
@@ -726,6 +759,16 @@ class TestAggregation:
         assert summary["cells"] == {}
         assert "no parameters" in summary["errors"][0]["error"]
 
+    def test_median_contraction_is_the_median_not_the_upper_middle(self):
+        # contractions[n // 2] biases upward on an even count, and this number
+        # is compared across runs and against the reference arm.
+        shards = [
+            shard("analytical", index=i, contraction=c)
+            for i, c in enumerate([0.1, 0.2, 0.3, 0.4])
+        ]
+        cell = agg.summarise(shards)["cells"]["ddm_sdv|analytical|L0_n500|v"]
+        assert cell["median_contraction"] == pytest.approx(0.25)
+
     def test_correlation_is_none_when_truth_does_not_vary(self):
         assert agg._corr([1.0, 1.0, 1.0], [1.0, 2.0, 3.0]) is None
         assert agg._corr([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]) == pytest.approx(1.0)
@@ -803,6 +846,26 @@ class TestVerdict:
         assert not passed
         assert "wider than the exact likelihood" in failures[0]
 
+    def test_the_exact_arm_is_judged_against_its_own_floor(self):
+        """The floor depends on n, and the two arms need not have the same n.
+
+        Here the reference ran 50 fits and covered 41 (0.82): below its own
+        0.86 floor, but above the 0.80 floor of the 10-fit network arm. So the
+        reference misses too and the shortfall is the design's. Judging the
+        reference against the NETWORK's floor -- which is what the code did --
+        reads it as a clean reference and blames the network instead.
+        """
+        shards = arm_shards("analytical", n=50, covered_count=41)
+        shards += arm_shards("approx_differentiable", n=10, covered_count=7)
+        summary = agg.summarise(shards)
+        ref = summary["cells"]["ddm_sdv|analytical|L0_n500|v"]
+        net = summary["cells"]["ddm_sdv|approx_differentiable|L0_n500|v"]
+        assert ref["coverage"] < ref["coverage_band"][0]  # misses its own floor
+        assert ref["coverage"] > net["coverage_band"][0]  # clears the network's
+        assert net["coverage"] < net["coverage_band"][0]  # network misses too
+        passed, failures = agg.verdict(summary)
+        assert passed, failures
+
     def test_a_biased_network_fails_even_while_covering(self):
         shards = arm_shards("analytical", z=0.2)
         shards += arm_shards("approx_differentiable", z=5.0)
@@ -836,6 +899,26 @@ class TestSilenceIsNotAPass:
         shards = arm_shards("approx_differentiable", rhat=1.5)
         passed, failures = agg.verdict(agg.summarise(shards))
         assert not passed
+
+    def test_the_errored_count_is_for_this_cell_not_every_cell_sharing_an_arm(self):
+        # An arm label says nothing about which model or design it ran on, so
+        # counting errors by arm alone inflates the one number an operator
+        # reads to decide whether a sweep is worth rerunning.
+        shards = [
+            errored_shard("approx_differentiable", model="ddm_sdv", index=i)
+            for i in range(3)
+        ]
+        shards += [
+            errored_shard("approx_differentiable", model="angle", index=i)
+            for i in range(9)
+        ]
+        _, failures = agg.verdict(agg.summarise(shards))
+        assert any(
+            "ddm_sdv/approx_differentiable/L0_n500: 3 fits" in f for f in failures
+        )
+        assert any("(3 errored)" in f for f in failures)
+        assert any("(9 errored)" in f for f in failures)
+        assert not any("(12 errored)" in f for f in failures)
 
     def test_an_empty_report_does_not_pass(self):
         passed, failures = agg.verdict(agg.summarise([]))
