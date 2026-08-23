@@ -36,6 +36,13 @@ LAN_pipeline_minimal/
 ├── sbatch_scripts/
 │   └── gen_sbatch.py       # Main orchestrator script
 │                           # (for an example script, use --script-only)
+├── validation/
+│   ├── validate_network.py # Pre-publication gate (G1-G4)
+│   ├── recovery_designs.py # Parameter-recovery recipe + the design ladder
+│   ├── recover_parameters.py # One fit per invocation -> one shard
+│   └── aggregate_recovery.py # Shards -> coverage/contraction report + verdict
+├── publish/
+│   └── publish_network.py  # Gate, then upload to HuggingFace
 ├── tests/                  # pytest suite for gen_sbatch + validation gate
 ├── local_test_run.sh       # Local end-to-end test script
 ├── using_mlflow.md         # MLflow integration guide
@@ -170,6 +177,61 @@ CPU_BATCH_SIZE: 1000
 GPU_BATCH_SIZE: 50000
 TRAINING_DATA_FOLDER: ""  # Set via CLI
 ```
+
+## Parameter Recovery
+
+Does a trained network actually support inference? Density checks do not answer
+that — users fit models, they do not evaluate densities. The recovery harness in
+`validation/` is the acceptance test that does, and it is a **recipe meant to
+run on any model**, not a script for one. `validation/recovery_designs.py` is
+where the recipe is written down; the three ideas it rests on:
+
+**1. Read coverage and contraction together.** Coverage — how often the 94% HDI
+contains the truth — tests the *likelihood*. Contraction — posterior sd over
+prior sd — tests the *design*.
+
+|                    | narrow posterior           | wide posterior              |
+| ------------------ | -------------------------- | --------------------------- |
+| **covers truth**   | identifiable, correct      | unidentifiable, but honest  |
+| **misses truth**   | **the likelihood is wrong**| wrong and vague             |
+
+Only the bottom-left cell blocks a release. Coverage is gated; contraction is
+only ever reported, because a wide-but-covering posterior is the model being
+honest about what a hard dataset supports.
+
+**2. Hold a reference that contains no network**, or a failure cannot be
+attributed. First choice is the model's *analytical* likelihood on
+byte-identical data with identical priors. Most models have none, so the
+fallback is the ladder: a design limit relaxes when you add trials or
+conditions, and a broken likelihood does not.
+
+**3. Walk a ladder of increasing design complexity**, since weak
+identifiability is usually a property of the design. Total trials are held
+constant down each column so "not enough data" and "not enough design" stay
+distinguishable:
+
+|            | 1 condition | 4 conditions |
+| ---------- | ----------- | ------------ |
+| 500 total  | `L0_n500`   | `L1_n500`    |
+| 2000 total | `L0_n2000`  | `L1_n2000`   |
+
+Applying it to a new model needs no code change — the parameter list, bounds and
+available likelihood kinds are read from HSSM's own model config:
+
+```bash
+# One fit = one shard = one SLURM array task.
+uv run --group validate python validation/recover_parameters.py \
+  --model angle --design L1_n500 --dataset-index 7 \
+  --likelihood approx_differentiable --onnx-path /path/to/angle.onnx \
+  --out-dir results/
+
+# Fan back in: coverage, bias, contraction and a verdict per parameter.
+uv run --group validate python validation/aggregate_recovery.py --shard-dir results/
+```
+
+The one judgement call that cannot be read off a config is which parameter the
+conditions should vary; it defaults to the first drift-like parameter and is
+overridden with `--condition-param`.
 
 ## MLflow Integration
 
