@@ -150,6 +150,41 @@ class TestDesigns:
         # weaken exactly the comparison the ladder exists to make.
         for design in rd.DESIGNS.values():
             assert design.n_trials % design.n_conditions == 0
+            assert design.trials_per_condition * design.n_conditions == design.n_trials
+
+    def test_a_design_that_does_not_divide_is_refused_at_construction(self):
+        # 250 trials over 4 conditions is the live example: it would silently
+        # become 248 and break the "same total down the column" guarantee.
+        with pytest.raises(ValueError, match="do not divide"):
+            rd.Design("L1_n250_bad", n_trials=250, n_conditions=4)
+
+    def test_the_default_ladder_tops_out_at_1000_trials(self):
+        # 1000 trials is already a long session. Anything above it is a
+        # deliberate "is this recoverable at all" question, not routine
+        # validation, so it is opt-in.
+        assert set(rd.DEFAULT_LADDER) == {
+            "L0_n250",
+            "L0_n500",
+            "L0_n1000",
+            "L1_n250",
+            "L1_n500",
+            "L1_n1000",
+        }
+        assert max(rd.DESIGNS[n].n_trials for n in rd.DEFAULT_LADDER) == 1000
+        # Optional rungs stay addressable -- they are just not swept.
+        assert rd.DESIGNS["L1_n2000"].optional
+        assert "L1_n2000" not in rd.DEFAULT_LADDER
+
+    def test_the_bottom_rung_trades_conditions_for_trials_per_condition(self):
+        # 250 split four ways is 62 per condition, which is useless. Down a
+        # column the total is what is held constant, and it is exact.
+        for n in (250, 500, 1000):
+            assert (
+                rd.DESIGNS[f"L0_n{n}"].n_trials == rd.DESIGNS[f"L1_n{n}"].n_trials == n
+            )
+        assert rd.DESIGNS["L1_n250"].trials_per_condition == 125
+        assert rd.DESIGNS["L1_n500"].trials_per_condition == 125
+        assert rd.DESIGNS["L1_n1000"].trials_per_condition == 250
 
     @pytest.mark.parametrize("model", MODELS)
     def test_only_the_condition_parameter_varies_and_only_at_l1(self, model):
@@ -850,13 +885,25 @@ class TestLadderAttribution:
 
     def test_richer_rungs_need_at_least_as_much_data_and_design(self):
         assert set(agg._richer_rungs("L0_n500")) == {
+            "L0_n1000",
             "L0_n2000",
             "L1_n500",
+            "L1_n1000",
             "L1_n2000",
         }
-        # More conditions but fewer trials is not richer -- it is a trade.
+        # More conditions but fewer trials is not richer -- it is a trade, so
+        # L1_n250 does not rescue L0_n500 and L0_n1000 does not rescue L1_n250.
+        assert "L1_n250" not in agg._richer_rungs("L0_n500")
+        assert set(agg._richer_rungs("L1_n250")) == {
+            "L1_n500",
+            "L1_n1000",
+            "L1_n2000",
+        }
         assert agg._richer_rungs("L0_n2000") == ["L1_n2000"]
         assert agg._richer_rungs("L1_n2000") == []
+
+    def test_the_optional_top_rung_is_still_a_richer_rung_if_you_ran_it(self):
+        assert "L1_n2000" in agg._richer_rungs("L1_n1000")
 
     def _arm(self, design, covered_count, n=20, label="v", contraction=0.05):
         return [

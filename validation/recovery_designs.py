@@ -57,11 +57,20 @@ The ladder
 Two axes crossed, with total trials held constant down each column so that
 "not enough data" and "not enough design" cannot be confused:
 
-                      1 condition        C conditions
-        500 total     L0_n500            L1_n500
-        2000 total    L0_n2000           L1_n2000
+                       1 condition     several conditions
+        250 total      L0_n250         L1_n250    (2 x 125)
+        500 total      L0_n500         L1_n500    (4 x 125)
+        1000 total     L0_n1000        L1_n1000   (4 x 250)
+        ----------------------------------------- optional above here
+        2000 total     L0_n2000        L1_n2000   (4 x 500)
 
-Truths for the shared parameters are identical across all four cells at a given
+Those are the budgets a real experiment has. 1000 trials is already a long
+session, and a ladder calibrated at 4000 would prove an identifiability nobody
+can buy. The 2000 rung stays available for the cases where the question is
+genuinely "is this recoverable at all", but it is not part of the default
+sweep.
+
+Truths for the shared parameters are identical across all cells at a given
 dataset index, so a difference between cells is the design and never the draw.
 
 Applying it to a new model
@@ -240,26 +249,59 @@ class Design:
     name: str
     n_trials: int
     n_conditions: int
+    # Above the budget a routine sweep should spend. Kept available, not run.
+    optional: bool = False
+
+    def __post_init__(self):
+        # A ragged final condition would give one cell fewer trials and quietly
+        # weaken the comparison the ladder exists to make, so the split has to
+        # be exact rather than merely close.
+        if self.n_trials % self.n_conditions:
+            raise ValueError(
+                f"{self.name}: {self.n_trials} trials do not divide into "
+                f"{self.n_conditions} conditions"
+            )
 
     @property
     def trials_per_condition(self) -> int:
         return self.n_trials // self.n_conditions
 
 
-# The counts are deliberately modest: a real experiment is a few hundred trials
-# per subject, and a ladder calibrated at 4000 would prove an identifiability
-# nobody can buy. L1_n500's 125/condition is below Ratcliff & McKoon's
-# ~200/condition floor on purpose, so the ladder should visibly fail there — a
-# ladder that never fails is not measuring anything.
+# The condition count is NOT fixed at 4, and the reason is the bottom rung.
+# 250 trials split four ways is 62 per condition, which is useless — and 250 is
+# not divisible by 4 anyway, so a fixed 4 would quietly drop two trials and
+# break the "same total down the column" guarantee the ladder rests on. At a
+# 250-trial budget 2 x 125 is simply the better design, so that is what
+# L1_n250 is. The cost is that the condition count varies UP the L1 column,
+# which is worth knowing when reading two L1 rungs against each other; DOWN a
+# column, which is where the ladder's comparison actually lives, only the
+# structure changes.
+#
+# 125 per condition is below Ratcliff & McKoon's ~200/condition floor on
+# purpose, so the ladder should visibly fail at the bottom — a ladder that
+# never fails is not measuring anything. L1_n1000's 250/condition is the first
+# rung above that floor.
 DESIGNS: dict[str, Design] = {
     d.name: d
     for d in (
+        Design("L0_n250", n_trials=250, n_conditions=1),
         Design("L0_n500", n_trials=500, n_conditions=1),
-        Design("L0_n2000", n_trials=2000, n_conditions=1),
+        Design("L0_n1000", n_trials=1000, n_conditions=1),
+        Design("L1_n250", n_trials=250, n_conditions=2),
         Design("L1_n500", n_trials=500, n_conditions=4),
-        Design("L1_n2000", n_trials=2000, n_conditions=4),
+        Design("L1_n1000", n_trials=1000, n_conditions=4),
+        # Optional: run when the question is "is this recoverable at all",
+        # not as part of routine validation. Still a legal --design, and still
+        # a richer rung for attribution if you did run it.
+        Design("L0_n2000", n_trials=2000, n_conditions=1, optional=True),
+        Design("L1_n2000", n_trials=2000, n_conditions=4, optional=True),
     )
 }
+
+# What a routine sweep runs. Everything else is opt-in.
+DEFAULT_LADDER: tuple[str, ...] = tuple(
+    name for name, d in DESIGNS.items() if not d.optional
+)
 
 
 def varies_by_condition(model: ModelUnderTest, design: Design) -> tuple[str, ...]:

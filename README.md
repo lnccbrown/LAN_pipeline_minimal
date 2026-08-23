@@ -210,10 +210,26 @@ identifiability is usually a property of the design. Total trials are held
 constant down each column so "not enough data" and "not enough design" stay
 distinguishable:
 
-|            | 1 condition | 4 conditions |
-| ---------- | ----------- | ------------ |
-| 500 total  | `L0_n500`   | `L1_n500`    |
-| 2000 total | `L0_n2000`  | `L1_n2000`   |
+| total trials | 1 condition | several conditions   |
+| ------------ | ----------- | -------------------- |
+| 250          | `L0_n250`   | `L1_n250`  (2 × 125) |
+| 500          | `L0_n500`   | `L1_n500`  (4 × 125) |
+| 1000         | `L0_n1000`  | `L1_n1000` (4 × 250) |
+| *2000, opt.* | `L0_n2000`  | `L1_n2000` (4 × 500) |
+
+Those are the budgets a real experiment has; 1000 trials is already a long
+session. The 2000 rung stays addressable for a deliberate "is this recoverable
+at all" question, but it is not in the default sweep (`DEFAULT_LADDER`).
+
+The condition count is not fixed at 4: 250 split four ways is 62 per condition,
+which is useless, and 250 is not divisible by 4 anyway — a fixed 4 would
+silently drop two trials and break the guarantee the ladder rests on. At that
+budget 2 × 125 is the better design. So the condition count varies *up* the L1
+column, which is worth knowing when reading two L1 rungs against each other;
+*down* a column, where the ladder's comparison actually lives, only the
+structure changes. 125/condition is below Ratcliff & McKoon's ~200 floor on
+purpose — a ladder that never fails is not measuring anything — and
+`L1_n1000`'s 250/condition is the first rung above it.
 
 **Which parameter varies across the conditions is a free choice, and it is the
 interesting knob.** Drift is only the default, because it is what experiments
