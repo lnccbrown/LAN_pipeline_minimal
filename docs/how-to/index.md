@@ -20,6 +20,8 @@ are templates for larger runs, not universal production settings.
 
 - [Validate and inspect a candidate network](validate-network.md) with the four
   automated gates and the optional visual inspector.
+- [Run a parameter-recovery sweep](run-recovery-sweep.md) to test whether a
+  network supports inference, not just whether it is a well-formed density.
 - [Stage and publish a validated network](stage-and-publish.md) to isolate one
   run, inspect a dry-run plan, and upload only to a staging repository.
 

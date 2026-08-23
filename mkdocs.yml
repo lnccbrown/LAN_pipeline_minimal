@@ -18,12 +18,14 @@ nav:
       - Generate and submit Slurm jobs: how-to/submit-slurm-jobs.md
       - Track runs with MLflow: how-to/track-with-mlflow.md
       - Validate and inspect a network: how-to/validate-network.md
+      - Run a parameter-recovery sweep: how-to/run-recovery-sweep.md
       - Stage and publish a network: how-to/stage-and-publish.md
   - Explanations:
       - Concepts: explanations/index.md
       - Pipeline architecture: explanations/architecture.md
       - Data lineage and run identity: explanations/data-lineage.md
       - Promotion safety: explanations/promotion-safety.md
+      - Parameter recovery: explanations/parameter-recovery.md
   - Reference:
       - Interface reference: reference/index.md
       - Command-line interface: reference/cli.md

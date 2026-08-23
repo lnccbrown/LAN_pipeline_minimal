@@ -13,3 +13,5 @@ deciding which identifier and artifact should be authoritative.
   MLflow experiments, runs, artifact identifiers, configs, and the lockfile.
 - [Promotion safety](promotion-safety.md) explains staging, gate semantics,
   destination refusal, and the decisions that remain human-governed.
+- [Parameter recovery](parameter-recovery.md) separates a wrong network from a
+  model the design cannot identify, and says which statistic tests which.
