@@ -172,7 +172,11 @@ def _key(shard: dict) -> tuple[str, str, str]:
     return (
         shard.get("model", "ddm_sdv"),
         shard.get("arm") or shard.get("likelihood", "?"),
-        shard.get("design", "?"),
+        # The design identity, which carries WHICH parameter varies across
+        # conditions: `L1_n500@v` and `L1_n500@sv` are different designs and
+        # pooling their shared-parameter cells would average two different
+        # experiments into one coverage number.
+        shard.get("design_id") or shard.get("design", "?"),
     )
 
 
@@ -299,6 +303,11 @@ def _is_reference(arm: str) -> bool:
     return arm.split("@", 1)[0] in REFERENCE_LIKELIHOODS
 
 
+def _rung_of(design_id: str) -> str:
+    """`L1_n500@sv` -> `L1_n500`. The ladder position, without the variant."""
+    return design_id.split("@", 1)[0]
+
+
 def _richer_rungs(design_name: str) -> list[str]:
     """Ladder rungs with at least as much data AND design, and more of one.
 
@@ -307,13 +316,13 @@ def _richer_rungs(design_name: str) -> list[str]:
     failure modes respond differently to it: an identifiability limit is
     relieved by more trials or more conditions, and a wrong likelihood is not.
     """
-    here = rd.DESIGNS.get(design_name)
+    here = rd.DESIGNS.get(_rung_of(design_name))
     if here is None:
         return []
     return [
         name
         for name, other in rd.DESIGNS.items()
-        if name != design_name
+        if name != _rung_of(design_name)
         and other.n_trials >= here.n_trials
         and other.n_conditions >= here.n_conditions
     ]
@@ -334,25 +343,33 @@ def _rung_recovers(cells: dict, model: str, arm: str, rung: str, label: str) -> 
     """Did this parameter clear its floor at a richer rung?
 
     Looked up by BASE name, because the condition parameter is `v` at L0 and
-    `v[0]`..`v[3]` at L1 and the L0->L1 crossing is precisely the one the
-    ladder exists to make. Every matching cell must clear its own floor and be
-    eligible: one lucky condition, or one rung with two surviving fits and a
-    band wide enough to admit anything, must not excuse the whole shortfall.
+    `v[0]`..`v[3]` at L1 and the L0->L1 crossing is precisely the one the ladder
+    exists to make.
+
+    A rung may hold several *variants* — `L1_n500@v` and `L1_n500@sv` are both
+    at L1_n500 — and they are judged separately then combined asymmetrically,
+    because the two quantifiers answer different questions. WITHIN one variant
+    every condition cell must clear its own floor and be eligible, so that one
+    lucky condition (or one variant with two surviving fits and a band wide
+    enough to admit anything) cannot excuse the shortfall. ACROSS variants any
+    one suffices: the question the ladder asks is whether SOME richer design
+    recovers this parameter, and one that does is an answer.
     """
     base = _base_param(label)
-    matches = [
-        entry
-        for key, entry in cells.items()
-        if key.split("|")[:3] == [model, arm, rung]
-        and _base_param(key.split("|")[3]) == base
-    ]
-    if not matches:
-        return False
-    return all(
-        e["eligible"]
-        and e["coverage"] is not None
-        and e["coverage"] >= e["coverage_band"][0]
-        for e in matches
+    by_variant: dict[str, list[dict]] = defaultdict(list)
+    for key, entry in cells.items():
+        k_model, k_arm, k_design, k_label = key.split("|")
+        if (k_model, k_arm) == (model, arm) and _rung_of(k_design) == rung:
+            if _base_param(k_label) == base:
+                by_variant[k_design].append(entry)
+    return any(
+        all(
+            e["eligible"]
+            and e["coverage"] is not None
+            and e["coverage"] >= e["coverage_band"][0]
+            for e in entries
+        )
+        for entries in by_variant.values()
     )
 
 

@@ -215,6 +215,25 @@ distinguishable:
 | 500 total  | `L0_n500`   | `L1_n500`    |
 | 2000 total | `L0_n2000`  | `L1_n2000`   |
 
+**Which parameter varies across the conditions is a free choice, and it is the
+interesting knob.** Drift is only the default, because it is what experiments
+usually manipulate — the ladder is about design structure, not about drift.
+Each choice asks a different question, in two ways at once:
+
+- the varying parameter gets **direct experimental leverage** — is it
+  recoverable when something actually moves it?
+- every *other* parameter is **pooled across all four conditions**, so it is
+  constrained by the whole dataset rather than one cell. This is how a
+  multi-condition design rescues a parameter it never manipulates.
+
+So if `sv` comes back badly, `L1@v` asks *"does pooling fix `sv`?"* and `L1@sv`
+asks *"is `sv` recoverable when we manipulate it?"* — different questions with
+different answers, and running both against the same L0 is the point of the
+design rather than an abuse of it. Each variant is its own rung, identified as
+`L1_n500@sv`, scored separately, and never pooled with another. A shortfall at
+L0 is excused if **any** variant at a richer rung recovers the parameter, while
+**within** one variant every condition must clear its own floor.
+
 Applying it to a new model needs no code change — the parameter list, bounds and
 available likelihood kinds are read from HSSM's own model config:
 
@@ -229,9 +248,12 @@ uv run --group validate python validation/recover_parameters.py \
 uv run --group validate python validation/aggregate_recovery.py --shard-dir results/
 ```
 
-The one judgement call that cannot be read off a config is which parameter the
-conditions should vary; it defaults to the first drift-like parameter and is
-overridden with `--condition-param`.
+```bash
+# The same rung, manipulating sv instead of drift. Writes L1_n500@sv shards,
+# which are kept separate from L1_n500@v everywhere.
+uv run --group validate python validation/recover_parameters.py \
+  --model ddm_sdv --design L1_n500 --condition-param sv --dataset-index 7 ...
+```
 
 ### Two settings that silently decide the answer
 

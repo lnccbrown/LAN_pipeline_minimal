@@ -14,6 +14,7 @@ adds a parameter with a negative lower bound; `race_no_bias_angle_4` has four
 choices, eight parameters and a drift called `v0`.
 """
 
+import dataclasses
 import json
 
 import numpy as np
@@ -271,6 +272,95 @@ class TestLoadModel:
         assert not rd.load_model("angle").has_analytical
 
 
+def varying(model, param):
+    """The same model with a different parameter varying across conditions."""
+    return dataclasses.replace(model, condition_param=param)
+
+
+class TestAnyParameterCanVary:
+    """The ladder is about design structure, not about drift.
+
+    Drift is only the default. Varying a different parameter asks a different
+    question — the varying one gets direct experimental leverage, and every
+    other one is pooled across all four conditions — so each choice is its own
+    design and every one of them has to work.
+    """
+
+    @pytest.mark.parametrize("param", ["v", "a", "z", "t", "sv"])
+    def test_every_parameter_of_the_model_is_a_legal_choice(self, param):
+        model = varying(DDM_SDV, param)
+        design = rd.DESIGNS["L1_n2000"]
+        truth = rd.draw_truth(model, design, seed=4)
+        assert isinstance(truth[param], list) and len(truth[param]) == 4
+        for other in model.params:
+            if other != param:
+                assert isinstance(truth[other], float), other
+
+    @pytest.mark.parametrize("param", ["a", "t", "sv"])
+    def test_a_non_drift_parameter_really_moves_the_data(self, param):
+        # The check that matters: it is not enough for the formula to name the
+        # parameter, the simulated conditions have to actually differ.
+        #
+        # Which RT moment moves is the parameter's own business, and assuming
+        # it is always the mean would be the drift-centric habit this test
+        # exists to break. Measured at n=2000: `a` and `t` track the mean
+        # (r = 0.998, 1.000) while `sv` barely does (0.872) and tracks the
+        # spread instead (0.955) -- inter-trial drift variability is a
+        # dispersion effect, which is a large part of why sv is the hard one.
+        model = varying(DDM_SDV, param)
+        design = rd.DESIGNS["L1_n2000"]
+        data, truth = rd.build_dataset(model, design, seed=4)
+        groups = [data.loc[data["condition"] == c, "rt"] for c in range(4)]
+        moved = max(
+            abs(np.corrcoef(truth[param], [f(g) for g in groups])[0, 1])
+            for f in (np.mean, np.std)
+        )
+        assert moved > 0.9, f"{param} left the RT distribution unchanged"
+
+    @pytest.mark.parametrize("param", ["a", "theta"])
+    def test_the_formula_and_posterior_name_follow_the_choice(self, param):
+        model = varying(ANGLE, param)
+        design = rd.DESIGNS["L1_n500"]
+        by_name = {e["name"]: e for e in rd.model_spec(model, design)["include"]}
+        assert by_name[param]["formula"] == f"{param} ~ 0 + C(condition)"
+        assert rd.posterior_names(model, design)[param] == [f"{param}_C(condition)"]
+        # And drift is now an ordinary shared parameter.
+        if param != "v":
+            assert "formula" not in by_name["v"]
+            assert rd.posterior_names(model, design)["v"] == ["v"]
+
+    def test_shared_truths_still_line_up_with_l0_whichever_one_varies(self):
+        # The ladder's core guarantee has to hold for every variant, or a
+        # variant cannot be compared against L0 at all.
+        for param in DDM_SDV.params:
+            model = varying(DDM_SDV, param)
+            l0 = rd.draw_truth(model, rd.DESIGNS["L0_n2000"], seed=11)
+            l1 = rd.draw_truth(model, rd.DESIGNS["L1_n2000"], seed=11)
+            for other in model.params:
+                if other != param:
+                    assert l0[other] == l1[other], f"{param}/{other}"
+
+    def test_two_l1_variants_are_different_designs(self):
+        # They share a trial count and a condition count and nothing else: the
+        # data differ and the questions differ, so the identities must differ.
+        l1 = rd.DESIGNS["L1_n2000"]
+        assert rd.design_id(varying(DDM_SDV, "v"), l1) == "L1_n2000@v"
+        assert rd.design_id(varying(DDM_SDV, "sv"), l1) == "L1_n2000@sv"
+        by_v, _ = rd.build_dataset(varying(DDM_SDV, "v"), l1, seed=4)
+        by_sv, _ = rd.build_dataset(varying(DDM_SDV, "sv"), l1, seed=4)
+        assert not np.array_equal(by_v["rt"].to_numpy(), by_sv["rt"].to_numpy())
+
+    def test_l0_identity_ignores_the_choice_so_variants_share_a_baseline(self):
+        # Nothing varies at L0, so splitting its cells by a flag that had no
+        # effect would leave every L1 variant with no baseline to beat.
+        l0 = rd.DESIGNS["L0_n500"]
+        assert (
+            rd.design_id(varying(DDM_SDV, "v"), l0)
+            == rd.design_id(varying(DDM_SDV, "sv"), l0)
+            == "L0_n500"
+        )
+
+
 class TestFixtureDrift:
     """The hand-built fixtures duplicate HSSM's numbers, so they can rot."""
 
@@ -478,7 +568,8 @@ def shard(
     return {
         "schema_version": 2,
         "model": model,
-        "design": design,
+        "design": design.split("@", 1)[0],
+        "design_id": design,
         "likelihood": likelihood,
         "arm": arm or likelihood,
         "dataset_index": index,
@@ -806,6 +897,59 @@ class TestLadderAttribution:
             shards += self._arm("L1_n2000", 8, label=f"v[{i}]")
         passed, failures = agg.verdict(agg.summarise(shards))
         assert not passed
+
+    def test_two_l1_variants_do_not_pool_into_one_cell(self):
+        # L1_n500@v and L1_n500@sv share a trial count and a condition count
+        # and nothing else. Pooling their shared-parameter cells would average
+        # two different experiments into one coverage number.
+        shards = self._arm("L1_n500@v", 20, label="z")
+        shards += self._arm("L1_n500@sv", 8, label="z")
+        cells = agg.summarise(shards)["cells"]
+        assert set(cells) == {
+            "angle|approx_differentiable|L1_n500@v|z",
+            "angle|approx_differentiable|L1_n500@sv|z",
+        }
+
+    def test_one_variant_recovering_is_enough_to_excuse_the_rung_below(self):
+        # Across variants the question is whether SOME richer design recovers
+        # the parameter, and one that does is an answer. (Within a variant the
+        # rule is the opposite -- every condition must clear.) Asserted on the
+        # rule itself rather than end-to-end, because the variant that fails
+        # here is also a gated cell that fails on its own merits, and a
+        # whole-run verdict could not tell the two reasons apart.
+        cells = agg.summarise(
+            self._arm("L1_n500@sv", 8, label="z")
+            + self._arm("L1_n500@v", 20, label="z")
+        )["cells"]
+        assert agg._rung_recovers(
+            cells, "angle", "approx_differentiable", "L1_n500", "z"
+        )
+
+    def test_no_variant_recovering_means_the_rung_does_not_rescue(self):
+        cells = agg.summarise(
+            self._arm("L1_n500@sv", 8, label="z") + self._arm("L1_n500@v", 8, label="z")
+        )["cells"]
+        assert not agg._rung_recovers(
+            cells, "angle", "approx_differentiable", "L1_n500", "z"
+        )
+
+    def test_no_variant_recovering_still_charges_the_network(self):
+        shards = self._arm("L0_n500", 8, label="z")
+        shards += self._arm("L1_n500@sv", 8, label="z")
+        shards += self._arm("L1_n500@v", 8, label="z")
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
+        assert any("unconfirmed" in f for f in failures)
+
+    def test_the_ladder_crosses_into_a_variant_that_varies_a_shared_parameter(self):
+        # L0 leaves sv weakly determined; the rung that rescues it is the one
+        # that MANIPULATES sv, not the drift-varying default. An exact-label or
+        # exact-design lookup would never find it.
+        shards = self._arm("L0_n2000", 8, label="sv")
+        for i in range(4):
+            shards += self._arm("L1_n2000@sv", 20, label=f"sv[{i}]")
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert passed, failures
 
     def test_a_shortfall_flat_across_the_ladder_is_charged_to_the_network(self):
         shards = self._arm("L0_n500", 8) + self._arm("L1_n2000", 8)

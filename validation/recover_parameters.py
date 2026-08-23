@@ -280,6 +280,9 @@ def run_one(
             "schema_version": 2,
             "model": model_name,
             "design": design_name,
+            # `L1_n500@v` and `L1_n500@sv` are different designs, not one
+            # design run twice. This is what keeps them apart everywhere.
+            "design_id": rd.design_id(model, design),
             "dataset_index": dataset_index,
             "likelihood": likelihood,
             # The arm is what the aggregator pools on. Two candidate networks for
@@ -341,7 +344,10 @@ def main(
         help="Whose bounds become the shared priors. Keep identical across arms.",
     ),
     condition_param: str | None = typer.Option(
-        None, help="Parameter the L1 conditions vary. Default: first drift-like one."
+        None,
+        help="Which parameter the conditions vary — ANY parameter of the model. "
+        "Each choice is a different design and is scored separately. Defaults to "
+        "the first drift-like one purely as a convenience.",
     ),
     onnx_path: Path | None = typer.Option(None, help="Required for the network arm."),
     p_outlier: float | None = typer.Option(
@@ -399,7 +405,10 @@ def main(
         logger.error(f"shard failed: {record['error']}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    destination = out_dir / f"recovery_{model}_{arm}_{design}_{dataset_index:04d}.json"
+    design_tag = record.get("design_id", design)
+    destination = (
+        out_dir / f"recovery_{model}_{arm}_{design_tag}_{dataset_index:04d}.json"
+    )
     destination.write_text(json.dumps(record, indent=2) + "\n")
 
     # One JSON line on stdout regardless of log level — the same driver

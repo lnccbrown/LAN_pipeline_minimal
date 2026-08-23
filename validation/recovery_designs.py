@@ -33,8 +33,24 @@ The recipe
 
 3. Walk a ladder of **increasing design complexity**, not increasing data
    alone. Weak identifiability is usually a property of the design, and the
-   standard remedy — several conditions in which one parameter varies while the
-   rest are shared — is exactly what the ladder encodes.
+   standard remedy — several conditions in which **one parameter varies while
+   the rest are shared** — is exactly what the ladder encodes.
+
+   *Which* parameter varies is a free choice, and it is the interesting knob,
+   not an implementation detail. It changes what the rung can tell you, in two
+   ways at once. The varying parameter gets direct experimental leverage: the
+   design asks whether it is recoverable when something actually moves it.
+   Every *other* parameter is simultaneously pooled across all the conditions,
+   so it is constrained by the full dataset instead of one cell — which is how
+   a multi-condition design rescues a parameter it never manipulates. So if
+   `sv` comes back badly, `L1@v` asks "does pooling fix sv?" and `L1@sv` asks
+   "is sv recoverable when we manipulate it?", and those are different
+   questions with different answers.
+
+   Drift is only the *default* because it is what experiments usually
+   manipulate. Any parameter of the model is a legitimate choice, and running
+   several L1 variants against the same L0 is the point of the design, not an
+   abuse of it — each variant is its own rung and they are scored separately.
 
 The ladder
 ----------
@@ -53,11 +69,13 @@ Applying it to a new model
     model = load_model("angle")                 # or any HSSM/ssms model name
     data, truth = build_dataset(model, DESIGNS["L1_n500"], seed=10_007)
 
+    theta_varies = load_model("angle", condition_param="theta")   # any parameter
+
 `load_model` reads the parameter list, the bounds and the available likelihood
 kinds from HSSM's own model config, so nothing here has to be updated per
 model. The one judgement call it cannot read off a config is which parameter
-the conditions should vary — pass `condition_param=` when the default guess
-(the first drift-like parameter) is not what you want.
+the conditions should vary — hence `condition_param=`, which accepts any
+parameter the model has. The default guess is only a convenience.
 
 Ground truth is drawn from the bounds HSSM declares for the likelihood kind
 under test. For a network that box is the region it was trained on: outside it
@@ -146,13 +164,13 @@ class ModelUnderTest:
 
 
 def _default_condition_param(params: tuple[str, ...]) -> str:
-    """Guess which parameter an experiment would manipulate across conditions.
+    """A starting guess at which parameter to vary across conditions.
 
-    Drift is the answer for every sequential-sampling model we ship, and it is
-    what the LAN paper's own identifiability remedy varies. The guess is a
-    convenience, not a claim: `load_model(..., condition_param=...)` overrides
-    it, and models whose drift is not spelled with a leading `v` (LBA's `A`/`b`
-    come first in the list) are exactly why the fallback is last.
+    A guess, and nothing more. Any parameter of the model is a valid choice and
+    each one asks a different question of the design, so this exists only so
+    that `load_model("angle")` does something sensible without an argument.
+    Drift wins the default because it is what experiments usually manipulate,
+    not because the ladder is about drift.
     """
     # ponytail: name-prefix heuristic. Replace with an explicit per-model entry
     # only once a model appears whose drift is not spelled `v...`.
@@ -247,6 +265,25 @@ DESIGNS: dict[str, Design] = {
 def varies_by_condition(model: ModelUnderTest, design: Design) -> tuple[str, ...]:
     """Parameters that take a separate value per condition."""
     return (model.condition_param,) if design.n_conditions > 1 else ()
+
+
+def design_id(model: ModelUnderTest, design: Design) -> str:
+    """Full identity of one rung: the design AND what varies across it.
+
+    `L1_n500` is not a design — `L1_n500@v` and `L1_n500@sv` are two different
+    designs that happen to share a trial count and a condition count. They
+    generate different data, answer different questions, and must never be
+    pooled. Without this they collide twice over: identical shard filenames, so
+    the second run silently overwrites the first, and identical cell keys for
+    every shared parameter, so their coverage numbers average together.
+
+    L0 has nothing varying, so its identity is just the design name — otherwise
+    passing `--condition-param` would split the L0 cells that the L1 variants
+    are all supposed to be compared against.
+    """
+    if design.n_conditions <= 1:
+        return design.name
+    return f"{design.name}@{model.condition_param}"
 
 
 def draw_truth(
