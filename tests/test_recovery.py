@@ -272,10 +272,10 @@ class TestDesigns:
     @pytest.mark.parametrize("model", MODELS)
     def test_posterior_names_match_the_formula(self, model):
         p = model.condition_param
-        assert rd.posterior_names(model, rd.DESIGNS["L0_n500"])[p] == [p]
-        assert rd.posterior_names(model, rd.DESIGNS["L1_n500"])[p] == [
+        assert rd.posterior_names(model, rd.DESIGNS["L0_n500"])[p] == p
+        assert rd.posterior_names(model, rd.DESIGNS["L1_n500"])[p] == (
             f"{p}_C(condition)"
-        ]
+        )
 
 
 class TestLoadModel:
@@ -358,11 +358,11 @@ class TestAnyParameterCanVary:
         design = rd.DESIGNS["L1_n500"]
         by_name = {e["name"]: e for e in rd.model_spec(model, design)["include"]}
         assert by_name[param]["formula"] == f"{param} ~ 0 + C(condition)"
-        assert rd.posterior_names(model, design)[param] == [f"{param}_C(condition)"]
+        assert rd.posterior_names(model, design)[param] == f"{param}_C(condition)"
         # And drift is now an ordinary shared parameter.
         if param != "v":
             assert "formula" not in by_name["v"]
-            assert rd.posterior_names(model, design)["v"] == ["v"]
+            assert rd.posterior_names(model, design)["v"] == "v"
 
     def test_shared_truths_still_line_up_with_l0_whichever_one_varies(self):
         # The ladder's core guarantee has to hold for every variant, or a
@@ -446,29 +446,35 @@ class TestConditionBroadcast:
 class TestSummarise:
     """_summarise produces every number in the report, so it gets pinned."""
 
-    def _posterior(self, values: dict):
+    @pytest.fixture(autouse=True)
+    def _needs_arviz(self):
+        pytest.importorskip("arviz")
+
+    # A one-parameter stand-in: _summarise reads only the parameter list, the
+    # bounds (for the prior sd, 6/sqrt(12) here) and which parameter varies, so
+    # the real fixtures would add nothing but noise.
+    ONE = rd.ModelUnderTest(
+        name="t", params=("v",), bounds={"v": (-3.0, 3.0)}, condition_param="v"
+    )
+
+    def summarised(self, draws: dict, design: str, truth: dict):
+        """_summarise over a hand-built posterior of (chain, draw[, condition])."""
         xr = pytest.importorskip("xarray")
-        return xr.Dataset(
+        posterior = xr.Dataset(
             {
-                name: (("chain", "draw") + (("cond",) if arr.ndim == 3 else ()), arr)
-                for name, arr in values.items()
+                name: (("chain", "draw") + (("cond",) if a.ndim == 3 else ()), a)
+                for name, a in draws.items()
             }
+        )
+        return rp._summarise(
+            {"posterior": posterior}, self.ONE, rd.DESIGNS[design], truth
         )
 
     def test_a_condition_vector_expands_into_one_record_per_condition(self):
-        pytest.importorskip("arviz")
         rng = np.random.default_rng(0)
         drift = rng.normal(loc=[0.5, 1.0, 1.5, 2.0], scale=0.05, size=(2, 500, 4))
-        posterior = self._posterior({"v_C(condition)": drift})
         truth = {"v": [0.5, 1.0, 1.5, 2.0]}
-        out = rp._summarise(
-            {"posterior": posterior},
-            rd.ModelUnderTest(
-                name="t", params=("v",), bounds={"v": (-3.0, 3.0)}, condition_param="v"
-            ),
-            rd.DESIGNS["L1_n500"],
-            truth,
-        )
+        out = self.summarised({"v_C(condition)": drift}, "L1_n500", truth)
         assert sorted(out) == ["v[0]", "v[1]", "v[2]", "v[3]"]
         # Each condition is scored against ITS OWN truth, not the first one.
         for i, true_i in enumerate(truth["v"]):
@@ -479,35 +485,20 @@ class TestSummarise:
     def test_the_interval_is_a_94_percent_hdi_not_arviz_default_89_eti(self):
         # arviz 1.x defaults to an 89% equal-tailed interval, a different
         # statistic that would silently change every coverage verdict.
-        pytest.importorskip("arviz")
         rng = np.random.default_rng(1)
-        draws = rng.normal(0.0, 1.0, size=(2, 20000))
-        out = rp._summarise(
-            {"posterior": self._posterior({"v": draws})},
-            rd.ModelUnderTest(
-                name="t", params=("v",), bounds={"v": (-3.0, 3.0)}, condition_param="v"
-            ),
-            rd.DESIGNS["L0_n500"],
-            {"v": 0.0},
+        out = self.summarised(
+            {"v": rng.normal(0.0, 1.0, size=(2, 20000))}, "L0_n500", {"v": 0.0}
         )["v"]
         # 94% of a standard normal is +/-1.881; 89% would be +/-1.598.
         assert out["hdi_hi"] - out["hdi_lo"] == pytest.approx(2 * 1.881, abs=0.1)
         assert rp.HDI_PROB == 0.94
 
     def test_contraction_is_measured_against_the_uniform_prior_sd(self):
-        pytest.importorskip("arviz")
         rng = np.random.default_rng(2)
-        draws = rng.normal(0.0, 0.1, size=(2, 5000))
-        out = rp._summarise(
-            {"posterior": self._posterior({"v": draws})},
-            rd.ModelUnderTest(
-                name="t", params=("v",), bounds={"v": (-3.0, 3.0)}, condition_param="v"
-            ),
-            rd.DESIGNS["L0_n500"],
-            {"v": 0.0},
+        out = self.summarised(
+            {"v": rng.normal(0.0, 0.1, size=(2, 5000))}, "L0_n500", {"v": 0.0}
         )["v"]
-        prior_sd = 6.0 / (12**0.5)
-        assert out["contraction"] == pytest.approx(0.1 / prior_sd, rel=0.05)
+        assert out["contraction"] == pytest.approx(0.1 / (6.0 / 12**0.5), rel=0.05)
 
 
 class TestShardHygiene:
@@ -627,6 +618,13 @@ def shard(
     }
 
 
+def errored_shard(likelihood, error="boom", **kw):
+    """What the worker writes when a fit dies: no parameters block, an error."""
+    dead = shard(likelihood, **kw)
+    del dead["parameters"], dead["data"], dead["sampler"]
+    return dead | {"error": error}
+
+
 def arm_shards(likelihood, n=20, *, covered_count=None, **kw):
     """`n` shards for one arm; the first `covered_count` cover the truth."""
     if covered_count is None:
@@ -717,18 +715,7 @@ class TestAggregation:
         )
 
     def test_errored_shards_are_collected_rather_than_crashing(self):
-        summary = agg.summarise(
-            [
-                {
-                    "model": "angle",
-                    "design": "L0_n500",
-                    "likelihood": "analytical",
-                    "arm": "analytical",
-                    "dataset_index": 3,
-                    "error": "boom",
-                }
-            ]
-        )
+        summary = agg.summarise([errored_shard("analytical", model="angle", index=3)])
         assert summary["errors"][0]["error"] == "boom"
         assert summary["attempted"]["angle|analytical|L0_n500"] == 1
 
@@ -829,14 +816,11 @@ class TestSilenceIsNotAPass:
 
     def test_a_sweep_where_every_fit_errored_does_not_pass(self):
         shards = [
-            {
-                "model": "ddm_sdv",
-                "design": "L0_n500",
-                "likelihood": "approx_differentiable",
-                "arm": "approx_differentiable",
-                "dataset_index": i,
-                "error": "RuntimeError: onnx session init failed",
-            }
+            errored_shard(
+                "approx_differentiable",
+                "RuntimeError: onnx session init failed",
+                index=i,
+            )
             for i in range(20)
         ]
         passed, failures = agg.verdict(agg.summarise(shards))
@@ -905,19 +889,17 @@ class TestLadderAttribution:
     def test_the_optional_top_rung_is_still_a_richer_rung_if_you_ran_it(self):
         assert "L1_n2000" in agg._richer_rungs("L1_n1000")
 
-    def _arm(self, design, covered_count, n=20, label="v", contraction=0.05):
-        return [
-            shard(
-                "approx_differentiable",
-                model="angle",
-                design=design,
-                index=i,
-                label=label,
-                contraction=contraction,
-                covered=(i < covered_count),
-            )
-            for i in range(n)
-        ]
+    def _arm(self, design, covered_count, n=20, **kw):
+        # angle has no analytical arm, so every attribution here goes through
+        # the ladder -- which is the point of this class.
+        return arm_shards(
+            "approx_differentiable",
+            n,
+            covered_count=covered_count,
+            model="angle",
+            design=design,
+            **kw,
+        )
 
     def test_a_shortfall_a_richer_rung_repairs_is_charged_to_the_design(self):
         # angle has no exact likelihood. L0_n500 misses, adding conditions

@@ -134,15 +134,10 @@ def _binomial_band(n: int, p: float = NOMINAL_COVERAGE, n_tests: int = 1):
     if n == 0:
         return (0.0, 1.0)
     alpha = 1 - (1 - FAMILY_ALPHA) ** (1 / max(n_tests, 1))
-    # Largest k whose lower tail is still within alpha; anything at or below it
-    # is implausible under nominal coverage.
-    reject_at = -1
-    for k in range(n + 1):
-        if _binomial_cdf(k, n, p) <= alpha:
-            reject_at = k
-        else:
-            break
-    low = (reject_at + 1) / n
+    # The lower tail is monotone in k, so the counts implausible under nominal
+    # coverage are exactly the leading run, and the floor is the first count
+    # after it.
+    low = sum(1 for k in range(n + 1) if _binomial_cdf(k, n, p) <= alpha) / n
     # Upper end is reported, never gated -- coverage above nominal is not a
     # defect. Kept so the report shows the interval, not a bare floor.
     high = min(1.0, p + 2 * math.sqrt(p * (1 - p) / n))
@@ -178,6 +173,11 @@ def _key(shard: dict) -> tuple[str, str, str]:
         # experiments into one coverage number.
         shard.get("design_id") or shard.get("design", "?"),
     )
+
+
+def _is_reference(arm: str) -> bool:
+    """Whether this arm contains no network and can anchor an attribution."""
+    return arm.split("@", 1)[0] in REFERENCE_LIKELIHOODS
 
 
 def _base_param(label: str) -> str:
@@ -232,11 +232,7 @@ def summarise(shards: list[dict]) -> dict:
 
     # Every gated cell is one test; the floor is corrected for how many there
     # are. Counted before scoring so each cell sees the same correction.
-    n_tests = sum(
-        1
-        for (_, arm, _, _) in cells
-        if arm.split("@", 1)[0] not in REFERENCE_LIKELIHOODS
-    )
+    n_tests = sum(1 for (_, arm, _, _) in cells if not _is_reference(arm))
 
     summary = {}
     for (model, arm, design, label), records in sorted(cells.items()):
@@ -298,11 +294,6 @@ def _corr(xs: list[float], ys: list[float]) -> float | None:
     return sxy / math.sqrt(sxx * syy)
 
 
-def _is_reference(arm: str) -> bool:
-    """Whether this arm contains no network and can anchor an attribution."""
-    return arm.split("@", 1)[0] in REFERENCE_LIKELIHOODS
-
-
 def _rung_of(design_id: str) -> str:
     """`L1_n500@sv` -> `L1_n500`. The ladder position, without the variant."""
     return design_id.split("@", 1)[0]
@@ -328,15 +319,18 @@ def _richer_rungs(design_name: str) -> list[str]:
     ]
 
 
-def _reference_cell(cells: dict, model: str, design: str, label: str):
-    """The exact-likelihood cell for this parameter, if any arm supplied one."""
+def _reference_index(cells: dict) -> dict[tuple[str, str, str], dict]:
+    """(model, design, parameter) -> the exact-likelihood cell, where one ran.
+
+    Built once. Looking this up by scanning every cell for every cell is the
+    same answer at O(n^2), and a full catalogue sweep is a lot of cells.
+    """
+    index = {}
     for key, entry in cells.items():
-        k_model, k_arm, k_design, k_label = key.split("|")
-        if (k_model, k_design, k_label) == (model, design, label) and _is_reference(
-            k_arm
-        ):
-            return entry
-    return None
+        model, arm, design, label = key.split("|")
+        if _is_reference(arm):
+            index[(model, design, label)] = entry
+    return index
 
 
 def _rung_recovers(cells: dict, model: str, arm: str, rung: str, label: str) -> bool:
@@ -392,13 +386,14 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
     """
     failures: list[str] = []
     cells = summary["cells"]
+    references = _reference_index(cells)
 
     judged = 0
     for key, entry in cells.items():
         model, arm, design, label = key.split("|")
         if _is_reference(arm):
             continue
-        where = f"{model}/{arm}/{design}/{label}"
+        where = key.replace("|", "/")
         if not entry["eligible"]:
             failures.append(
                 f"{where}: only {entry['n_converged']} converged fits, below the "
@@ -406,32 +401,29 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
             )
             continue
         judged += 1
-        reference = _reference_cell(cells, model, design, label)
+        reference = references.get((model, design, label))
 
         low = entry["coverage_band"][0]
         if entry["coverage"] < low:
-            failures.extend(
-                _explain_coverage(
-                    cells, entry, reference, low, model, arm, design, label
-                )
-            )
+            failures.extend(_explain_coverage(cells, key, entry, reference, low))
 
         contraction = entry["median_contraction"]
+        reference_contraction = (reference or {}).get("median_contraction")
+        vs_reference = (
+            contraction / reference_contraction
+            if contraction is not None and reference_contraction
+            else None
+        )
         if contraction is not None and contraction > MAX_CONTRACTION:
             failures.append(
                 f"{where}: posterior is {contraction:.2f} of the prior width -- the "
                 "likelihood moved it almost not at all, so its coverage says nothing"
             )
-        elif (
-            reference
-            and reference["median_contraction"]
-            and contraction is not None
-            and contraction / reference["median_contraction"] > MAX_CONTRACTION_RATIO
-        ):
+        elif vs_reference is not None and vs_reference > MAX_CONTRACTION_RATIO:
             failures.append(
-                f"{where}: posterior {contraction / reference['median_contraction']:.1f}x "
-                f"wider than the exact likelihood's on the same data -- information "
-                "the data contain is being lost"
+                f"{where}: posterior {vs_reference:.1f}x wider than the exact "
+                "likelihood's on the same data -- information the data contain is "
+                "being lost"
             )
 
         if reference and reference["eligible"] and reference["bias_rate"] is not None:
@@ -472,11 +464,10 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
     return not failures, failures
 
 
-def _explain_coverage(
-    cells, entry, reference, low, model, arm, design, label
-) -> list[str]:
+def _explain_coverage(cells, key, entry, reference, low) -> list[str]:
     """Decide whether a coverage shortfall is the network's fault, and say why."""
-    where = f"{model}/{arm}/{design}/{label}"
+    model, arm, design, label = key.split("|")
+    where = key.replace("|", "/")
     if reference is not None and reference["coverage"] is not None:
         if not reference["eligible"]:
             # Do NOT fall through to the ladder here. The old code did, and its

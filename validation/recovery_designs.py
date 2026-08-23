@@ -348,19 +348,16 @@ def draw_truth(
     bounds = model.shrunk_bounds()
     varying = varies_by_condition(model, design)
 
-    truth: dict[str, float | list[float]] = {}
-    for name in model.params:
-        lo, hi = bounds[name]
-        # Draw from the shared stream for every parameter, in a fixed order,
-        # then overwrite the condition-varying ones. That keeps the shared
-        # stream's consumption identical across levels.
-        shared_value = float(shared_rng.uniform(lo, hi))
-        if name in varying:
-            truth[name] = [
-                float(x) for x in condition_rng.uniform(lo, hi, design.n_conditions)
-            ]
-        else:
-            truth[name] = shared_value
+    # Draw from the shared stream for every parameter, in a fixed order, then
+    # overwrite the condition-varying ones. That keeps the shared stream's
+    # consumption identical across levels.
+    truth: dict[str, float | list[float]] = {
+        name: float(shared_rng.uniform(*bounds[name])) for name in model.params
+    }
+    for name in varying:
+        truth[name] = [
+            float(x) for x in condition_rng.uniform(*bounds[name], design.n_conditions)
+        ]
     return truth
 
 
@@ -379,16 +376,16 @@ def build_dataset(model: ModelUnderTest, design: Design, seed: int):
     condition = np.repeat(
         np.arange(design.n_conditions), design.trials_per_condition
     ).astype(int)
-    n_trials = condition.size  # exact, even if n_trials % n_conditions != 0
-
-    columns = []
-    for name in model.params:
-        value = truth[name]
-        if isinstance(value, list):
-            columns.append(np.asarray(value, dtype=float)[condition])
-        else:
-            columns.append(np.full(n_trials, value, dtype=float))
-    theta = np.column_stack(columns)
+    # A shared parameter is the one-element case of a per-condition one, so
+    # both index the same way once it is broadcast to the condition count.
+    theta = np.column_stack(
+        [
+            np.broadcast_to(np.asarray(truth[name], dtype=float), design.n_conditions)[
+                condition
+            ]
+            for name in model.params
+        ]
+    )
 
     # `random_state` alone does NOT make every ssms model reproducible. Any
     # parameter applied through `simulator_param_mappings` — ddm_sdv's `sv` is
@@ -435,26 +432,22 @@ def model_spec(model: ModelUnderTest, design: Design) -> dict:
     for name in model.params:
         lo, hi = model.bounds[name]
         uniform = {"name": "Uniform", "lower": lo, "upper": hi}
+        entry = {"name": name, "prior": uniform, "bounds": (lo, hi)}
         if name in varying:
-            include.append(
-                {
-                    # 0 + C(...): one coefficient per condition and no
-                    # intercept, so each cell's value is read straight off the
-                    # posterior instead of being an offset from a reference.
-                    "name": name,
-                    "formula": f"{name} ~ 0 + C(condition)",
-                    "prior": {"C(condition)": uniform},
-                    "link": "identity",
-                    "bounds": (lo, hi),
-                }
-            )
-        else:
-            include.append({"name": name, "prior": uniform, "bounds": (lo, hi)})
+            # 0 + C(...): one coefficient per condition and no intercept, so
+            # each cell's value is read straight off the posterior instead of
+            # being an offset from a reference.
+            entry |= {
+                "formula": f"{name} ~ 0 + C(condition)",
+                "prior": {"C(condition)": uniform},
+                "link": "identity",
+            }
+        include.append(entry)
     return {"include": include}
 
 
-def posterior_names(model: ModelUnderTest, design: Design) -> dict[str, list[str]]:
-    """Map each parameter to the posterior variables holding it.
+def posterior_names(model: ModelUnderTest, design: Design) -> dict[str, str]:
+    """Map each parameter to the posterior variable holding it.
 
     A shared parameter is one variable; a condition-varying one is a single
     vector variable whose entries are the per-condition values, which the
@@ -462,6 +455,6 @@ def posterior_names(model: ModelUnderTest, design: Design) -> dict[str, list[str
     """
     varying = varies_by_condition(model, design)
     return {
-        name: [f"{name}_C(condition)" if name in varying else name]
+        name: f"{name}_C(condition)" if name in varying else name
         for name in model.params
     }

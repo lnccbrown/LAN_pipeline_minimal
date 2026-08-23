@@ -91,23 +91,17 @@ def _sanity(data, model: rd.ModelUnderTest) -> dict:
     }
 
 
-def _finite(value):
-    """Replace NaN/Inf with None, recursively.
+def _finite(record: dict) -> dict:
+    """Replace NaN/Inf with None throughout.
 
     `json.dumps` writes those as the bare tokens `NaN` and `Infinity`, which
     RFC 8259 forbids: Python reads its own shards back, but nothing else does.
     They are reachable — rhat is NaN for a single-chain fit, and z is inf when
-    the posterior sd is zero.
+    the posterior sd is zero. Done as a round trip because `json` already walks
+    the structure, and `parse_constant` is the hook for exactly these three
+    tokens.
     """
-    import math as _math
-
-    if isinstance(value, dict):
-        return {k: _finite(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_finite(v) for v in value]
-    if isinstance(value, float) and not _math.isfinite(value):
-        return None
-    return value
+    return json.loads(json.dumps(record), parse_constant=lambda _: None)
 
 
 def _summarise(idata, model: rd.ModelUnderTest, design, truth) -> dict:
@@ -121,10 +115,8 @@ def _summarise(idata, model: rd.ModelUnderTest, design, truth) -> dict:
     import numpy as np
 
     posterior = idata["posterior"] if "posterior" in idata else idata.posterior
-    names = rd.posterior_names(model, design)
     out = {}
-    for param, variables in names.items():
-        var = variables[0]
+    for param, var in rd.posterior_names(model, design).items():
         if var not in posterior:
             out[param] = {"error": f"{var} absent from posterior"}
             continue
