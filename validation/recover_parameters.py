@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import platform
+import re
 import sys
 import time
 from pathlib import Path
@@ -75,7 +76,9 @@ def _sanity(data, model: rd.ModelUnderTest) -> dict:
         "rt_min": float(rt.min()),
         "rt_max": float(rt.max()),
         "n_rt_nonpositive": int((rt <= 0).sum()),
-        "n_rt_at_ceiling": int((rt >= model.max_rt - 0.1).sum()),
+        # Exact, not a fudge: a censored trial comes back at max_t + t, and no
+        # trial that terminated on its own can reach the budget.
+        "n_rt_at_ceiling": int((rt >= rd.SIMULATOR_MAX_T).sum()),
         "choice_shares": shares,
         # The number to watch. Near zero means one alternative is essentially
         # never chosen, and the parameters that only that side identifies are
@@ -86,6 +89,25 @@ def _sanity(data, model: rd.ModelUnderTest) -> dict:
         else min(shares.values()),
         "n_choices_observed": int(values.size),
     }
+
+
+def _finite(value):
+    """Replace NaN/Inf with None, recursively.
+
+    `json.dumps` writes those as the bare tokens `NaN` and `Infinity`, which
+    RFC 8259 forbids: Python reads its own shards back, but nothing else does.
+    They are reachable — rhat is NaN for a single-chain fit, and z is inf when
+    the posterior sd is zero.
+    """
+    import math as _math
+
+    if isinstance(value, dict):
+        return {k: _finite(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_finite(v) for v in value]
+    if isinstance(value, float) and not _math.isfinite(value):
+        return None
+    return value
 
 
 def _summarise(idata, model: rd.ModelUnderTest, design, truth) -> dict:
@@ -182,6 +204,8 @@ def run_one(
     target_accept: float,
     bounds_from: str,
     condition_param: str | None,
+    p_outlier: float | None,
+    arm: str,
 ) -> dict:
     """Simulate, fit, score. Returns the shard record."""
     import hssm
@@ -219,6 +243,14 @@ def run_one(
         data=data,
         model=model_name,
         loglik_kind=likelihood,
+        # Passed explicitly and recorded, because HSSM's default is 0.05 — it
+        # fits 0.95*f(rt|theta) + 0.05*Uniform(0, 20) while build_dataset
+        # simulates no lapse process at all. That mismatch is a fixed
+        # misspecification: the bias in the posterior mean stays put while the
+        # posterior sd shrinks as 1/sqrt(n), so coverage degrades as the
+        # dataset GROWS. Default None here to match the simulator; set it only
+        # when the data really were generated with lapses.
+        p_outlier=p_outlier,
         **kwargs,
         **rd.model_spec(model, design),
     )
@@ -243,34 +275,55 @@ def run_one(
     )
     posterior = idata["posterior"] if "posterior" in idata else idata.posterior
     diverging = np.asarray(sample_stats["diverging"])
-    return {
-        "schema_version": 2,
-        "model": model_name,
-        "design": design_name,
-        "dataset_index": dataset_index,
-        "likelihood": likelihood,
-        "bounds_from": bounds_from,
-        "condition_param": model.condition_param,
-        "has_analytical_reference": model.has_analytical,
-        "onnx": str(onnx_path) if onnx_path else None,
-        "seed": seed,
-        "data": _sanity(data, model),
-        "sampler": {
-            "draws": draws,
-            "tune": tune,
-            "chains": chains,
-            "target_accept": target_accept,
-            "divergences": int(diverging.sum()),
-            "divergence_rate": float(diverging.mean()),
-            "wall_seconds": round(elapsed, 1),
-        },
-        "parameters": _summarise(idata, model, design, truth),
-        "posterior_corr": _posterior_corr(posterior, model, design),
-        "env": {
-            "python": platform.python_version(),
-            "hssm": getattr(hssm, "__version__", "unknown"),
-        },
-    }
+    return _finite(
+        {
+            "schema_version": 2,
+            "model": model_name,
+            "design": design_name,
+            "dataset_index": dataset_index,
+            "likelihood": likelihood,
+            # The arm is what the aggregator pools on. Two candidate networks for
+            # one model and design are different arms and must not share a cell,
+            # so the ONNX identity is part of it.
+            "arm": arm,
+            "p_outlier": p_outlier,
+            "bounds_from": bounds_from,
+            "condition_param": model.condition_param,
+            "has_analytical_reference": model.has_analytical,
+            "onnx": str(onnx_path) if onnx_path else None,
+            "seed": seed,
+            "data": _sanity(data, model),
+            "sampler": {
+                "draws": draws,
+                "tune": tune,
+                "chains": chains,
+                "target_accept": target_accept,
+                "divergences": int(diverging.sum()),
+                "divergence_rate": float(diverging.mean()),
+                "wall_seconds": round(elapsed, 1),
+            },
+            "parameters": _summarise(idata, model, design, truth),
+            "posterior_corr": _posterior_corr(posterior, model, design),
+            "env": {
+                "python": platform.python_version(),
+                "hssm": getattr(hssm, "__version__", "unknown"),
+            },
+        }
+    )
+
+
+def _default_arm(likelihood: str, onnx_path: Path | None) -> str:
+    """Pooling key for one set of fits.
+
+    The likelihood kind alone is not enough: a sweep comparing three candidate
+    networks for one model runs three arms that are all
+    `approx_differentiable`, and pooling them would average a good network with
+    a bad one into one meaningless coverage number.
+    """
+    if onnx_path is None:
+        return likelihood
+    stem = re.sub(r"[^A-Za-z0-9._-]", "_", Path(onnx_path).stem)
+    return f"{likelihood}@{stem}"
 
 
 @app.command()
@@ -291,6 +344,15 @@ def main(
         None, help="Parameter the L1 conditions vary. Default: first drift-like one."
     ),
     onnx_path: Path | None = typer.Option(None, help="Required for the network arm."),
+    p_outlier: float | None = typer.Option(
+        None,
+        help="Lapse probability. Default None matches the lapse-free simulator; "
+        "HSSM's own default of 0.05 would misspecify every fit.",
+    ),
+    arm: str | None = typer.Option(
+        None,
+        help="Pooling key. Default: likelihood, plus the ONNX stem for a network.",
+    ),
     out_dir: Path = typer.Option(Path("."), help="Where the shard JSON is written."),
     draws: int = typer.Option(1000),
     tune: int = typer.Option(1000),
@@ -302,6 +364,11 @@ def main(
     logging.basicConfig(level=getattr(logging, log_level.upper(), logging.WARNING))
     if design not in rd.DESIGNS:
         raise typer.BadParameter(f"Unknown design {design!r}. Have: {list(rd.DESIGNS)}")
+    # `analytical` and `blackbox` both used to collapse onto the tag "net"
+    # alongside every network, so two arms wrote the same filename and the
+    # second silently replaced the first. The arm is the identity now, and it
+    # reaches both the shard body and its name.
+    arm = arm or _default_arm(likelihood, onnx_path)
 
     try:
         record = run_one(
@@ -316,6 +383,8 @@ def main(
             target_accept=target_accept,
             bounds_from=bounds_from,
             condition_param=condition_param,
+            p_outlier=p_outlier,
+            arm=arm,
         )
     except Exception as e:  # noqa: BLE001 - a dead shard must not kill the array
         record = {
@@ -324,13 +393,13 @@ def main(
             "design": design,
             "dataset_index": dataset_index,
             "likelihood": likelihood,
+            "arm": arm,
             "error": f"{type(e).__name__}: {e}",
         }
         logger.error(f"shard failed: {record['error']}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    tag = "analytical" if likelihood == "analytical" else "net"
-    destination = out_dir / f"recovery_{model}_{design}_{tag}_{dataset_index:04d}.json"
+    destination = out_dir / f"recovery_{model}_{arm}_{design}_{dataset_index:04d}.json"
     destination.write_text(json.dumps(record, indent=2) + "\n")
 
     # One JSON line on stdout regardless of log level — the same driver

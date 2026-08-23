@@ -233,6 +233,38 @@ The one judgement call that cannot be read off a config is which parameter the
 conditions should vary; it defaults to the first drift-like parameter and is
 overridden with `--condition-param`.
 
+### Two settings that silently decide the answer
+
+**`--p-outlier` defaults to `None` here, not to HSSM's `0.05`.** HSSM's default
+fits `0.95·f(rt|θ) + 0.05·Uniform(0, 20)`, and the simulator generates no lapse
+process at all. That mismatch is a *fixed* misspecification, so the bias in the
+posterior mean stays put while the posterior sd shrinks as 1/√n — coverage gets
+**worse as the dataset grows**, which reads exactly like a broken likelihood.
+Measured on plain `ddm` with its exact analytical likelihood, 12 datasets:
+
+| n | `p_outlier` | coverage | mean \|z\| |
+| --- | --- | --- | --- |
+| 500 | 0.05 | 0.88 | 0.96 |
+| 500 | none | **0.96** | 0.62 |
+| 2000 | 0.05 | 0.77 | 1.24 |
+| 2000 | none | **0.90** | 0.91 |
+
+Set it to a real value only when the data really were generated with lapses.
+Either way it is recorded in every shard.
+
+**`--bounds-from` decides the priors for *every* arm**, defaulting to the
+network's box. Arms that differ in their priors as well as their likelihoods
+are not paired, and the whole comparison rests on the pairing.
+
+### What the gate will and will not say
+
+A cell needs at least 10 converged fits to be judged at all; below that it is
+**inconclusive**, which is not a pass. An arm that was attempted and produced
+nothing usable fails — a sweep in which every task crashed must not come back
+green. And because the run fails if any single cell fails, the coverage floor
+carries a Šidák correction across the number of cells: uncorrected, a perfectly
+calibrated network fails this gate 53% of the time.
+
 ## MLflow Integration
 
 This pipeline includes MLflow integration for experiment tracking. See `using_mlflow.md` for details.

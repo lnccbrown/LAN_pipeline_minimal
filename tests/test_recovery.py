@@ -24,8 +24,12 @@ import recover_parameters as rp
 import recovery_designs as rd
 
 # Built by hand rather than through `load_model`, which needs HSSM — CI installs
-# only the default dependency group. The values mirror what HSSM declares for
-# the `approx_differentiable` likelihood of each model.
+# only the default dependency group. The values mirror what the PINNED HSSM
+# declares for each model's `approx_differentiable` likelihood, and duplicated
+# literals rot: TestFixtureDrift below is what keeps them honest wherever HSSM
+# is importable. `sv` is the live example — HSSM lnccbrown/HSSM#1230 widens it
+# to (0.0, 2.5) to match the network's training box, and when that lands and
+# the pipeline bumps its pin, the drift test is what will say so.
 DDM_SDV = rd.ModelUnderTest(
     name="ddm_sdv",
     params=("v", "a", "z", "t", "sv"),
@@ -34,7 +38,7 @@ DDM_SDV = rd.ModelUnderTest(
         "a": (0.3, 2.5),
         "z": (0.1, 0.9),
         "t": (0.0, 2.0),
-        "sv": (0.0, 2.5),
+        "sv": (0.0, 1.0),
     },
     condition_param="v",
     likelihood_kinds=("analytical", "approx_differentiable", "blackbox"),
@@ -91,6 +95,21 @@ class TestModelUnderTest:
         # multiplies bounds instead of the span gets this backwards.
         lo, hi = ANGLE.shrunk_bounds(0.1)["theta"]
         assert -0.1 < lo < hi < 1.3
+
+    @pytest.mark.parametrize(
+        "bad", [(0.0, float("inf")), (float("nan"), 1.0), (1.0, 1.0), (2.0, 1.0)]
+    )
+    def test_non_finite_or_empty_bounds_are_refused_at_construction(self, bad):
+        # Unguarded, shrunk_bounds returns (inf, nan) without complaint, the
+        # prior becomes Uniform(0, inf), and the run dies much later inside
+        # numpy in an error naming neither the model nor the parameter.
+        with pytest.raises(ValueError, match="bound"):
+            rd.ModelUnderTest(
+                name="broken",
+                params=("v",),
+                bounds={"v": bad},
+                condition_param="v",
+            )
 
     def test_missing_bounds_are_refused_at_construction(self):
         with pytest.raises(ValueError, match="no bounds"):
@@ -252,6 +271,152 @@ class TestLoadModel:
         assert not rd.load_model("angle").has_analytical
 
 
+class TestFixtureDrift:
+    """The hand-built fixtures duplicate HSSM's numbers, so they can rot."""
+
+    def test_fixtures_still_match_what_hssm_declares(self):
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
+        for fixture in MODELS:
+            live = rd.load_model(fixture.name)
+            assert live.params == fixture.params, fixture.name
+            assert live.n_choices == fixture.n_choices, fixture.name
+            assert set(live.likelihood_kinds) == set(fixture.likelihood_kinds), (
+                fixture.name
+            )
+            for param, bound in fixture.bounds.items():
+                assert live.bounds[param] == pytest.approx(bound), (
+                    f"{fixture.name}/{param}: fixture says {bound}, "
+                    f"HSSM says {live.bounds[param]}"
+                )
+
+
+class TestConditionBroadcast:
+    """The one line that makes an L1 dataset actually multi-condition."""
+
+    def test_l1_trials_are_simulated_from_their_own_condition_value(self):
+        # If the per-condition broadcast broke, every L1 dataset would be
+        # simulated from a single drift value while still carrying a condition
+        # column -- silently turning the whole ladder into four copies of L0.
+        design = rd.DESIGNS["L1_n2000"]
+        model = DDM_SDV
+        data, truth = rd.build_dataset(model, design, seed=4)
+        drifts = truth[model.condition_param]
+        assert len(set(drifts)) == 4
+
+        # Choice proportion has to track each condition's own drift. Tested as
+        # a correlation rather than strict monotonicity: two conditions can
+        # draw near-identical drifts, and then their order is sampling noise.
+        shares = [
+            (data.loc[data["condition"] == c, "response"] > 0).mean() for c in range(4)
+        ]
+        assert np.corrcoef(drifts, shares)[0, 1] > 0.95, list(zip(drifts, shares))
+        assert max(shares) - min(shares) > 0.2, list(zip(drifts, shares))
+
+    def test_l0_and_l1_differ_in_data_even_at_the_same_seed_and_size(self):
+        l0, _ = rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n2000"], seed=4)
+        l1, _ = rd.build_dataset(DDM_SDV, rd.DESIGNS["L1_n2000"], seed=4)
+        assert not np.array_equal(l0["rt"].to_numpy(), l1["rt"].to_numpy())
+
+
+class TestSummarise:
+    """_summarise produces every number in the report, so it gets pinned."""
+
+    def _posterior(self, values: dict):
+        xr = pytest.importorskip("xarray")
+        return xr.Dataset(
+            {
+                name: (("chain", "draw") + (("cond",) if arr.ndim == 3 else ()), arr)
+                for name, arr in values.items()
+            }
+        )
+
+    def test_a_condition_vector_expands_into_one_record_per_condition(self):
+        pytest.importorskip("arviz")
+        rng = np.random.default_rng(0)
+        drift = rng.normal(loc=[0.5, 1.0, 1.5, 2.0], scale=0.05, size=(2, 500, 4))
+        posterior = self._posterior({"v_C(condition)": drift})
+        truth = {"v": [0.5, 1.0, 1.5, 2.0]}
+        out = rp._summarise(
+            {"posterior": posterior},
+            rd.ModelUnderTest(
+                name="t", params=("v",), bounds={"v": (-3.0, 3.0)}, condition_param="v"
+            ),
+            rd.DESIGNS["L1_n500"],
+            truth,
+        )
+        assert sorted(out) == ["v[0]", "v[1]", "v[2]", "v[3]"]
+        # Each condition is scored against ITS OWN truth, not the first one.
+        for i, true_i in enumerate(truth["v"]):
+            assert out[f"v[{i}]"]["truth"] == true_i
+            assert out[f"v[{i}]"]["mean"] == pytest.approx(true_i, abs=0.02)
+            assert out[f"v[{i}]"]["covered"]
+
+    def test_the_interval_is_a_94_percent_hdi_not_arviz_default_89_eti(self):
+        # arviz 1.x defaults to an 89% equal-tailed interval, a different
+        # statistic that would silently change every coverage verdict.
+        pytest.importorskip("arviz")
+        rng = np.random.default_rng(1)
+        draws = rng.normal(0.0, 1.0, size=(2, 20000))
+        out = rp._summarise(
+            {"posterior": self._posterior({"v": draws})},
+            rd.ModelUnderTest(
+                name="t", params=("v",), bounds={"v": (-3.0, 3.0)}, condition_param="v"
+            ),
+            rd.DESIGNS["L0_n500"],
+            {"v": 0.0},
+        )["v"]
+        # 94% of a standard normal is +/-1.881; 89% would be +/-1.598.
+        assert out["hdi_hi"] - out["hdi_lo"] == pytest.approx(2 * 1.881, abs=0.1)
+        assert rp.HDI_PROB == 0.94
+
+    def test_contraction_is_measured_against_the_uniform_prior_sd(self):
+        pytest.importorskip("arviz")
+        rng = np.random.default_rng(2)
+        draws = rng.normal(0.0, 0.1, size=(2, 5000))
+        out = rp._summarise(
+            {"posterior": self._posterior({"v": draws})},
+            rd.ModelUnderTest(
+                name="t", params=("v",), bounds={"v": (-3.0, 3.0)}, condition_param="v"
+            ),
+            rd.DESIGNS["L0_n500"],
+            {"v": 0.0},
+        )["v"]
+        prior_sd = 6.0 / (12**0.5)
+        assert out["contraction"] == pytest.approx(0.1 / prior_sd, rel=0.05)
+
+
+class TestShardHygiene:
+    def test_two_candidate_networks_get_different_arm_labels(self):
+        # Same likelihood kind, same model, same design -- but a different
+        # network. Without this they write the same filename and the second
+        # silently replaces the first, dropping half a sweep.
+        from pathlib import Path as _P
+
+        a = rp._default_arm("approx_differentiable", _P("/nets/b50k_cosine.onnx"))
+        b = rp._default_arm("approx_differentiable", _P("/nets/b500k_cosine.onnx"))
+        assert a != b
+        assert a == "approx_differentiable@b50k_cosine"
+
+    def test_arm_labels_survive_a_filename(self):
+        from pathlib import Path as _P
+
+        arm = rp._default_arm("approx_differentiable", _P("/n/we ird/na*me.onnx"))
+        assert "/" not in arm and "*" not in arm and " " not in arm
+
+    def test_analytical_and_blackbox_no_longer_collapse_together(self):
+        assert rp._default_arm("analytical", None) != rp._default_arm("blackbox", None)
+
+    def test_non_finite_numbers_are_nulled_so_the_shard_is_valid_json(self):
+        # json.dumps writes bare NaN/Infinity, which RFC 8259 forbids. rhat is
+        # NaN for a single-chain fit and z is inf when the posterior sd is 0.
+        cleaned = rp._finite(
+            {"a": float("nan"), "b": [1.0, float("inf")], "c": {"d": 2.0}}
+        )
+        text = json.dumps(cleaned)
+        assert "NaN" not in text and "Infinity" not in text
+        assert cleaned == {"a": None, "b": [1.0, None], "c": {"d": 2.0}}
+
+
 class TestSanity:
     def _frame(self, responses):
         import pandas as pd
@@ -278,11 +443,18 @@ class TestSanity:
         assert out["n_choices_observed"] == 2
         assert out["min_choice_share"] == 0.0
 
-    def test_the_rt_ceiling_comes_from_the_model_not_a_constant(self):
+    def test_the_censoring_criterion_is_exact_not_a_fudge_factor(self):
+        # A censored trial comes back at max_t + t, so it is always at or above
+        # the budget; a trial that terminated on its own never reaches it. The
+        # old `>= max_rt - 0.1` counted slow-but-finished trials as censored,
+        # and 20.0 was the wrong ceiling anyway (measured: RTs reach 21.9).
         import pandas as pd
 
-        data = pd.DataFrame({"rt": [0.5, 19.95, 20.0], "response": [1, 1, -1]})
+        data = pd.DataFrame(
+            {"rt": [0.5, 19.95, 20.0, 21.9], "response": [1, 1, -1, -1]}
+        )
         assert rp._sanity(data, DDM_SDV)["n_rt_at_ceiling"] == 2
+        assert rd.SIMULATOR_MAX_T == 20.0
 
 
 def shard(
@@ -291,24 +463,29 @@ def shard(
     design="L0_n500",
     index=0,
     *,
+    arm=None,
+    label="v",
     covered=True,
     z=0.5,
     rhat=1.0,
     ess=1000.0,
     divergence_rate=0.0,
     contraction=0.05,
+    min_choice_share=0.5,
     truth=1.0,
 ):
-    """One synthetic shard with a single parameter, `v`."""
+    """One synthetic shard with a single parameter."""
     return {
         "schema_version": 2,
         "model": model,
         "design": design,
         "likelihood": likelihood,
+        "arm": arm or likelihood,
         "dataset_index": index,
+        "data": {"min_choice_share": min_choice_share},
         "sampler": {"divergence_rate": divergence_rate, "divergences": 0},
         "parameters": {
-            "v": {
+            label: {
                 "truth": truth,
                 "mean": truth + z * 0.1,
                 "sd": 0.1,
@@ -324,15 +501,41 @@ def shard(
     }
 
 
-class TestAggregation:
-    def test_coverage_band_widens_as_datasets_shrink(self):
-        low_20, high_20 = agg._binomial_band(20)
-        low_200, high_200 = agg._binomial_band(200)
-        assert low_20 < low_200 < agg.NOMINAL_COVERAGE < high_200 <= high_20
-        # 20 datasets cannot distinguish 0.90 from nominal, and the gate must
-        # not pretend otherwise.
-        assert low_20 < 0.90
+def arm_shards(likelihood, n=20, *, covered_count=None, **kw):
+    """`n` shards for one arm; the first `covered_count` cover the truth."""
+    if covered_count is None:
+        covered_count = n
+    return [
+        shard(likelihood, index=i, covered=(i < covered_count), **kw) for i in range(n)
+    ]
 
+
+class TestBand:
+    def test_the_floor_is_an_exact_binomial_quantile_not_a_normal_one(self):
+        # At n=20, p=0.94 the normal approximation is invalid: n*p*(1-p) = 1.13.
+        low, _ = agg._binomial_band(20, n_tests=1)
+        # The floor is a realisable count over n, never an arbitrary real.
+        assert low * 20 == pytest.approx(round(low * 20))
+
+    def test_more_tests_lower_the_floor_so_the_family_wise_rate_holds(self):
+        # The run fails if ANY cell fails. Without the correction a perfectly
+        # calibrated network fails the gate more often than not.
+        floors = [agg._binomial_band(20, n_tests=m)[0] for m in (1, 5, 26)]
+        assert floors == sorted(floors, reverse=True)
+
+        def family_rate(n_tests, n_cells):
+            low = agg._binomial_band(20, n_tests=n_tests)[0]
+            per = agg._binomial_cdf(round(low * 20) - 1, 20, agg.NOMINAL_COVERAGE)
+            return 1 - (1 - per) ** n_cells
+
+        assert family_rate(1, 26) > 0.5  # measured 0.534 -- worse than a coin
+        assert family_rate(26, 26) < agg.FAMILY_ALPHA
+
+    def test_a_cell_with_no_fits_is_not_given_a_floor(self):
+        assert agg._binomial_band(0) == (0.0, 1.0)
+
+
+class TestAggregation:
     def test_two_models_in_one_directory_do_not_share_cells(self):
         shards = [shard("analytical", model="ddm_sdv", index=i) for i in range(3)]
         shards += [shard("analytical", model="angle", index=i) for i in range(3)]
@@ -341,11 +544,19 @@ class TestAggregation:
             "ddm_sdv|analytical|L0_n500|v",
             "angle|analytical|L0_n500|v",
         }
-        assert all(cell["n_fits"] == 3 for cell in cells.values())
 
-    def test_a_shard_without_a_model_field_is_read_as_ddm_sdv(self):
+    def test_two_candidate_networks_are_separate_arms(self):
+        # Pooling them would average a good network with a bad one into one
+        # meaningless coverage number, and the shard files would collide.
+        shards = arm_shards("approx_differentiable", arm="approx_differentiable@b50k")
+        shards += arm_shards("approx_differentiable", arm="approx_differentiable@b500k")
+        cells = agg.summarise(shards)["cells"]
+        assert len(cells) == 2
+        assert all(cell["n_fits"] == 20 for cell in cells.values())
+
+    def test_a_shard_without_model_or_arm_is_read_as_the_legacy_single_network(self):
         legacy = shard("analytical")
-        del legacy["model"]
+        del legacy["model"], legacy["arm"]
         assert "ddm_sdv|analytical|L0_n500|v" in agg.summarise([legacy])["cells"]
 
     def test_non_converged_fits_are_excluded_not_failed(self):
@@ -355,64 +566,52 @@ class TestAggregation:
         assert cell["n_converged"] == 0
         assert cell["coverage"] is None
 
+    def test_a_nan_rhat_is_excluded_rather_than_admitted(self):
+        # Single-chain fits report rhat NaN, and `NaN <= 1.01` is False -- but
+        # only by accident of IEEE semantics, so it is pinned.
+        cell = agg.summarise(
+            [shard("analytical", index=i, rhat=float("nan")) for i in range(20)]
+        )["cells"]["ddm_sdv|analytical|L0_n500|v"]
+        assert cell["n_converged"] == 0
+
     def test_divergent_fits_are_dropped_before_scoring(self):
         summary = agg.summarise([shard("analytical", index=0, divergence_rate=0.5)])
         assert summary["cells"] == {}
         assert summary["excluded_for_divergences"]["ddm_sdv|analytical|L0_n500"] == 1
 
+    def test_a_dataset_missing_a_response_category_is_excluded(self):
+        # _sanity's docstring promises "the aggregator decides what to do with
+        # it". Before this it decided nothing -- the key was never read.
+        summary = agg.summarise(
+            [shard("analytical", index=i, min_choice_share=0.0) for i in range(20)]
+        )
+        assert summary["cells"] == {}
+        assert (
+            summary["excluded_for_degenerate_data"]["ddm_sdv|analytical|L0_n500"] == 20
+        )
+
     def test_errored_shards_are_collected_rather_than_crashing(self):
-        shards = [
-            {
-                "model": "angle",
-                "design": "L0_n500",
-                "likelihood": "analytical",
-                "dataset_index": 3,
-                "error": "boom",
-            }
-        ]
-        summary = agg.summarise(shards)
+        summary = agg.summarise(
+            [
+                {
+                    "model": "angle",
+                    "design": "L0_n500",
+                    "likelihood": "analytical",
+                    "arm": "analytical",
+                    "dataset_index": 3,
+                    "error": "boom",
+                }
+            ]
+        )
         assert summary["errors"][0]["error"] == "boom"
         assert summary["attempted"]["angle|analytical|L0_n500"] == 1
 
-    def test_a_network_missing_coverage_the_analytical_arm_reaches_fails(self):
-        shards = [shard("analytical", index=i, covered=True) for i in range(20)]
-        shards += [
-            shard("approx_differentiable", index=i, covered=(i < 8)) for i in range(20)
-        ]
-        passed, failures = agg.verdict(agg.summarise(shards))
-        assert not passed
-        assert "coverage" in failures[0]
-
-    def test_a_shortfall_the_analytical_arm_shares_is_not_the_networks_fault(self):
-        # Both arms cover 40% of the time: the design cannot identify this
-        # parameter, which is a fact about the model, not about the network.
-        shards = [shard("analytical", index=i, covered=(i < 8)) for i in range(20)]
-        shards += [
-            shard("approx_differentiable", index=i, covered=(i < 8)) for i in range(20)
-        ]
-        passed, failures = agg.verdict(agg.summarise(shards))
-        assert passed, failures
-
-    def test_a_wide_but_covering_posterior_passes(self):
-        # Honesty is not punished: contraction near 1 means the data barely
-        # moved the prior, and that is reported, never gated.
-        shards = [shard("analytical", index=i, contraction=0.95) for i in range(20)]
-        shards += [
-            shard("approx_differentiable", index=i, contraction=0.95) for i in range(20)
-        ]
-        summary = agg.summarise(shards)
-        passed, _ = agg.verdict(summary)
-        assert passed
-        assert summary["cells"]["ddm_sdv|approx_differentiable|L0_n500|v"][
-            "median_contraction"
-        ] == pytest.approx(0.95)
-
-    def test_a_biased_network_fails_even_while_covering(self):
-        shards = [shard("analytical", index=i, z=0.2) for i in range(20)]
-        shards += [shard("approx_differentiable", index=i, z=5.0) for i in range(20)]
-        passed, failures = agg.verdict(agg.summarise(shards))
-        assert not passed
-        assert any("bias rate" in f for f in failures)
+    def test_a_shard_with_no_parameters_block_is_an_error_not_a_crash(self):
+        broken = shard("analytical")
+        del broken["parameters"]
+        summary = agg.summarise([broken])
+        assert summary["cells"] == {}
+        assert "no parameters" in summary["errors"][0]["error"]
 
     def test_correlation_is_none_when_truth_does_not_vary(self):
         assert agg._corr([1.0, 1.0, 1.0], [1.0, 2.0, 3.0]) is None
@@ -428,8 +627,135 @@ class TestAggregation:
         assert json.loads(json.dumps(agg.summarise(loaded)))["cells"]
 
 
+class TestVerdict:
+    def test_a_network_missing_coverage_the_exact_arm_reaches_fails(self):
+        shards = arm_shards("analytical")
+        shards += arm_shards("approx_differentiable", covered_count=8)
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
+        assert "coverage" in failures[0]
+
+    def test_a_shortfall_the_exact_arm_shares_is_not_the_networks_fault(self):
+        # Both arms cover 40% of the time: the design cannot identify this
+        # parameter, which is a fact about the model, not about the network.
+        shards = arm_shards("analytical", covered_count=8)
+        shards += arm_shards("approx_differentiable", covered_count=8)
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert passed, failures
+
+    def test_a_blackbox_arm_is_a_reference_not_a_defendant(self):
+        # blackbox is an exact simulation-based likelihood with no network in
+        # it. Judging it as "the network" would blame it for the model. Its
+        # own coverage shortfall here must not produce a failure, while the
+        # network alongside it is judged normally.
+        shards = arm_shards("blackbox", covered_count=8)
+        shards += arm_shards("approx_differentiable", covered_count=8)
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert passed, failures
+        assert not any("blackbox" in f for f in failures)
+
+    def test_a_blackbox_arm_can_anchor_an_attribution(self):
+        shards = arm_shards("blackbox")
+        shards += arm_shards("approx_differentiable", covered_count=8)
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
+        assert "exact likelihood reaches" in failures[0]
+
+    def test_a_wide_but_covering_posterior_passes(self):
+        # Honesty is not punished: a posterior wide because the data are
+        # uninformative is the model telling the truth, and that is reported.
+        shards = arm_shards("analytical", contraction=0.7)
+        shards += arm_shards("approx_differentiable", contraction=0.7)
+        summary = agg.summarise(shards)
+        passed, failures = agg.verdict(summary)
+        assert passed, failures
+        assert summary["cells"]["ddm_sdv|approx_differentiable|L0_n500|v"][
+            "median_contraction"
+        ] == pytest.approx(0.7)
+
+    def test_a_likelihood_that_moved_nothing_cannot_pass_on_coverage_alone(self):
+        # Truths come from a box inset 10% per side while the prior spans the
+        # full box, so the PRIOR's own 94% interval contains every possible
+        # truth. A network whose likelihood is constant therefore scores
+        # coverage 1.00 -- perfect, and completely uninformative.
+        shards = arm_shards("approx_differentiable", contraction=0.99)
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
+        assert "moved it almost not at all" in failures[0]
+
+    def test_a_network_much_vaguer_than_the_exact_arm_fails(self):
+        shards = arm_shards("analytical", contraction=0.10)
+        shards += arm_shards("approx_differentiable", contraction=0.50)
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
+        assert "wider than the exact likelihood" in failures[0]
+
+    def test_a_biased_network_fails_even_while_covering(self):
+        shards = arm_shards("analytical", z=0.2)
+        shards += arm_shards("approx_differentiable", z=5.0)
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
+        assert any("bias rate" in f for f in failures)
+
+
+class TestSilenceIsNotAPass:
+    """The gate must distinguish "calibrated" from "nothing ran"."""
+
+    def test_a_sweep_where_every_fit_errored_does_not_pass(self):
+        shards = [
+            {
+                "model": "ddm_sdv",
+                "design": "L0_n500",
+                "likelihood": "approx_differentiable",
+                "arm": "approx_differentiable",
+                "dataset_index": i,
+                "error": "RuntimeError: onnx session init failed",
+            }
+            for i in range(20)
+        ]
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
+        assert "nothing to judge" in failures[0]
+
+    def test_a_sweep_where_every_fit_diverged_does_not_pass(self):
+        shards = arm_shards("approx_differentiable", divergence_rate=0.9)
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
+
+    def test_a_sweep_where_nothing_converged_does_not_pass(self):
+        shards = arm_shards("approx_differentiable", rhat=1.5)
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
+
+    def test_an_empty_report_does_not_pass(self):
+        passed, failures = agg.verdict(agg.summarise([]))
+        assert not passed
+        assert "nothing here to pass" in failures[0]
+
+    def test_attrition_below_the_floor_is_inconclusive_not_a_pass(self):
+        # Three survivors out of twenty used to clear a band wide enough to
+        # admit almost anything, and the stdout line still said n_shards: 20.
+        shards = arm_shards("approx_differentiable", n=3)
+        summary = agg.summarise(shards)
+        assert not summary["cells"]["ddm_sdv|approx_differentiable|L0_n500|v"][
+            "eligible"
+        ]
+        passed, failures = agg.verdict(summary)
+        assert not passed
+        assert "inconclusive" in failures[0]
+
+    def test_a_non_converged_exact_arm_does_not_silently_downgrade_the_gate(self):
+        # The old code fell through to the ladder here and its message then
+        # claimed there was no exact arm -- for a model that has one.
+        shards = arm_shards("analytical", n=4)
+        shards += arm_shards("approx_differentiable", covered_count=8)
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
+        assert any("fix the reference arm first" in f for f in failures)
+
+
 class TestLadderAttribution:
-    """What stands in for the analytical arm on models that have none."""
+    """What stands in for an exact likelihood on models that have none."""
 
     def test_richer_rungs_need_at_least_as_much_data_and_design(self):
         assert set(agg._richer_rungs("L0_n500")) == {
@@ -437,29 +763,49 @@ class TestLadderAttribution:
             "L1_n500",
             "L1_n2000",
         }
-        # More conditions but fewer trials is not richer — it is a trade.
+        # More conditions but fewer trials is not richer -- it is a trade.
         assert agg._richer_rungs("L0_n2000") == ["L1_n2000"]
         assert agg._richer_rungs("L1_n2000") == []
 
-    def _arm(self, design, covered_count, n=20):
+    def _arm(self, design, covered_count, n=20, label="v", contraction=0.05):
         return [
             shard(
                 "approx_differentiable",
                 model="angle",
                 design=design,
                 index=i,
+                label=label,
+                contraction=contraction,
                 covered=(i < covered_count),
             )
             for i in range(n)
         ]
 
     def test_a_shortfall_a_richer_rung_repairs_is_charged_to_the_design(self):
-        # No analytical arm anywhere here: angle has none. L0_n500 misses, but
-        # adding conditions fixes it, which is what an identifiability limit
-        # looks like.
+        # angle has no exact likelihood. L0_n500 misses, adding conditions
+        # fixes it: that is what an identifiability limit looks like.
         shards = self._arm("L0_n500", 8) + self._arm("L1_n500", 20)
         passed, failures = agg.verdict(agg.summarise(shards))
         assert passed, failures
+
+    def test_the_ladder_crosses_the_l0_to_l1_boundary_for_the_drift_itself(self):
+        # THE case the ladder exists for. The condition parameter is labelled
+        # `v` at L0 and `v[0]`..`v[3]` at L1, so an exact-label lookup never
+        # finds the rung that rescues it and a correct network gets blamed for
+        # the model's identifiability limit.
+        shards = self._arm("L0_n2000", 8, label="v")
+        for i in range(4):
+            shards += self._arm("L1_n2000", 20, label=f"v[{i}]")
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert passed, failures
+
+    def test_one_condition_recovering_is_not_enough_to_excuse_the_rest(self):
+        shards = self._arm("L0_n2000", 8, label="v")
+        shards += self._arm("L1_n2000", 20, label="v[0]")
+        for i in (1, 2, 3):
+            shards += self._arm("L1_n2000", 8, label=f"v[{i}]")
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
 
     def test_a_shortfall_flat_across_the_ladder_is_charged_to_the_network(self):
         shards = self._arm("L0_n500", 8) + self._arm("L1_n2000", 8)
@@ -468,16 +814,28 @@ class TestLadderAttribution:
         # The weaker evidence has to read as weaker.
         assert any("unconfirmed" in f for f in failures)
 
-    def test_bias_without_an_analytical_arm_still_has_an_absolute_bar(self):
+    def test_a_richer_rung_must_actually_recover_not_merely_exist(self):
+        shards = self._arm("L0_n500", 8) + self._arm("L1_n500", 9)
+        passed, _ = agg.verdict(agg.summarise(shards))
+        assert not passed
+
+    def test_a_thin_richer_rung_cannot_whitewash_a_shortfall(self):
+        # Two surviving fits clear their own band trivially. That must not
+        # excuse twenty fits missing at the rung below.
+        shards = self._arm("L0_n500", 8) + self._arm("L1_n500", 2, n=2)
+        passed, _ = agg.verdict(agg.summarise(shards))
+        assert not passed
+
+    def test_bias_without_an_exact_arm_still_has_an_absolute_bar(self):
         shards = [
             shard("approx_differentiable", model="angle", index=i, z=5.0)
             for i in range(20)
         ]
         passed, failures = agg.verdict(agg.summarise(shards))
         assert not passed
-        assert any("no analytical arm" in f for f in failures)
+        assert any("no usable exact-likelihood reference" in f for f in failures)
 
-    def test_an_unbiased_network_without_an_analytical_arm_passes(self):
+    def test_an_unbiased_network_without_an_exact_arm_passes(self):
         shards = [
             shard("approx_differentiable", model="angle", index=i, z=0.2)
             for i in range(20)

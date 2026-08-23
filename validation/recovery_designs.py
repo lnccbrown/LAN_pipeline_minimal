@@ -67,6 +67,7 @@ would say nothing about the network.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -75,6 +76,14 @@ import numpy as np
 # accurate at the very edge of its training region, and a truth drawn there
 # tests the boundary rather than the model.
 SHRINK = 0.1
+
+# The decision-time budget handed to the simulator. Passed explicitly rather
+# than left to ssms' default so the censoring criterion below is ours and
+# cannot drift under us. A trial whose decision process never terminated comes
+# back at `max_t + t`, so `rt >= SIMULATOR_MAX_T` is exact: no uncensored trial
+# can reach the budget without having consumed all of it. (Measured on ddm_sdv
+# at a=2.5, t=1.9: RTs saturate at 21.9, and 153 of 4000 sit at or above 20.)
+SIMULATOR_MAX_T = 20.0
 
 
 @dataclass(frozen=True)
@@ -99,8 +108,6 @@ class ModelUnderTest:
     # per kind, and `analytical` in here is what makes the paired comparison in
     # step 2a of the recipe available at all.
     likelihood_kinds: tuple[str, ...] = ("approx_differentiable",)
-    # Longest RT the simulator can return; trials at it are censored.
-    max_rt: float = 20.0
     notes: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -112,6 +119,16 @@ class ModelUnderTest:
                 f"{self.name}: condition_param {self.condition_param!r} is not a "
                 f"parameter of this model. Have: {list(self.params)}"
             )
+        # A non-finite or inverted bound is not a box to draw truths from. Left
+        # unchecked, `shrunk_bounds` returns (inf, nan) without complaint and
+        # the run dies much later inside numpy, in an error naming neither the
+        # model nor the parameter.
+        for name in self.params:
+            lo, hi = self.bounds[name]
+            if not (math.isfinite(lo) and math.isfinite(hi)):
+                raise ValueError(f"{self.name}/{name}: non-finite bound ({lo}, {hi})")
+            if not lo < hi:
+                raise ValueError(f"{self.name}/{name}: empty bound ({lo}, {hi})")
 
     @property
     def has_analytical(self) -> bool:
@@ -194,7 +211,6 @@ def load_model(
         condition_param=condition_param or _default_condition_param(params),
         n_choices=len(config.get("choices", [-1, 1])),
         likelihood_kinds=tuple(sorted(likelihoods)),
-        max_rt=float(sim_config.get("simulator_fixed_params", {}).get("max_t", 20.0)),
         notes={"loglik_kind": loglik_kind},
     )
 
@@ -307,7 +323,13 @@ def build_dataset(model: ModelUnderTest, design: Design, seed: int):
     # makes recovery interpretable is gone.
     # Upstream: ssm-simulators should thread random_state into the mappings.
     np.random.seed(seed)
-    sim = simulator(theta=theta, model=model.name, n_samples=1, random_state=seed)
+    sim = simulator(
+        theta=theta,
+        model=model.name,
+        n_samples=1,
+        random_state=seed,
+        max_t=SIMULATOR_MAX_T,
+    )
     data = pd.DataFrame(
         {
             "rt": np.asarray(sim["rts"]).reshape(-1),
