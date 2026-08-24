@@ -42,8 +42,11 @@ generated script exports:
 
 Generation also receives a run-name argument containing
 `$SLURM_ARRAY_TASK_ID`; a fanned-out submission adds the lane index so names do
-not collide between arrays. The generated shell permits expansion only for its
-allowlisted Slurm identifiers and quotes all other config-derived text.
+not collide between arrays. Command arguments permit expansion only for their
+allowlisted Slurm identifiers and shell-quote all other config-derived values.
+The `modules` list is a deliberate exception: each entry is emitted verbatim as
+`module load <entry>`. Treat module names as administrator-controlled cluster
+configuration, never as untrusted or user-submitted text.
 
 ## Path rules
 

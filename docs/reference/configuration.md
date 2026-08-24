@@ -89,7 +89,10 @@ The committed file separates human-readable inventory from executable defaults.
 Accepted executable resource keys are `account`, `partition`, `cores`, `mem`,
 `num_gpus`, and `time`. A job-specific `modules` list overrides the top-level
 list. An explicit empty list means load no modules; an omitted key inherits the
-less-specific default.
+less-specific default. Module entries are inserted as verbatim shell text in
+`module load ...` lines, so only trusted cluster module names belong here; the
+[environment reference](environment.md#variables-injected-into-jobs) owns the
+quoting boundary.
 
 For generation, `job_defaults.generate.lanes` may list:
 

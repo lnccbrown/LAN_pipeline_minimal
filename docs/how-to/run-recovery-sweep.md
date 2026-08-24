@@ -5,6 +5,13 @@ well-formed density. For why the harness is shaped the way it is — coverage
 versus contraction, the reference arms, the ladder — see
 [Parameter recovery](../explanations/parameter-recovery.md).
 
+!!! info "Execution status"
+
+    Recovery fits are sampling workloads and are not executed by documentation
+    or pipeline CI. Run them manually in the locked validation environment,
+    retain every shard, and aggregate the complete sweep before treating a
+    verdict as evidence.
+
 ## Install the validation profile
 
 ```bash
@@ -81,6 +88,10 @@ twelve datasets:
 
 Set it to a real value only when the data really were generated with lapses.
 Either way it is recorded in every shard.
+
+The table is historical calibration evidence for this default, not a
+CI-generated benchmark. Raw shards for that exploratory run are not committed;
+reproduce the paired sweep before using the numbers as an acceptance baseline.
 
 ## Cluster notes
 
