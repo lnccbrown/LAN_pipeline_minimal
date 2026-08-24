@@ -1,0 +1,53 @@
+# Production ddm_sdv LAN training (torch backend).
+#
+# Architecture is not inherited, it is copied from what shipped: every
+# published 5-parameter / 7-input DDM-family LAN on franklab/HSSM
+# (angle, levy, ornstein) is exactly 7-100-100-100 with tanh, 21,101 weights.
+# LAYER_SIZES[0] below is that network; --network-id 0 selects it.
+#
+# Corpus: 300 files x 10,000,000 rows. At batch 50,000 that is 200 batches
+# per file, exact — no ragged final batch.
+MODEL: "ddm_sdv"
+NETWORK_TYPE: "lan"
+GENERATOR_APPROACH: "lan"
+
+LAYER_SIZES: [[100, 100, 100, 1]]
+ACTIVATIONS: [['tanh', 'tanh', 'tanh']]
+
+N_EPOCHS: 20
+CPU_BATCH_SIZE: 50000       # equal to GPU so a CPU fallback is the same
+GPU_BATCH_SIZE: 50000       # optimisation problem, not a 50x smaller one
+
+OPTIMIZER_: "adam"
+LEARNING_RATE: 0.001
+WEIGHT_DECAY: 0.0
+LR_SCHEDULER: 'reduce_on_plateau'
+LR_SCHEDULER_PARAMS:
+  factor: 0.1
+  patience: 2
+  threshold: 0.001
+  min_lr: 0.00000001
+  verbose: True
+
+# Splits across FILES, not rows: 294 train / 6 validation. 6 files is
+# 60,000,000 validation rows — ample for a stable curve to drive the
+# plateau scheduler.
+TRAIN_VAL_SPLIT: 0.98
+
+# A SENTINEL, applied as min(files_found, this). It does NOT assert that
+# 10000 files exist. After submitting, check the MLflow tag
+# `n_training_files_used` reads 300 — the param will say 10000 either way.
+N_TRAINING_FILES: 10000
+
+# Must stay a quoted string: it is eval'd with numpy in scope, and a bare
+# -16.1 raises TypeError.
+LABELS_LOWER_BOUND: "np.log(1e-7)"
+
+# False deliberately. SHUFFLE only sets DataLoader(shuffle=...) for batch
+# ORDER, and DatasetTorch advances files on `index % batches_per_file == 0`
+# while computing its row offset from the same index — so a shuffled index
+# stream reads rows from whichever file happens to be loaded. Rows are
+# already bootstrap-resampled on every file load, so this costs no mixing.
+SHUFFLE: False
+
+TRAINING_DATA_FOLDER: ""    # overridden by --training-data-folder
