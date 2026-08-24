@@ -149,6 +149,13 @@ def suggest_job_defaults(lanes: list[dict]) -> dict:
                 for x in cpu
             ],
         }
+        # Recovery fits are single-core CPU array jobs — same lane logic as
+        # datagen, but chains run sequentially so cores stays at the job-kind
+        # fallback of 1.
+        defaults["recover"] = {
+            "account": best["account"],
+            "partition": best["partition"],
+        }
     if gpu:
         best = gpu[0]
         for kind in ("jaxtrain", "torchtrain"):
