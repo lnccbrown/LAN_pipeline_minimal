@@ -12,10 +12,15 @@ and [generate Slurm jobs](https://lnccbrown.github.io/LAN_pipeline_minimal/how-t
 configs/
 ├── examples/       # larger generation and LAN/CPN training templates
 ├── quick_test/     # small configs exercised by local_test_run.sh and CI
+├── production_gamma_drift/   # the recorded gamma_drift production run
 └── cluster/
     ├── oscar.yaml        # committed lab/cluster inventory and defaults
     └── oscar.local.yaml  # generated personal overlay; gitignored
 ```
+
+Production runs are recorded as committed `production_<model>/` config pairs so
+a run is reproducible from the repo alone. (The ddm_sdv M1 configs predate this
+convention and live only on Oscar.)
 
 Start with `quick_test/` when checking a checkout. Copy and review an example
 before adapting it to a scientific run; the example scale is not a universal
