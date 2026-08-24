@@ -203,11 +203,43 @@ def load_model(
     simulator reads positionally. The two are cross-checked as sets: a model
     where they disagree would otherwise recover garbage for reasons that have
     nothing to do with the likelihood.
+
+    Models absent from HSSM's registry (the pipeline trains networks for models
+    HSSM has not shipped configs for yet) fall back to ssms alone: the simulator
+    box doubles as the training box — the pipeline trains on the full ssms
+    bounds for exactly this reason — and only the network arm exists.
     """
     # Imported here, not at module scope: the ladder and its tests must stay
     # usable without the inference stack, which CI does not install.
-    from hssm.modelconfig import get_default_model_config
+    from hssm.modelconfig import get_default_model_config, list_models
     from ssms.config import model_config as ssms_config
+
+    if name not in list_models():
+        sim_config = ssms_config.get(name)
+        if sim_config is None:
+            raise ValueError(f"Neither HSSM nor ssms knows a model named {name!r}.")
+        if loglik_kind != "approx_differentiable":
+            raise ValueError(
+                f"{name} is not in HSSM's registry, so only the "
+                f"approx_differentiable arm exists — not {loglik_kind!r}."
+            )
+        params = tuple(sim_config["params"])
+        lows, highs = sim_config["param_bounds"]
+        return ModelUnderTest(
+            name=name,
+            params=params,
+            bounds={
+                p: (float(lo), float(hi)) for p, lo, hi in zip(params, lows, highs)
+            },
+            condition_param=condition_param or _default_condition_param(params),
+            n_choices=len(sim_config.get("choices", [-1, 1])),
+            likelihood_kinds=("approx_differentiable",),
+            notes={
+                "loglik_kind": loglik_kind,
+                "hssm_registered": False,
+                "bounds_source": "ssms",
+            },
+        )
 
     config = get_default_model_config(name)
     likelihoods = config["likelihoods"]
@@ -459,6 +491,23 @@ def model_spec(model: ModelUnderTest, design: Design) -> dict:
             }
         include.append(entry)
     return {"include": include}
+
+
+def hssm_model_config(model: ModelUnderTest) -> dict | None:
+    """The `model_config` dict HSSM needs when it cannot look the model up.
+
+    None for registered models — passing a dict there would override HSSM's own
+    config with less information. For unregistered ones, `list_params` must be
+    ssms' positional order: for custom models it defines the likelihood input
+    order, and that is the order the network was trained on.
+    """
+    if model.notes.get("hssm_registered", True):
+        return None
+    return {
+        "list_params": list(model.params),
+        "bounds": {p: tuple(b) for p, b in model.bounds.items()},
+        "backend": "jax",
+    }
 
 
 def posterior_names(model: ModelUnderTest, design: Design) -> dict[str, str]:

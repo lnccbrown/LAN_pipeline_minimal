@@ -340,6 +340,69 @@ class TestLoadModel:
         assert not rd.load_model("angle").has_analytical
 
 
+class TestUnregisteredModel:
+    """Models ssms simulates but HSSM has not shipped a config for.
+
+    This is every model the pipeline trains *before* its HSSM config PR lands:
+    the harness must be able to validate the network first, because the network
+    is what justifies the config.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _needs_hssm(self):
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
+
+    def test_falls_back_to_ssms_when_hssm_does_not_know_the_model(self):
+        from ssms.config import model_config
+
+        model = rd.load_model("gamma_drift")
+        assert model.params == tuple(model_config["gamma_drift"]["params"])
+        assert len(model.params) == 7
+        assert model.condition_param == "v"
+        assert not model.has_analytical
+        assert model.likelihood_kinds == ("approx_differentiable",)
+        assert model.notes["hssm_registered"] is False
+
+    def test_fallback_bounds_are_the_ssms_simulator_box(self):
+        from ssms.config import model_config
+
+        model = rd.load_model("gamma_drift")
+        lows, highs = model_config["gamma_drift"]["param_bounds"]
+        for p, lo, hi in zip(model.params, lows, highs):
+            assert model.bounds[p] == (float(lo), float(hi))
+
+    def test_only_the_network_arm_exists(self):
+        with pytest.raises(ValueError, match="only the"):
+            rd.load_model("gamma_drift", loglik_kind="analytical")
+
+    def test_a_name_neither_side_knows_is_refused(self):
+        with pytest.raises(ValueError, match="Neither HSSM nor ssms"):
+            rd.load_model("no_such_model_anywhere")
+
+    def test_condition_param_override_still_works(self):
+        model = rd.load_model("gamma_drift", condition_param="c")
+        assert model.condition_param == "c"
+
+    def test_registered_models_do_not_take_the_fallback(self):
+        assert "hssm_registered" not in rd.load_model("ddm_sdv").notes
+
+
+class TestHssmModelConfig:
+    """The dict handed to hssm.HSSM for models it cannot look up itself."""
+
+    def test_registered_models_get_none_so_hssms_own_config_wins(self):
+        assert rd.hssm_model_config(DDM_SDV) is None
+
+    def test_unregistered_models_get_the_full_identity(self):
+        model = dataclasses.replace(
+            ANGLE, notes={"hssm_registered": False, "bounds_source": "ssms"}
+        )
+        config = rd.hssm_model_config(model)
+        assert config["list_params"] == list(model.params)
+        assert config["backend"] == "jax"
+        assert config["bounds"] == {p: model.bounds[p] for p in model.params}
+
+
 def varying(model, param):
     """The same model with a different parameter varying across conditions."""
     return dataclasses.replace(model, condition_param=param)
