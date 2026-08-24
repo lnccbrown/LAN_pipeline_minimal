@@ -86,6 +86,17 @@ job_defaults:
     mem: 64G
     num_gpus: 1
     time: "12:00:00"
+  # Recovery fits: single-core CPU array jobs. numpyro runs chains
+  # sequentially on one JAX device, so cores > 1 buys nothing — parallelism
+  # comes from the array (one fit per task) on the batch partition, which
+  # does not queue behind the lab-wide GPU QOS.
+  recover:
+    account: carney-mjfrank-condo2
+    partition: batch
+    cores: 1
+    mem: 8G
+    num_gpus: 0
+    time: "04:00:00"
 
 modules:
   - python

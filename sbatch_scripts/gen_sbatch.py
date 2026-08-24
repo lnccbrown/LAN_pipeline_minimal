@@ -108,7 +108,7 @@ $UV run {command}
 # Values that must stay shell-expandable inside the job, because SLURM
 # substitutes per-task. Only the variables in ALLOWED_SHELL_VARS expand; every
 # other character is quoted literally (see quote_param_value).
-SHELL_EXPANDED_PARAMS = frozenset({"mlflow-run-name"})
+SHELL_EXPANDED_PARAMS = frozenset({"mlflow-run-name", "dataset-index"})
 
 # The only shell expansions allowed inside SHELL_EXPANDED_PARAMS values.
 ALLOWED_SHELL_VARS = ("SLURM_ARRAY_TASK_ID", "SLURM_ARRAY_JOB_ID", "SLURM_JOB_ID")
@@ -142,7 +142,23 @@ JOB_KIND_FALLBACKS = {
         "mem": "16G",
         "time": "00:30:00",
     },
+    "recover": {
+        "account": "default",
+        "partition": "batch",
+        "num_gpus": 0,
+        "cores": 1,
+        "mem": "8G",
+        "time": "01:00:00",
+    },
 }
+
+# What `$UV run` actually executes per job kind. generate/jaxtrain/torchtrain
+# are console scripts installed by ssm-simulators/lanfactory; the recovery
+# worker is a repo script (bare sibling imports, so it cannot be a console
+# script) that additionally needs the `validate` dependency group — sync it on
+# the login node first (`uv sync --frozen --group validate`), compute nodes
+# frequently have no egress to install it themselves.
+RUNNABLES = {"recover": "--group validate python validation/recover_parameters.py"}
 
 DEFAULT_MODULES = ["python", "gcc"]
 
@@ -473,6 +489,7 @@ def get_parameters_setup(
     mlflow_experiment_name: str = None,  # For data generation (ssm-simulators)
     mlflow_run_id: str = None,  # For training (LANfactory) - to resume a run
     data_generation_experiment_id: str = None,  # For training lineage
+    recover_args: dict = None,  # For recovery: worker CLI flags, pre-hyphenated
 ):
     """
     Prepare CLI arguments for the command based on the command type.
@@ -484,7 +501,18 @@ def get_parameters_setup(
     For training (LANfactory):
         - Uses --mlflow-run-id to continue logging to parent run
         - Uses --data-generation-experiment-id for lineage tracking
+
+    For recovery (validation/recover_parameters.py):
+        - No config YAML: the worker's whole identity is its CLI flags
+        - --dataset-index is the array task id, so one task = one fit = one
+          shard, and arms submitted with the same array size share datasets
+          (and therefore seeds) by construction
     """
+    if command == "recover":
+        params = {"log-level": log_level, **(recover_args or {})}
+        params["dataset-index"] = "$SLURM_ARRAY_TASK_ID"
+        return params
+
     params = {"config-path": config_path.resolve(), "log-level": log_level}
 
     if command == "generate":
@@ -534,6 +562,7 @@ def handle_job(
     network_id: int = 0,
     dl_workers: int = 1,
     data_generation_experiment_id: str = None,
+    recover_args: dict = None,
 ):
     # Case-insensitive, and validated: getattr(logging, "info") returns the
     # *function*, which basicConfig rejects with a TypeError traceback — and
@@ -576,7 +605,10 @@ def handle_job(
     # --script-only is side-effect-free: no experiment is created, no run is
     # started, and no MLflow wiring is embedded in the generated script. A
     # previous version created an empty orphan run per --script-only call.
-    if MLFLOW_AVAILABLE and not script_only:
+    # Recovery jobs carry no MLflow wiring at all: the shard JSONs are the
+    # record and the aggregator reads them, not a tracking server — and the
+    # worker has no --mlflow-* flags to receive wiring through anyway.
+    if MLFLOW_AVAILABLE and not script_only and command_name != "recover":
         try:
             # Set tracking URI from environment or use default (SQLite)
             # Absolute, so the submitting process and every compute-node
@@ -711,8 +743,16 @@ def handle_job(
         except Exception as e:
             logger.error(f"Failed to initialize MLflow: {e}")
 
-    basic_config = get_basic_config_from_yaml(config_path.resolve())
-    job_name_base = f"{safe_name(basic_config['MODEL'])}_{command_name}_sbatch"
+    if command_name == "recover":
+        # No config YAML — the model and design come from the worker flags,
+        # and both belong in the job name so squeue tells the arrays apart.
+        job_name_base = (
+            f"{safe_name(recover_args['model'])}_"
+            f"{safe_name(recover_args['design'])}_recover_sbatch"
+        )
+    else:
+        basic_config = get_basic_config_from_yaml(config_path.resolve())
+        job_name_base = f"{safe_name(basic_config['MODEL'])}_{command_name}_sbatch"
 
     # Scripts and SLURM logs live under <output_path>/runs/, timestamped —
     # repeated invocations never overwrite each other (previously the script
@@ -763,6 +803,7 @@ def handle_job(
             mlflow_experiment_name=mlflow_experiment_name,
             mlflow_run_id=mlflow_run_id,
             data_generation_experiment_id=data_generation_experiment_id,
+            recover_args=recover_args,
         )
         if command_name == "generate" and n_files is not None:
             params["n-files"] = n_files
@@ -774,7 +815,7 @@ def handle_job(
             # cores we actually requested keeps the two in step and puts the
             # value in the generated script and the JSON line.
             params["n-cpus"] = resources["cores"]
-        command = create_command(command_name, **params)
+        command = create_command(RUNNABLES.get(command_name, command_name), **params)
         logger.info(f"Generated command: {command}")
 
         job_name = f"{job_name_base}_l{index}" if fanned_out else job_name_base
@@ -1013,6 +1054,141 @@ def train_command(command_name: str):
 
 app.command("jaxtrain")(train_command("jaxtrain"))
 app.command("torchtrain")(train_command("torchtrain"))
+
+
+@app.command()
+def recover(
+    model: str = typer.Option(
+        ..., help="Model name known to ssms (and optionally HSSM), e.g. gamma_drift"
+    ),
+    design: str = typer.Option(
+        ..., help="Ladder rung from validation/recovery_designs.py, e.g. L1_n500"
+    ),
+    output_path: Path = typer.Option(
+        ...,
+        help="Run scripts/logs land under <output>/runs/; shards under "
+        "<output>/shards/ unless --out-dir overrides it",
+    ),
+    n_jobs_in_array: int = typer.Option(
+        20,
+        help="Number of datasets = array size. Task i fits dataset index i, so "
+        "arms submitted with the same array size share datasets (and seeds) "
+        "by construction — that pairing is what makes arms comparable.",
+    ),
+    likelihood: str = typer.Option(
+        "approx_differentiable", help="Likelihood arm to fit"
+    ),
+    onnx_path: Path = typer.Option(
+        None,
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Local ONNX path; required for the network arm",
+    ),
+    condition_param: str = typer.Option(
+        None, help="Which parameter varies across conditions [default: first drift]"
+    ),
+    p_outlier: float = typer.Option(
+        None,
+        help="Lapse mixture weight passed to the worker; its default None "
+        "matches the lapse-free simulator",
+    ),
+    arm: str = typer.Option(None, help="Arm label override [default: derived]"),
+    bounds_from: str = typer.Option(
+        None, help="Which HSSM likelihood entry supplies bounds [worker default]"
+    ),
+    draws: int = typer.Option(None, help="Posterior draws per chain [worker default]"),
+    tune: int = typer.Option(None, help="Tuning steps per chain [worker default]"),
+    chains: int = typer.Option(None, help="Number of chains [worker default]"),
+    target_accept: float = typer.Option(
+        None, help="NUTS target accept [worker default]"
+    ),
+    out_dir: Path = typer.Option(
+        None, help="Shard output folder [default: <output_path>/shards]"
+    ),
+    cluster_config: Path = typer.Option(
+        None,
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Cluster inventory YAML (e.g. configs/cluster/oscar.yaml); its "
+        "job_defaults section supplies account/partition/resources for this "
+        "job kind. A gitignored <name>.local.yaml beside it is merged over "
+        "it. Explicit flags below override both.",
+    ),
+    account: str = typer.Option(
+        None, help="Condo to run the SBATCH job on [default: from cluster config]"
+    ),
+    partition: str = typer.Option(
+        None,
+        help="Partition to run the SBATCH script on [default: from cluster config]",
+    ),
+    num_gpus: int = typer.Option(
+        None, help="Number of GPUs requested [default: from cluster config]"
+    ),
+    cores: int = typer.Option(
+        None,
+        help="Number of cores per job [default: from cluster config]. One is "
+        "enough: numpyro runs chains sequentially on a single JAX device, so "
+        "parallelism comes from the array, never from cores.",
+    ),
+    mem: str = typer.Option(
+        None, help="Memory limit for each job [default: from cluster config]"
+    ),
+    time: str = typer.Option(
+        None, help="Wall time limit for each job [default: from cluster config]"
+    ),
+    script_only: bool = typer.Option(
+        False,
+        help="Generate the sbatch script without submitting the job.",
+    ),
+    log_level: str = typer.Option(
+        "WARNING", help="Set the log level", show_default=True
+    ),
+):
+    """Generate SBATCH script for parameter-recovery fits.
+
+    One fit per array task via validation/recover_parameters.py. The worker
+    needs the `validate` dependency group — run
+    `uv sync --frozen --group validate` on the login node before submitting;
+    compute nodes frequently have no egress to install it themselves.
+    """
+    recover_args = {
+        "model": model,
+        "design": design,
+        "likelihood": likelihood,
+        "out-dir": (out_dir or output_path / "shards").resolve(),
+    }
+    optional = {
+        "onnx-path": onnx_path.resolve() if onnx_path else None,
+        "condition-param": condition_param,
+        "p-outlier": p_outlier,
+        "arm": arm,
+        "bounds-from": bounds_from,
+        "draws": draws,
+        "tune": tune,
+        "chains": chains,
+        "target-accept": target_accept,
+    }
+    recover_args.update({k: v for k, v in optional.items() if v is not None})
+
+    handle_job(
+        command_name="recover",
+        config_path=None,
+        output_path=output_path,
+        log_level=log_level,
+        time=time,
+        script_only=script_only,
+        cluster_config=cluster_config,
+        account=account,
+        partition=partition,
+        num_gpus=num_gpus,
+        cores=cores,
+        mem=mem,
+        n_jobs_in_array=n_jobs_in_array,
+        recover_args=recover_args,
+    )
+
 
 if __name__ == "__main__":
     app()

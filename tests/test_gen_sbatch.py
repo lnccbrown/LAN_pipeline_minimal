@@ -372,7 +372,7 @@ class TestResourceResolution:
             / "cluster"
             / "oscar.yaml"
         )
-        for kind in ("generate", "jaxtrain", "torchtrain"):
+        for kind in ("generate", "jaxtrain", "torchtrain", "recover"):
             resources = resolve_resources(kind, repo_yaml, {})
             # Real account, seeded from sacctmgr (not the placeholder guess).
             assert resources["account"] == "carney-mjfrank-condo2"
@@ -385,6 +385,106 @@ class TestResourceResolution:
                 "time",
                 "modules",
             }
+
+
+class TestRecoverCommand:
+    """The recover job kind: one fit per array task, no config YAML, no MLflow.
+
+    The worker's whole identity is CLI flags, and the dataset index is the
+    array task id — that expansion surviving quoting is the load-bearing bit.
+    """
+
+    def _script(self, tmp_path, extra=()):
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "recover",
+                "--model",
+                "gamma_drift",
+                "--design",
+                "L1_n500",
+                "--output-path",
+                str(out),
+                "--n-jobs-in-array",
+                "20",
+                "--script-only",
+                *extra,
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        record = last_json_line(result.output)
+        return Path(record["sbatch_script"]).read_text(), record
+
+    def test_dataset_index_stays_shell_expandable(self, tmp_path):
+        script, _ = self._script(tmp_path)
+        assert '--dataset-index "$SLURM_ARRAY_TASK_ID"' in script
+
+    def test_runs_the_repo_worker_with_the_validate_group(self, tmp_path):
+        # Not a console script: bare sibling imports keep it a repo script,
+        # and hssm lives in the validate dependency group.
+        script, _ = self._script(tmp_path)
+        assert (
+            "$UV run --group validate python validation/recover_parameters.py" in script
+        )
+
+    def test_identity_flags_reach_the_worker(self, tmp_path):
+        script, record = self._script(tmp_path)
+        assert "--model gamma_drift" in script
+        assert "--design L1_n500" in script
+        assert "--out-dir" in script and "/shards" in script
+        assert "--config-path" not in script
+        assert "--array=1-20" in script
+        assert record["array_size"] == 20
+
+    def test_job_name_carries_model_and_design(self, tmp_path):
+        script, _ = self._script(tmp_path)
+        assert "-J gamma_drift_L1_n500_recover_sbatch" in script
+
+    def test_no_mlflow_wiring_in_the_script(self, tmp_path):
+        script, record = self._script(tmp_path)
+        assert "MLFLOW" not in script
+        assert record["mlflow_experiment_id"] is None
+        assert record["mlflow_run_id"] is None
+
+    def test_an_explicit_zero_p_outlier_is_passed_not_dropped(self, tmp_path):
+        # `if value` would silently eat 0.0 — the one value that most needs
+        # recording, because it departs from HSSM's 0.05 default deliberately.
+        script, _ = self._script(tmp_path, extra=["--p-outlier", "0.0"])
+        assert "--p-outlier 0.0" in script
+
+    def test_omitted_optionals_are_absent(self, tmp_path):
+        script, _ = self._script(tmp_path)
+        for flag in ("--draws", "--tune", "--chains", "--onnx-path", "--arm"):
+            assert flag not in script
+
+    def test_onnx_path_is_resolved_absolute(self, tmp_path):
+        onnx = tmp_path / "net.onnx"
+        onnx.write_bytes(b"stub")
+        script, _ = self._script(tmp_path, extra=["--onnx-path", str(onnx)])
+        assert f"--onnx-path {onnx.resolve()}" in script
+
+    def test_submission_creates_no_mlflow_state(
+        self, tmp_path, fake_sbatch_ok, isolated_mlflow
+    ):
+        out = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "recover",
+                "--model",
+                "gamma_drift",
+                "--design",
+                "L0_n250",
+                "--output-path",
+                str(out),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert last_json_line(result.output)["job_id"] == 12345
+        # The shard files are the record; a tracking DB appearing here would
+        # mean the recover path regrew the MLflow wiring it deliberately lacks.
+        assert not isolated_mlflow.exists()
 
 
 class TestNFilesPassthrough:
