@@ -230,6 +230,9 @@ def run_one(
         # the ONNX from franklab/HSSM at construction time, where a candidate
         # network does not exist, and compute nodes may have no egress at all.
         kwargs["loglik"] = str(onnx_path)
+    custom_config = rd.hssm_model_config(model)
+    if custom_config is not None:
+        kwargs["model_config"] = custom_config
 
     hssm_model = hssm.HSSM(
         data=data,

@@ -340,6 +340,99 @@ class TestLoadModel:
         assert not rd.load_model("angle").has_analytical
 
 
+# Models ssms simulates but HSSM ships no config for — the state every model
+# is in while its network trains, before the config PR that network justifies.
+# A spread of shapes, not one instance: 7-10 params, with and without a
+# collapsing bound, one whose drift-like parameters are not what varies in an
+# experiment. When HSSM learns one of these names, the registry guard in the
+# first test flags it for promotion to the hand-built fixtures above.
+UNREGISTERED = [
+    "gamma_drift",  # 7 params, DMC-style gamma drift bump
+    "gamma_drift_angle",  # 8 params, + collapsing bound
+    "shrink_spot_simple",  # 8 params, shrinking-spotlight flanker
+    "conflict_stimflex",  # 10 params, target/distractor streams
+]
+
+
+class TestUnregisteredModel:
+    """The ssms fallback is a property of the registry gap, not of one model."""
+
+    @pytest.fixture(autouse=True)
+    def _needs_hssm(self):
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
+
+    @pytest.mark.parametrize("name", UNREGISTERED)
+    def test_falls_back_to_ssms_when_hssm_does_not_know_the_model(self, name):
+        from hssm.modelconfig import list_models
+        from ssms.config import model_config
+
+        # The premise, asserted rather than assumed: when an HSSM release
+        # learns this name, this line is what says "promote the model to the
+        # registered fixtures" instead of the fallback silently never running.
+        assert name not in list_models()
+
+        model = rd.load_model(name)
+        assert model.params == tuple(model_config[name]["params"])
+        assert model.likelihood_kinds == ("approx_differentiable",)
+        assert not model.has_analytical
+        assert model.notes["hssm_registered"] is False
+        assert model.condition_param in model.params
+
+    @pytest.mark.parametrize("name", UNREGISTERED)
+    def test_fallback_bounds_are_the_ssms_simulator_box(self, name):
+        from ssms.config import model_config
+
+        model = rd.load_model(name)
+        lows, highs = model_config[name]["param_bounds"]
+        assert model.bounds == {
+            p: (float(lo), float(hi)) for p, lo, hi in zip(model.params, lows, highs)
+        }
+
+    @pytest.mark.parametrize("name", UNREGISTERED)
+    def test_a_dataset_actually_builds_for_the_fallback_model(self, name):
+        # Parameter ORDER is the load-bearing field — theta reaches the
+        # simulator positionally — and only simulating proves it round-trips.
+        model = rd.load_model(name)
+        data, truth = rd.build_dataset(model, rd.DESIGNS["L0_n250"], seed=11_003)
+        assert len(data) == 250
+        assert set(truth) == set(model.params)
+        assert data["rt"].gt(0).all()
+
+    @pytest.mark.parametrize("name", UNREGISTERED)
+    def test_only_the_network_arm_exists(self, name):
+        with pytest.raises(ValueError, match="only the"):
+            rd.load_model(name, loglik_kind="analytical")
+
+    def test_a_name_neither_side_knows_is_refused(self):
+        with pytest.raises(ValueError, match="Neither HSSM nor ssms"):
+            rd.load_model("no_such_model_anywhere")
+
+    def test_condition_param_override_still_works(self):
+        # `c` is gamma_drift's conflict knob — the parameter an experiment
+        # actually manipulates — and the L1@c arm depends on this override.
+        model = rd.load_model("gamma_drift", condition_param="c")
+        assert model.condition_param == "c"
+
+    def test_registered_models_do_not_take_the_fallback(self):
+        assert "hssm_registered" not in rd.load_model("ddm_sdv").notes
+
+
+class TestHssmModelConfig:
+    """The dict handed to hssm.HSSM for models it cannot look up itself."""
+
+    def test_registered_models_get_none_so_hssms_own_config_wins(self):
+        assert rd.hssm_model_config(DDM_SDV) is None
+
+    def test_unregistered_models_get_the_full_identity(self):
+        model = dataclasses.replace(
+            ANGLE, notes={"hssm_registered": False, "bounds_source": "ssms"}
+        )
+        config = rd.hssm_model_config(model)
+        assert config["list_params"] == list(model.params)
+        assert config["backend"] == "jax"
+        assert config["bounds"] == {p: model.bounds[p] for p in model.params}
+
+
 def varying(model, param):
     """The same model with a different parameter varying across conditions."""
     return dataclasses.replace(model, condition_param=param)

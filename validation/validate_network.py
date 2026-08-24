@@ -262,11 +262,30 @@ def gate_hssm_load(
             }
         )
 
+        kwargs = {}
+        from hssm.modelconfig import list_models
+
+        if model_name not in list_models():
+            # Not in HSSM's registry: supply the identity HSSM cannot look up
+            # itself. list_params must be ssms' positional order — for custom
+            # models it defines the likelihood input order, which is the order
+            # the network was trained on.
+            lows, highs = model_config["param_bounds"]
+            kwargs["model_config"] = {
+                "list_params": list(model_config["params"]),
+                "bounds": {
+                    p: (float(lo), float(hi))
+                    for p, lo, hi in zip(model_config["params"], lows, highs)
+                },
+                "backend": "jax",
+            }
+
         model = hssm.HSSM(
             data=data,
             model=model_name,
             loglik=str(onnx_path),
             loglik_kind="approx_differentiable",
+            **kwargs,
         )
         pymc_model = model.pymc_model
         logp = float(pymc_model.compile_logp()(pymc_model.initial_point()))
