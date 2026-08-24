@@ -2,10 +2,3 @@ cache = true
 max_cache_age = "1d"
 max_retries = 3
 timeout = 30
-
-# Temporary staged-rollout exceptions. Remove both before the six-site
-# documentation closeout, once the Cortex and Spine Pages sites are live.
-exclude = [
-  '^https://lnccbrown\.github\.io/HSSMCortex/$',
-  '^https://lnccbrown\.github\.io/HSSMSpine/$',
-]
