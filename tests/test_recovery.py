@@ -340,46 +340,76 @@ class TestLoadModel:
         assert not rd.load_model("angle").has_analytical
 
 
-class TestUnregisteredModel:
-    """Models ssms simulates but HSSM has not shipped a config for.
+# Models ssms simulates but HSSM ships no config for — the state every model
+# is in while its network trains, before the config PR that network justifies.
+# A spread of shapes, not one instance: 7-10 params, with and without a
+# collapsing bound, one whose drift-like parameters are not what varies in an
+# experiment. When HSSM learns one of these names, the registry guard in the
+# first test flags it for promotion to the hand-built fixtures above.
+UNREGISTERED = [
+    "gamma_drift",  # 7 params, DMC-style gamma drift bump
+    "gamma_drift_angle",  # 8 params, + collapsing bound
+    "shrink_spot_simple",  # 8 params, shrinking-spotlight flanker
+    "conflict_stimflex",  # 10 params, target/distractor streams
+]
 
-    This is every model the pipeline trains *before* its HSSM config PR lands:
-    the harness must be able to validate the network first, because the network
-    is what justifies the config.
-    """
+
+class TestUnregisteredModel:
+    """The ssms fallback is a property of the registry gap, not of one model."""
 
     @pytest.fixture(autouse=True)
     def _needs_hssm(self):
         pytest.importorskip("hssm", reason="validate dependency group not installed")
 
-    def test_falls_back_to_ssms_when_hssm_does_not_know_the_model(self):
+    @pytest.mark.parametrize("name", UNREGISTERED)
+    def test_falls_back_to_ssms_when_hssm_does_not_know_the_model(self, name):
+        from hssm.modelconfig import list_models
         from ssms.config import model_config
 
-        model = rd.load_model("gamma_drift")
-        assert model.params == tuple(model_config["gamma_drift"]["params"])
-        assert len(model.params) == 7
-        assert model.condition_param == "v"
-        assert not model.has_analytical
+        # The premise, asserted rather than assumed: when an HSSM release
+        # learns this name, this line is what says "promote the model to the
+        # registered fixtures" instead of the fallback silently never running.
+        assert name not in list_models()
+
+        model = rd.load_model(name)
+        assert model.params == tuple(model_config[name]["params"])
         assert model.likelihood_kinds == ("approx_differentiable",)
+        assert not model.has_analytical
         assert model.notes["hssm_registered"] is False
+        assert model.condition_param in model.params
 
-    def test_fallback_bounds_are_the_ssms_simulator_box(self):
+    @pytest.mark.parametrize("name", UNREGISTERED)
+    def test_fallback_bounds_are_the_ssms_simulator_box(self, name):
         from ssms.config import model_config
 
-        model = rd.load_model("gamma_drift")
-        lows, highs = model_config["gamma_drift"]["param_bounds"]
-        for p, lo, hi in zip(model.params, lows, highs):
-            assert model.bounds[p] == (float(lo), float(hi))
+        model = rd.load_model(name)
+        lows, highs = model_config[name]["param_bounds"]
+        assert model.bounds == {
+            p: (float(lo), float(hi)) for p, lo, hi in zip(model.params, lows, highs)
+        }
 
-    def test_only_the_network_arm_exists(self):
+    @pytest.mark.parametrize("name", UNREGISTERED)
+    def test_a_dataset_actually_builds_for_the_fallback_model(self, name):
+        # Parameter ORDER is the load-bearing field — theta reaches the
+        # simulator positionally — and only simulating proves it round-trips.
+        model = rd.load_model(name)
+        data, truth = rd.build_dataset(model, rd.DESIGNS["L0_n250"], seed=11_003)
+        assert len(data) == 250
+        assert set(truth) == set(model.params)
+        assert data["rt"].gt(0).all()
+
+    @pytest.mark.parametrize("name", UNREGISTERED)
+    def test_only_the_network_arm_exists(self, name):
         with pytest.raises(ValueError, match="only the"):
-            rd.load_model("gamma_drift", loglik_kind="analytical")
+            rd.load_model(name, loglik_kind="analytical")
 
     def test_a_name_neither_side_knows_is_refused(self):
         with pytest.raises(ValueError, match="Neither HSSM nor ssms"):
             rd.load_model("no_such_model_anywhere")
 
     def test_condition_param_override_still_works(self):
+        # `c` is gamma_drift's conflict knob — the parameter an experiment
+        # actually manipulates — and the L1@c arm depends on this override.
         model = rd.load_model("gamma_drift", condition_param="c")
         assert model.condition_param == "c"
 
