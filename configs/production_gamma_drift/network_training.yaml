@@ -1,0 +1,46 @@
+# gamma_drift production LAN training.
+#
+# Four candidate architectures — a width (100 vs 128) x depth (3 vs 4) grid,
+# trained on the same data as separate jobs:
+#   --network-id 0: [100, 100, 100]        (the legacy 5–6 param convention)
+#   --network-id 1: [100, 100, 100, 100]
+#   --network-id 2: [128, 128, 128]
+#   --network-id 3: [128, 128, 128, 128]
+# The grid gives an improvement *gradient*, not one contrast: if the corner
+# ([128] x 4) wins handily, extend to bigger/deeper networks before shipping.
+# gamma_drift has 7 params (input dim 9 = 7 + rt + choice, inferred from
+# data at runtime); validation + recovery decide which candidate ships.
+#
+# GPU_BATCH_SIZE must divide rows-per-file (N_PARAMETER_SETS x
+# N_SAMPLES_PER_PARAM = 10^7) exactly: 50000 -> 200 batches/file.
+
+NETWORK_TYPE: "lan"
+CPU_BATCH_SIZE: 50000       # equal to GPU so a CPU fallback is the same problem
+GPU_BATCH_SIZE: 50000
+GENERATOR_APPROACH: "lan"
+OPTIMIZER_: "adam"
+N_EPOCHS: 20
+TRAINING_DATA_FOLDER: ""    # overridden by the mandatory --training-data-folder
+MODEL: "gamma_drift"
+# False deliberately, matching production_ddm_sdv: DatasetTorch advances files
+# on batch index, so a shuffled index stream reads rows from whichever file is
+# loaded; rows are already bootstrap-resampled on every file load.
+SHUFFLE: False
+LAYER_SIZES: [[100, 100, 100, 1], [100, 100, 100, 100, 1],
+              [128, 128, 128, 1], [128, 128, 128, 128, 1]]
+ACTIVATIONS: [['tanh', 'tanh', 'tanh'], ['tanh', 'tanh', 'tanh', 'tanh'],
+              ['tanh', 'tanh', 'tanh'], ['tanh', 'tanh', 'tanh', 'tanh']]
+WEIGHT_DECAY: 0.0
+TRAIN_VAL_SPLIT: 0.98
+N_TRAINING_FILES: 300
+# Must stay a quoted string: it is eval'd with numpy in scope, and a bare
+# numeric literal raises TypeError.
+LABELS_LOWER_BOUND: "np.log(1e-7)"
+LEARNING_RATE: 0.001
+LR_SCHEDULER: 'reduce_on_plateau'
+LR_SCHEDULER_PARAMS:
+  factor: 0.1
+  patience: 2
+  threshold: 0.001
+  min_lr: 0.00000001
+  verbose: True

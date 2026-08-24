@@ -1,0 +1,24 @@
+# gamma_drift production data generation.
+#
+# Values mirror the ddm_sdv M1 production run (5000 sets/file x 300 array
+# jobs at submit time). gamma_drift trains on the full ssms simulator box;
+# the eventual HSSM model config must declare these same bounds.
+# The gamma drift bump peaks at (shape-1)*scale <= 9 s, inside the default
+# simulator max_t of 20 s — do not lower max_t below that.
+
+MODEL: 'gamma_drift'
+GENERATOR_APPROACH: 'lan'
+
+PIPELINE:
+  N_PARAMETER_SETS: 5000
+  N_SUBRUNS: 1
+
+SIMULATOR:
+  N_SAMPLES: 200000
+  DELTA_T: 0.001
+
+TRAINING:
+  N_SAMPLES_PER_PARAM: 2000
+
+ESTIMATOR:
+  TYPE: 'kde'

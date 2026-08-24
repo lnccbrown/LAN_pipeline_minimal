@@ -1,0 +1,29 @@
+# Production ddm_sdv datagen. Settings are the ones used for the networks
+# already published on franklab/HSSM (AF), not derived from configs/examples,
+# which archaeology showed is a template no production run is recorded against.
+#
+# Measured on Oscar 2026-08-11 (8 tasks x 100 sets, -c 8):
+#   15.3 core-seconds per parameter set  ->  21.3 core-hours per file
+#   wall 3.81 h mean / 4.53 h worst per task at -c 8  ->  --time "08:00:00"
+#   335 MB per file  ->  ~100 GB for 300 files
+MODEL: 'ddm_sdv'
+GENERATOR_APPROACH: 'lan'
+
+PIPELINE:
+  # Sets per-axis resolution: distinct values per parameter saturates at
+  # N_PARAMETER_SETS * n_params (= 25,000 here) and does NOT grow with the
+  # number of array tasks. This is the only key that buys resolution.
+  N_PARAMETER_SETS: 5000
+  # Not a file count. It floor-divides N_PARAMETER_SETS and silently drops
+  # the remainder; on cores>1 it also chunks across a pathos pool. 1 is safe.
+  N_SUBRUNS: 1
+
+SIMULATOR:
+  N_SAMPLES: 200000            # simulator trajectories per theta; the KDE is fit to these
+  DELTA_T: 0.001
+
+TRAINING:
+  N_SAMPLES_PER_PARAM: 2000    # training rows drawn per theta
+
+ESTIMATOR:
+  TYPE: 'kde'
