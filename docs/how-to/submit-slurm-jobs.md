@@ -4,6 +4,14 @@
 submits it with `sbatch`. Rehearse every new config and resource plan with
 `--script-only` first.
 
+!!! info "Execution status"
+
+    Repository CI exercises configuration parsing and script generation with
+    `--script-only`; it never submits to Slurm or writes to a cluster MLflow
+    service. Treat the live `sbatch` and MLflow commands below as
+    operator-verified procedures and review each rendered script before
+    removing `--script-only`.
+
 ## Put output and tracking on shared storage
 
 On Oscar, choose one personal tree on the lab data volume:

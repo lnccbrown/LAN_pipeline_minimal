@@ -89,6 +89,48 @@ uv run python validation/validate_network.py --help
 | `--hellinger-ratio-max FLOAT` | `3.0` | Maximum density error relative to sampling floor |
 | `--log-level TEXT` | `WARNING` | Logging threshold |
 
+## Parameter-recovery worker
+
+`recover_parameters.py` fits one synthetic dataset and writes one shard. This
+one-fit-per-process interface is the unit to fan out across a Slurm array.
+
+```bash
+uv run --group validate python validation/recover_parameters.py --help
+```
+
+| Option | Required/default | Meaning |
+| --- | --- | --- |
+| `--model TEXT` | `ddm_sdv` | Model known to both HSSM and ssm-simulators |
+| `--design TEXT` | required | Recovery-ladder design declared in `validation/recovery_designs.py` |
+| `--dataset-index INTEGER` | required | Dataset identity; the worker uses seed `10000 + dataset_index` for paired arms |
+| `--likelihood TEXT` | `approx_differentiable` | Likelihood arm, such as the candidate network or an analytical reference |
+| `--bounds-from TEXT` | `approx_differentiable` | Likelihood whose bounds define the shared priors |
+| `--condition-param TEXT` | inferred | Parameter varied across conditions |
+| `--onnx-path PATH` | unset | Local candidate artifact; required for `approx_differentiable` |
+| `--p-outlier FLOAT` | unset | Lapse probability; unset matches the lapse-free simulator |
+| `--arm TEXT` | derived | Pooling key; defaults to likelihood plus the ONNX stem for a network |
+| `--out-dir PATH` | `.` | Destination for the schema-version-2 shard |
+| `--draws`, `--tune` | `1000` each | Posterior draws and tuning draws |
+| `--chains INTEGER` | `2` | Sampling chains |
+| `--target-accept FLOAT` | `0.9` | NumPyro target acceptance probability |
+| `--log-level TEXT` | `WARNING` | Logging threshold |
+
+## Parameter-recovery aggregator
+
+`aggregate_recovery.py` reads every `recovery_*.json` shard below one
+directory, applies the eligibility and calibration gates, and writes one
+report.
+
+```bash
+uv run --group validate python validation/aggregate_recovery.py --help
+```
+
+| Option | Required/default | Meaning |
+| --- | --- | --- |
+| `--shard-dir PATH` | required | Existing directory containing recovery shards |
+| `--out PATH` | `<shard-dir>/recovery_report.json` | Schema-version-2 report destination |
+| `--log-level TEXT` | `WARNING` | Logging threshold |
+
 ## Cluster discovery
 
 ```bash

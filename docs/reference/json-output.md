@@ -75,6 +75,47 @@ The detailed report has `schema_version: 1`, artifact/model/network identity,
 aggregate `passed`, and a `gates` list whose entries include thresholds, scores,
 errors, or skip reasons as applicable.
 
+## Parameter-recovery shard
+
+After its arguments are accepted, the recovery worker writes one shard and
+prints one object:
+
+```json
+{
+  "shard": "results/recovery_ddm_sdv_approx_differentiable@candidate_L1_n500@v_0007.json",
+  "error": null
+}
+```
+
+The on-disk shard uses `schema_version: 2` and records model, design,
+dataset/seed, likelihood and arm identity, prior and outlier choices, ONNX path,
+data sanity checks, sampler settings and diagnostics, per-parameter recovery
+summaries, posterior correlations, and environment versions. A failed fit still
+writes a shard with its identity plus an `error` string, prints that error in
+the compact object, and exits non-zero.
+
+## Parameter-recovery report
+
+The aggregator writes a schema-version-2 report and prints a compact verdict:
+
+```json
+{
+  "passed": true,
+  "report": "results/recovery_report.json",
+  "n_shards": 24,
+  "n_usable_fits": 24,
+  "n_errored_shards": 0,
+  "failures": []
+}
+```
+
+The report records all thresholds, cell summaries, errored shards, coverage
+failures, and aggregate `passed`. `n_shards` includes errored shards, whereas
+`n_usable_fits` is the sum of `n_converged` across the reported parameter cells,
+not a count of distinct shard files. The process exits non-zero when `passed`
+is false and also rejects an empty shard directory; too few eligible fits and
+failed calibration gates therefore cannot be mistaken for a clean sweep.
+
 ## Publication result
 
 A successful dry run returns a publication plan without uploading to Hugging

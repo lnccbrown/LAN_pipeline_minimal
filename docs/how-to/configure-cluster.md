@@ -5,6 +5,13 @@ accounts, QOS limits, and usable account/partition combinations are personal,
 so discovery writes them to the gitignored
 `configs/cluster/oscar.local.yaml`.
 
+!!! info "Execution status"
+
+    Repository CI tests local configuration merging and renders Slurm scripts
+    with `--script-only`. It cannot query your allocation or exercise an SSH
+    host. Run the discovery commands below manually from an authenticated
+    operator environment whenever allocations or QOS limits change.
+
 ## Discover your lanes
 
 On an Oscar login node, run:
