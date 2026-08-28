@@ -126,6 +126,16 @@ def resolve_training_run(
     return run
 
 
+MODEL_CARD = "model_card.yaml"
+
+# Names the publish itself writes into the staging directory: the gate report,
+# and the card and README lanfactory renders during upload. They are not
+# leftovers from someone else's run, so finding them is not a reason to refuse
+# — without this a *successful* publish poisons its own staging directory and
+# the identical command can never be run again.
+PUBLISH_WRITES = frozenset({"validation_report.json", MODEL_CARD, "README.md"})
+
+
 def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
     """Copy one run's artifacts out of the shared training folder.
 
@@ -159,7 +169,7 @@ def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
     # them the report they were about to read. Refusing rather than clearing
     # anything else — the path is user-supplied, and deleting its contents is
     # not ours to decide.
-    ours = {p.name for p in matches} | {"validation_report.json"}
+    ours = {p.name for p in matches} | PUBLISH_WRITES
     leftovers = (
         sorted(p.name for p in destination.iterdir() if p.name not in ours)
         if destination.exists()
@@ -176,6 +186,15 @@ def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
     for path in matches:
         shutil.copy2(path, destination / path.name)
+
+    # An operator-authored card, if the artifact folder carries one. It has no
+    # run_uuid in its name, so the glob above cannot find it, and without this
+    # lanfactory falls back to generating a default card whose usage example
+    # assumes the model is already a built-in HSSM name. For a model published
+    # before its HSSM config ships, that example does not run.
+    card = source / MODEL_CARD
+    if card.is_file():
+        shutil.copy2(card, destination / MODEL_CARD)
 
     onnx = [p for p in destination.iterdir() if p.suffix == ".onnx"]
     if len(onnx) != 1:
