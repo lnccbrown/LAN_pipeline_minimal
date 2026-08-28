@@ -151,6 +151,42 @@ class TestStaging:
 
         assert stage_artifacts(source, "a" * 32, staged).exists()
 
+    def test_stages_an_operator_authored_model_card(self, tmp_path):
+        # The card has no run_uuid in its name, so the uuid glob cannot find
+        # it. Without it lanfactory renders a default whose usage example
+        # assumes the model is already a built-in HSSM name — which does not
+        # run for a model published before its HSSM config ships.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        (source / "model_card.yaml").write_text("title: gamma_drift (LAN)\n")
+        staged = tmp_path / "staged"
+
+        stage_artifacts(source, "a" * 32, staged)
+
+        assert (staged / "model_card.yaml").read_text() == "title: gamma_drift (LAN)\n"
+
+    def test_absent_model_card_is_not_an_error(self, tmp_path):
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+
+        stage_artifacts(source, "a" * 32, tmp_path / "staged")
+
+        assert not (tmp_path / "staged" / "model_card.yaml").exists()
+
+    def test_a_successful_publish_does_not_poison_its_staging_directory(self, tmp_path):
+        # lanfactory renders the card and README into the staging dir during
+        # upload. Treating those as foreign leftovers made the identical
+        # command unrepeatable: the second run refused on files the first run
+        # had itself written.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        staged = tmp_path / "staged"
+        stage_artifacts(source, "a" * 32, staged)
+        for produced in ("validation_report.json", "model_card.yaml", "README.md"):
+            (staged / produced).write_text("written by the upload")
+
+        assert stage_artifacts(source, "a" * 32, staged).exists()
+
     def test_refuses_a_staging_path_that_is_not_a_directory(self, tmp_path):
         source = tmp_path / "src"
         self.make_run(source, "a" * 32)
