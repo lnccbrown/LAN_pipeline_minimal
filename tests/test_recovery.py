@@ -457,26 +457,51 @@ class TestAnyParameterCanVary:
             if other != param:
                 assert isinstance(truth[other], float), other
 
-    @pytest.mark.parametrize("param", ["a", "t", "sv"])
+    @staticmethod
+    def _moment_correlation(model, design, param, seed):
+        """|r| between a parameter's per-condition truth and an RT moment.
+
+        Which moment moves is the parameter's own business, and assuming it is
+        always the mean would be the drift-centric habit this test exists to
+        break -- so take whichever of mean and spread tracks it better.
+        """
+        data, truth = rd.build_dataset(model, design, seed=seed)
+        groups = [data.loc[data["condition"] == c, "rt"] for c in range(4)]
+        return max(
+            abs(np.corrcoef(truth[param], [f(g) for g in groups])[0, 1])
+            for f in (np.mean, np.std)
+        )
+
+    @pytest.mark.parametrize("param", ["a", "t"])
     def test_a_non_drift_parameter_really_moves_the_data(self, param):
         # The check that matters: it is not enough for the formula to name the
         # parameter, the simulated conditions have to actually differ.
         #
-        # Which RT moment moves is the parameter's own business, and assuming
-        # it is always the mean would be the drift-centric habit this test
-        # exists to break. Measured at n=2000: `a` and `t` track the mean
-        # (r = 0.998, 1.000) while `sv` barely does (0.872) and tracks the
-        # spread instead (0.955) -- inter-trial drift variability is a
-        # dispersion effect, which is a large part of why sv is the hard one.
+        # Measured over seeds 1-8 at 500 trials per condition, `a` and `t`
+        # track the mean on every seed (min r = 0.995 and 0.982), so the bar is
+        # the worst seed, not a lucky one.
         model = varying(DDM_SDV, param)
         design = rd.DESIGNS["L1_n2000"]
-        data, truth = rd.build_dataset(model, design, seed=4)
-        groups = [data.loc[data["condition"] == c, "rt"] for c in range(4)]
-        moved = max(
-            abs(np.corrcoef(truth[param], [f(g) for g in groups])[0, 1])
-            for f in (np.mean, np.std)
-        )
-        assert moved > 0.9, f"{param} left the RT distribution unchanged"
+        moved = [
+            self._moment_correlation(model, design, param, seed) for seed in range(1, 9)
+        ]
+        assert min(moved) > 0.95, f"{param} left the RT distribution unchanged"
+
+    def test_sv_moves_the_data_but_only_on_average(self):
+        # sv gets its own bar because the honest measurement is much weaker:
+        # over the same eight seeds it ranges 0.42 to 0.995 (mean 0.73).
+        # Inter-trial drift variability is a dispersion effect and a faint one
+        # at this sample size, which is a large part of why sv is the hard
+        # parameter to recover -- so a single-seed bar here would be testing the
+        # draw, not the design. It previously "passed" at 0.9 on one seed only
+        # because that seed drew a dataset in which one response never occurred;
+        # the degeneracy redraw removed it and exposed the real spread.
+        model = varying(DDM_SDV, "sv")
+        design = rd.DESIGNS["L1_n2000"]
+        moved = [
+            self._moment_correlation(model, design, "sv", seed) for seed in range(1, 9)
+        ]
+        assert sum(moved) / len(moved) > 0.5, "sv left the RT distribution unchanged"
 
     @pytest.mark.parametrize("param", ["a", "theta"])
     def test_the_formula_and_posterior_name_follow_the_choice(self, param):
@@ -567,6 +592,65 @@ class TestConditionBroadcast:
         l0, _ = rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n2000"], seed=4)
         l1, _ = rd.build_dataset(DDM_SDV, rd.DESIGNS["L1_n2000"], seed=4)
         assert not np.array_equal(l0["rt"].to_numpy(), l1["rt"].to_numpy())
+
+
+class TestDegenerateRedraw:
+    """Drawing a truth that makes one response unreachable is a wasted fit."""
+
+    def test_the_draw_and_the_exclusion_use_the_same_threshold(self):
+        # These live in two modules because aggregate_recovery imports
+        # recovery_designs and not the other way round. If they drift apart,
+        # build_dataset would happily hand back datasets the aggregator then
+        # throws away -- the exact waste the redraw exists to stop.
+        assert rd.MIN_CHOICE_SHARE == agg.MIN_CHOICE_SHARE
+
+    def test_a_clean_draw_is_untouched_by_the_redraw(self):
+        # Attempt 0 uses the seed unchanged, so re-running a sweep moves the
+        # degenerate datasets and nothing else.
+        design = rd.DESIGNS["L0_n500"]
+        plain, plain_truth = rd._simulate_once(DDM_SDV, design, 1)
+        assert rd._min_choice_share(plain, DDM_SDV) >= rd.MIN_CHOICE_SHARE
+        data, truth = rd.build_dataset(DDM_SDV, design, seed=1)
+        assert np.array_equal(data["rt"].to_numpy(), plain["rt"].to_numpy())
+        assert truth == plain_truth
+
+    def test_a_degenerate_draw_is_redrawn(self, monkeypatch):
+        seen = []
+
+        real = rd._simulate_once
+
+        def fake(model, design, seed):
+            seen.append(seed)
+            data, truth = real(model, design, seed)
+            # Force the first two attempts to look one-sided.
+            if len(seen) <= 2:
+                data = data.copy()
+                data["response"] = 1
+            return data, truth
+
+        monkeypatch.setattr(rd, "_simulate_once", fake)
+        data, _ = rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n500"], seed=3)
+        assert seen == [3, 3 + rd.REDRAW_STRIDE, 3 + 2 * rd.REDRAW_STRIDE]
+        assert rd._min_choice_share(data, DDM_SDV) >= rd.MIN_CHOICE_SHARE
+
+    def test_exhausting_the_budget_returns_the_last_draw_instead_of_raising(
+        self, monkeypatch
+    ):
+        # An array task that dies takes its shard with it; one that returns a
+        # degenerate dataset gets excluded by the aggregator and stays visible
+        # in the report as an excluded fit. The second is the useful failure.
+        real = rd._simulate_once
+
+        def always_degenerate(model, design, seed):
+            data, truth = real(model, design, seed)
+            data = data.copy()
+            data["response"] = 1
+            return data, truth
+
+        monkeypatch.setattr(rd, "_simulate_once", always_degenerate)
+        data, truth = rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n500"], seed=3)
+        assert rd._min_choice_share(data, DDM_SDV) < rd.MIN_CHOICE_SHARE
+        assert set(truth) == set(DDM_SDV.params)
 
 
 class TestSummarise:

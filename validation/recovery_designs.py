@@ -106,6 +106,20 @@ import numpy as np
 # tests the boundary rather than the model.
 SHRINK = 0.1
 
+# Redraw budget for degenerate datasets (see `build_dataset`). Small on
+# purpose: a model whose box degenerates more often than this has a box
+# problem, and grinding through fifty redraws would hide it behind a longer
+# wall clock.
+MAX_TRUTH_REDRAWS = 8
+# Stride between redraw seeds. Prime, and far from the 500_000 offset the
+# condition stream uses, so a redrawn dataset never reuses another dataset's
+# randomness.
+REDRAW_STRIDE = 7_000_003
+# The aggregator's exclusion threshold (aggregate_recovery.MIN_CHOICE_SHARE),
+# duplicated rather than imported because that module imports this one. Drawing
+# and excluding must agree, so they are asserted equal in the tests.
+MIN_CHOICE_SHARE = 0.02
+
 # The decision-time budget handed to the simulator. Passed explicitly rather
 # than left to ssms' default so the censoring criterion below is ours and
 # cannot drift under us. A trial whose decision process never terminated comes
@@ -399,8 +413,8 @@ def draw_truth(
     return truth
 
 
-def build_dataset(model: ModelUnderTest, design: Design, seed: int):
-    """Simulate one dataset. Returns (DataFrame, truth).
+def _simulate_once(model: ModelUnderTest, design: Design, seed: int):
+    """One draw-and-simulate attempt. Returns (DataFrame, truth).
 
     The frame carries `rt`, `response`, and — for multi-condition designs — a
     `condition` column. The simulator is handed a full (n_trials, n_params)
@@ -464,6 +478,49 @@ def build_dataset(model: ModelUnderTest, design: Design, seed: int):
         # read as a linear covariate instead of a factor.
         data["condition"] = condition
     return data, truth
+
+
+def build_dataset(model: ModelUnderTest, design: Design, seed: int):
+    """Simulate one non-degenerate dataset. Returns (DataFrame, truth).
+
+    A truth drawn uniformly from the box can imply a drift so one-sided that
+    one response is essentially never made. The aggregator already excludes
+    such fits — a recovery failure on them is a fact about the draw, not about
+    the likelihood — but every excluded fit is a cluster job spent for nothing,
+    and in the first gamma_drift sweep a quarter of the datasets went that way.
+    So redraw instead: the box stays as wide as the trained range, and the
+    ladder keeps the sample size it was designed with.
+
+    Rejecting on the aggregator's own criterion, rather than on a hand-tightened
+    box, keeps this model-general — nothing here knows what makes a particular
+    model's drift one-sided.
+    """
+    data, truth = None, None
+    for attempt in range(MAX_TRUTH_REDRAWS + 1):
+        # Attempt 0 uses the seed unchanged, so a dataset that was never
+        # degenerate is byte-identical to what it was before this loop existed:
+        # re-running a sweep moves the bad draws and nothing else.
+        data, truth = _simulate_once(model, design, seed + attempt * REDRAW_STRIDE)
+        if _min_choice_share(data, model) >= MIN_CHOICE_SHARE:
+            return data, truth
+    # Exhausted. Hand back the last attempt rather than raising: the shard's
+    # own data check records the share and the aggregator excludes the fit, so
+    # the failure stays visible in the report instead of killing the array task.
+    return data, truth
+
+
+def _min_choice_share(data, model: ModelUnderTest) -> float:
+    """Share of trials taking the least-chosen response.
+
+    A response that never appeared at all scores 0, not a missing key — the
+    same convention `recover_parameters._data_checks` records. Duplicated
+    rather than imported: that module imports this one.
+    """
+    response = data["response"].to_numpy()
+    _, counts = np.unique(response, return_counts=True)
+    if counts.size < model.n_choices:
+        return 0.0
+    return float(counts.min() / response.size)
 
 
 def model_spec(model: ModelUnderTest, design: Design) -> dict:

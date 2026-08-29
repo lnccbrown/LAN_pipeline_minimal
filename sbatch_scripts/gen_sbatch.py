@@ -147,7 +147,10 @@ JOB_KIND_FALLBACKS = {
         "partition": "batch",
         "num_gpus": 0,
         "cores": 1,
-        "mem": "8G",
+        # 8G was the pilot's figure and it OOM-killed (exit 125) the largest
+        # designs in the first real sweep: memory scales with trials x draws,
+        # and the pilot did not run the top of the ladder.
+        "mem": "24G",
         "time": "01:00:00",
     },
 }
