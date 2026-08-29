@@ -14,13 +14,18 @@ configs/
 ├── quick_test/     # small configs exercised by local_test_run.sh and CI
 ├── production_ddm_sdv/       # the recorded ddm_sdv production run (M1)
 ├── production_gamma_drift/   # the recorded gamma_drift production run
+├── production_gamma_drift_angle/
 └── cluster/
     ├── oscar.yaml        # committed lab/cluster inventory and defaults
     └── oscar.local.yaml  # generated personal overlay; gitignored
 ```
 
 Production runs are recorded as committed `production_<model>/` config pairs so
-a run is reproducible from the repo alone. The 2023-era legacy networks on
+a run is reproducible from the repo alone. `tests/test_production_configs.py`
+checks every pair for the mistakes that are only wrong in context — a model
+name the simulator does not know, an architecture without matching
+activations, a GPU batch that leaves a remainder on a training file — because
+none of those fail loudly, and all of them fail late. The 2023-era legacy networks on
 franklab/HSSM predate this pipeline and have no recorded configs; their
 provenance is a registry concern, not something to reconstruct here.
 

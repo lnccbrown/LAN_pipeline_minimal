@@ -1,0 +1,36 @@
+# gamma_drift_angle production data generation.
+#
+# gamma_drift plus a collapsing bound: 8 params, ['v', 'a', 'z', 't', 'theta',
+# 'shape', 'scale', 'c']. `theta` is inserted after `t`, so the parameter order
+# is NOT gamma_drift's with a column appended — anything that indexes theta
+# positionally has to read it from the ssms config.
+#
+# Volume is deliberately identical to production_gamma_drift (5000 sets/file x
+# 300 array jobs at submit time), which makes the two models directly
+# comparable: the only difference between the runs is the model. An 8th
+# parameter does thin the coverage of the box, but training-file count is the
+# one dimension that extends after the fact — generating more files later and
+# retraining at a higher N_TRAINING_FILES costs nothing already spent — so
+# guessing high now buys less than the gates and the recovery sweep will tell
+# us for free.
+#
+# The gamma drift bump peaks at (shape-1)*scale <= 9 s, inside the default
+# simulator max_t of 20 s — do not lower max_t below that. The collapsing bound
+# only shortens RTs, so it does not move that ceiling.
+
+MODEL: 'gamma_drift_angle'
+GENERATOR_APPROACH: 'lan'
+
+PIPELINE:
+  N_PARAMETER_SETS: 5000
+  N_SUBRUNS: 1
+
+SIMULATOR:
+  N_SAMPLES: 200000
+  DELTA_T: 0.001
+
+TRAINING:
+  N_SAMPLES_PER_PARAM: 2000
+
+ESTIMATOR:
+  TYPE: 'kde'
