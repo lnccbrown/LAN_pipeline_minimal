@@ -397,6 +397,23 @@ def main(
             "arm": arm,
             "error": f"{type(e).__name__}: {e}",
         }
+        # The aggregator keys cells on design_id, not design, because
+        # `L1_n500@v` and `L1_n500@c` are different experiments. A dead shard
+        # that carries only `design` therefore lands in a bucket of its own
+        # with no cells behind it, and the run fails on "nothing to judge"
+        # while eighteen healthy fits sit in the neighbouring bucket.
+        # Best-effort and last: whatever went wrong above is the error worth
+        # reporting, and a failure to name the design must not replace it.
+        try:
+            record["design_id"] = rd.design_id(
+                rd.load_model(model, condition_param=condition_param),
+                rd.DESIGNS[design],
+            )
+        except Exception as naming_error:  # noqa: BLE001 - see above
+            logger.warning(
+                f"could not name the design for the failed shard: "
+                f"{type(naming_error).__name__}: {naming_error}"
+            )
         logger.error(f"shard failed: {record['error']}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
