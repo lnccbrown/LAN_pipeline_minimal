@@ -155,7 +155,30 @@ def load_shards(shard_dir: Path) -> list[dict]:
     return shards
 
 
-def _key(shard: dict) -> tuple[str, str, str]:
+def adopted_design_ids(shards: list[dict]) -> dict[tuple[str, str, str], str]:
+    """(model, arm, rung) -> design_id, learned from the shards that carry one.
+
+    Workers before the fix wrote no `design_id` on the failure path, so a dead
+    shard from an older sweep keys into a bucket of its own: no cells behind
+    it, and the run fails on "nothing to judge" while its healthy siblings sit
+    in the neighbouring bucket. Those siblings know which variant of the rung
+    was being run, so adopt it from them.
+
+    A rung with TWO variants in one sweep is left alone. Nothing in a bare
+    shard says which of them died, and guessing would file the error against an
+    experiment that may not have had it.
+    """
+    seen: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    for shard in shards:
+        design = shard.get("design_id")
+        if not design:
+            continue
+        arm = shard.get("arm") or shard.get("likelihood", "?")
+        seen[(shard.get("model"), arm, _rung_of(design))].add(design)
+    return {key: next(iter(v)) for key, v in seen.items() if len(v) == 1}
+
+
+def _key(shard: dict, adopted: dict | None = None) -> tuple[str, str, str]:
     """(model, arm, design) -- the cell prefix a shard belongs to.
 
     `model` is part of the key so one shard directory can hold a whole
@@ -172,8 +195,17 @@ def _key(shard: dict) -> tuple[str, str, str]:
         # conditions: `L1_n500@v` and `L1_n500@sv` are different designs and
         # pooling their shared-parameter cells would average two different
         # experiments into one coverage number.
-        shard.get("design_id") or shard.get("design", "?"),
+        _design_of(shard, adopted or {}),
     )
+
+
+def _design_of(shard: dict, adopted: dict) -> str:
+    design = shard.get("design_id")
+    if design:
+        return design
+    rung = shard.get("design", "?")
+    arm = shard.get("arm") or shard.get("likelihood", "?")
+    return adopted.get((shard.get("model"), arm, rung), rung)
 
 
 def _is_reference(arm: str) -> bool:
@@ -200,9 +232,10 @@ def summarise(shards: list[dict]) -> dict:
     degenerate: dict[tuple[str, str, str], int] = defaultdict(int)
     attempted: dict[tuple[str, str, str], int] = defaultdict(int)
     likelihood_of: dict[tuple[str, str, str], str] = {}
+    adopted = adopted_design_ids(shards)
 
     for shard in shards:
-        key2 = _key(shard)
+        key2 = _key(shard, adopted)
         attempted[key2] += 1
         likelihood_of[key2] = shard.get("likelihood", "?")
         if "error" in shard or "parameters" not in shard:
@@ -210,7 +243,10 @@ def summarise(shards: list[dict]) -> dict:
                 {
                     "model": key2[0],
                     "arm": key2[1],
-                    "design": shard.get("design"),
+                    # The same token `attempted` is keyed on, so `_errors_for`
+                    # can match them; `shard["design"]` is the bare rung and
+                    # would not.
+                    "design": key2[2],
                     "likelihood": shard.get("likelihood"),
                     "dataset_index": shard.get("dataset_index"),
                     "error": shard.get("error", "shard has no parameters block"),
