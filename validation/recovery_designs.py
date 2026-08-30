@@ -115,6 +115,11 @@ MAX_TRUTH_REDRAWS = 8
 # condition stream uses, so a redrawn dataset never reuses another dataset's
 # randomness.
 REDRAW_STRIDE = 7_000_003
+# Trials in the probe that decides whether an attempt is usable. The criterion
+# is a *rate*, so this only sets how precisely the rate is estimated: at the
+# 0.02 threshold the binomial standard error here is 0.44 percentage points.
+# It is deliberately not any design's trial count -- see `build_dataset`.
+PROBE_TRIALS = 1000
 # The aggregator's exclusion threshold (aggregate_recovery.MIN_CHOICE_SHARE),
 # duplicated rather than imported because that module imports this one. Drawing
 # and excluding must agree, so they are asserted equal in the tests.
@@ -395,7 +400,6 @@ def draw_truth(
     # could just mean "L1 drew an easier one". The ladder holds trials constant
     # precisely to avoid that kind of confound, and the truths have to be held
     # constant with them.
-    shared_rng = np.random.default_rng(seed)
     condition_rng = np.random.default_rng(seed + 500_000)
     bounds = model.shrunk_bounds()
     varying = varies_by_condition(model, design)
@@ -403,14 +407,64 @@ def draw_truth(
     # Draw from the shared stream for every parameter, in a fixed order, then
     # overwrite the condition-varying ones. That keeps the shared stream's
     # consumption identical across levels.
-    truth: dict[str, float | list[float]] = {
-        name: float(shared_rng.uniform(*bounds[name])) for name in model.params
-    }
+    truth: dict[str, float | list[float]] = dict(shared_draw(model, seed))
     for name in varying:
         truth[name] = [
             float(x) for x in condition_rng.uniform(*bounds[name], design.n_conditions)
         ]
     return truth
+
+
+def shared_draw(model: ModelUnderTest, seed: int) -> dict[str, float]:
+    """The shared-stream draw: every parameter as a scalar, no design involved.
+
+    This is what `draw_truth` produces before a design overwrites its
+    condition-varying entries, so it is the same for every level of the ladder
+    at a given seed. `build_dataset` needs exactly that design-independence to
+    keep the levels paired.
+    """
+    rng = np.random.default_rng(seed)
+    bounds = model.shrunk_bounds()
+    return {name: float(rng.uniform(*bounds[name])) for name in model.params}
+
+
+def _simulate(model: ModelUnderTest, theta: np.ndarray, seed: int):
+    """Trial-wise simulation with both RNG streams pinned. Returns (rt, response).
+
+    `random_state` alone does NOT make every ssms model reproducible. Any
+    parameter applied through `simulator_param_mappings` — ddm_sdv's `sv` is
+    `norm.rvs(loc=0, scale=sv)` — draws from scipy's *global* RandomState, a
+    stream `random_state` never touches. Measured: back-to-back calls with the
+    same random_state differ for ddm_sdv, agree for plain ddm, and agree for
+    ddm_sdv at sv=0. Seeding the global RNG closes the gap for every model.
+
+    This matters more than reproducibility for its own sake: the reference and
+    network arms must see byte-identical data, or the paired comparison that
+    makes recovery interpretable is gone.
+    Upstream: ssm-simulators should thread random_state into the mappings.
+    Saved and restored: the seeding is needed for the duration of the call and
+    nothing longer. Left in place it silently makes the CALLER's later
+    np.random draws deterministic — a sweep looping over models, or a test
+    session sharing a process, would couple through it.
+    """
+    from ssms.basic_simulators.simulator import simulator
+
+    entropy = np.random.get_state()
+    np.random.seed(seed)
+    try:
+        sim = simulator(
+            theta=theta,
+            model=model.name,
+            n_samples=1,
+            random_state=seed,
+            max_t=SIMULATOR_MAX_T,
+        )
+    finally:
+        np.random.set_state(entropy)
+    return (
+        np.asarray(sim["rts"]).reshape(-1),
+        np.asarray(sim["choices"]).reshape(-1),
+    )
 
 
 def _simulate_once(model: ModelUnderTest, design: Design, seed: int):
@@ -422,7 +476,6 @@ def _simulate_once(model: ModelUnderTest, design: Design, seed: int):
     preserved, so the condition labels line up with the rows they generated.
     """
     import pandas as pd
-    from ssms.basic_simulators.simulator import simulator
 
     truth = draw_truth(model, design, seed)
     condition = np.repeat(
@@ -439,40 +492,8 @@ def _simulate_once(model: ModelUnderTest, design: Design, seed: int):
         ]
     )
 
-    # `random_state` alone does NOT make every ssms model reproducible. Any
-    # parameter applied through `simulator_param_mappings` — ddm_sdv's `sv` is
-    # `norm.rvs(loc=0, scale=sv)` — draws from scipy's *global* RandomState, a
-    # stream `random_state` never touches. Measured: back-to-back calls with the
-    # same random_state differ for ddm_sdv, agree for plain ddm, and agree for
-    # ddm_sdv at sv=0. Seeding the global RNG closes the gap for every model.
-    #
-    # This matters more than reproducibility for its own sake: the reference and
-    # network arms must see byte-identical data, or the paired comparison that
-    # makes recovery interpretable is gone.
-    # Upstream: ssm-simulators should thread random_state into the mappings.
-    # Saved and restored: the seeding is needed for the duration of the call
-    # and nothing longer. Left in place it silently makes the CALLER's later
-    # np.random draws deterministic — a sweep looping over models, or a test
-    # session sharing a process, would couple through it.
-    entropy = np.random.get_state()
-    np.random.seed(seed)
-    try:
-        sim = simulator(
-            theta=theta,
-            model=model.name,
-            n_samples=1,
-            random_state=seed,
-            max_t=SIMULATOR_MAX_T,
-        )
-    finally:
-        np.random.set_state(entropy)
-
-    data = pd.DataFrame(
-        {
-            "rt": np.asarray(sim["rts"]).reshape(-1),
-            "response": np.asarray(sim["choices"]).reshape(-1),
-        }
-    )
+    rt, response = _simulate(model, theta, seed)
+    data = pd.DataFrame({"rt": rt, "response": response})
     if design.n_conditions > 1:
         # Wrapped in C(...) at formula time; a bare integer column would be
         # read as a linear covariate instead of a factor.
@@ -480,43 +501,82 @@ def _simulate_once(model: ModelUnderTest, design: Design, seed: int):
     return data, truth
 
 
-def build_dataset(model: ModelUnderTest, design: Design, seed: int):
-    """Simulate one non-degenerate dataset. Returns (DataFrame, truth).
+def usable_seed(model: ModelUnderTest, seed: int) -> tuple[int, int]:
+    """Resolve a dataset seed to the first attempt worth simulating.
+
+    Returns `(resolved_seed, attempts_used)`.
 
     A truth drawn uniformly from the box can imply a drift so one-sided that
     one response is essentially never made. The aggregator already excludes
     such fits — a recovery failure on them is a fact about the draw, not about
     the likelihood — but every excluded fit is a cluster job spent for nothing,
-    and in the first gamma_drift sweep a quarter of the datasets went that way.
-    So redraw instead: the box stays as wide as the trained range, and the
+    and in the first gamma_drift sweep more than half the L0 datasets went that
+    way. So redraw instead: the box stays as wide as the trained range, and the
     ladder keeps the sample size it was designed with.
 
-    Rejecting on the aggregator's own criterion, rather than on a hand-tightened
-    box, keeps this model-general — nothing here knows what makes a particular
-    model's drift one-sided.
+    **The design is deliberately not an argument.** The obvious implementation
+    — simulate the requested design, redraw if it comes out degenerate — breaks
+    the ladder. Degeneracy is far more common at L0 than at L1 (measured on
+    gamma_drift: 11/20 against 1/20), because varying a parameter across
+    conditions makes a wholly one-sided design much harder to draw. So L0 would
+    redraw where L1 did not, the two levels would land on different shared
+    truths at the same dataset index, and "L1 recovers this better" could just
+    mean "L1 drew an easier one" — the exact confound `draw_truth`'s two
+    independent streams exist to prevent. Worse, it would be a *directional*
+    confound: the redrawn L0 truths are, by construction, the more balanced
+    ones.
+
+    So the decision is made on a probe that no design influences: the
+    shared-stream draw, every parameter scalar, simulated as a single
+    condition. The attempt therefore depends only on `(model, seed)`, every
+    level resolves to the same attempt, and the shared truths stay identical
+    across the ladder. The probe is L0-shaped, which is the hardest level, so
+    clearing it clears the multi-condition levels a fortiori.
+
+    Rejecting on the aggregator's own criterion, rather than on a
+    hand-tightened box, keeps this model-general: nothing here knows what makes
+    a particular model's drift one-sided, or how many responses it has.
     """
-    data, truth = None, None
     for attempt in range(MAX_TRUTH_REDRAWS + 1):
         # Attempt 0 uses the seed unchanged, so a dataset that was never
-        # degenerate is byte-identical to what it was before this loop existed:
+        # degenerate is byte-identical to what it was before this existed:
         # re-running a sweep moves the bad draws and nothing else.
-        data, truth = _simulate_once(model, design, seed + attempt * REDRAW_STRIDE)
-        if _min_choice_share(data, model) >= MIN_CHOICE_SHARE:
-            return data, truth
+        resolved = seed + attempt * REDRAW_STRIDE
+        truth = shared_draw(model, resolved)
+        theta = np.tile(
+            np.array([truth[name] for name in model.params], dtype=float),
+            (PROBE_TRIALS, 1),
+        )
+        _, response = _simulate(model, theta, resolved)
+        if min_choice_share(response, model) >= MIN_CHOICE_SHARE:
+            return resolved, attempt + 1
     # Exhausted. Hand back the last attempt rather than raising: the shard's
     # own data check records the share and the aggregator excludes the fit, so
     # the failure stays visible in the report instead of killing the array task.
-    return data, truth
+    return resolved, MAX_TRUTH_REDRAWS + 1
 
 
-def _min_choice_share(data, model: ModelUnderTest) -> float:
+def build_dataset(model: ModelUnderTest, design: Design, seed: int):
+    """Simulate one dataset from a usable truth. Returns (DataFrame, truth).
+
+    The seed is resolved by `usable_seed` first, which is what keeps the ladder
+    levels paired — see its docstring for why the design must not influence
+    that choice.
+    """
+    resolved, _ = usable_seed(model, seed)
+    return _simulate_once(model, design, resolved)
+
+
+def min_choice_share(response, model: ModelUnderTest) -> float:
     """Share of trials taking the least-chosen response.
 
     A response that never appeared at all scores 0, not a missing key — the
-    same convention `recover_parameters._data_checks` records. Duplicated
-    rather than imported: that module imports this one.
+    same convention `recover_parameters._data_checks` records, and the reason
+    this counts against `model.n_choices` rather than against the number of
+    distinct values observed. Duplicated rather than imported: that module
+    imports this one.
     """
-    response = data["response"].to_numpy()
+    response = np.asarray(response)
     _, counts = np.unique(response, return_counts=True)
     if counts.size < model.n_choices:
         return 0.0

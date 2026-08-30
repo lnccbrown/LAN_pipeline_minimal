@@ -604,34 +604,44 @@ class TestDegenerateRedraw:
         # throws away -- the exact waste the redraw exists to stop.
         assert rd.MIN_CHOICE_SHARE == agg.MIN_CHOICE_SHARE
 
+    @pytest.mark.parametrize("model", MODELS, ids=lambda m: m.name)
+    def test_the_share_counts_missing_responses_against_the_model(self, model):
+        # A response that never appeared contributes 0, not a missing key. The
+        # count that matters is model.n_choices, not the number of distinct
+        # values observed -- otherwise a 4-choice dataset in which only two
+        # alternatives were ever taken would score as perfectly balanced.
+        all_one = np.ones(100, dtype=int)
+        assert rd.min_choice_share(all_one, model) == 0.0
+        every = np.arange(model.n_choices).repeat(25)
+        assert rd.min_choice_share(every, model) == pytest.approx(1 / model.n_choices)
+
     def test_a_clean_draw_is_untouched_by_the_redraw(self):
         # Attempt 0 uses the seed unchanged, so re-running a sweep moves the
         # degenerate datasets and nothing else.
         design = rd.DESIGNS["L0_n500"]
+        resolved, attempts = rd.usable_seed(DDM_SDV, 1)
+        assert (resolved, attempts) == (1, 1)
         plain, plain_truth = rd._simulate_once(DDM_SDV, design, 1)
-        assert rd._min_choice_share(plain, DDM_SDV) >= rd.MIN_CHOICE_SHARE
         data, truth = rd.build_dataset(DDM_SDV, design, seed=1)
         assert np.array_equal(data["rt"].to_numpy(), plain["rt"].to_numpy())
         assert truth == plain_truth
 
     def test_a_degenerate_draw_is_redrawn(self, monkeypatch):
         seen = []
+        real = rd._simulate
 
-        real = rd._simulate_once
-
-        def fake(model, design, seed):
+        def fake(model, theta, seed):
             seen.append(seed)
-            data, truth = real(model, design, seed)
-            # Force the first two attempts to look one-sided.
+            rt, response = real(model, theta, seed)
+            # Force the first two probes to look one-sided.
             if len(seen) <= 2:
-                data = data.copy()
-                data["response"] = 1
-            return data, truth
+                response = np.ones_like(response)
+            return rt, response
 
-        monkeypatch.setattr(rd, "_simulate_once", fake)
-        data, _ = rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n500"], seed=3)
+        monkeypatch.setattr(rd, "_simulate", fake)
+        resolved, attempts = rd.usable_seed(DDM_SDV, 3)
         assert seen == [3, 3 + rd.REDRAW_STRIDE, 3 + 2 * rd.REDRAW_STRIDE]
-        assert rd._min_choice_share(data, DDM_SDV) >= rd.MIN_CHOICE_SHARE
+        assert (resolved, attempts) == (3 + 2 * rd.REDRAW_STRIDE, 3)
 
     def test_exhausting_the_budget_returns_the_last_draw_instead_of_raising(
         self, monkeypatch
@@ -639,18 +649,90 @@ class TestDegenerateRedraw:
         # An array task that dies takes its shard with it; one that returns a
         # degenerate dataset gets excluded by the aggregator and stays visible
         # in the report as an excluded fit. The second is the useful failure.
-        real = rd._simulate_once
+        real = rd._simulate
 
-        def always_degenerate(model, design, seed):
-            data, truth = real(model, design, seed)
-            data = data.copy()
-            data["response"] = 1
-            return data, truth
+        def always_degenerate(model, theta, seed):
+            rt, response = real(model, theta, seed)
+            return rt, np.ones_like(response)
 
-        monkeypatch.setattr(rd, "_simulate_once", always_degenerate)
+        monkeypatch.setattr(rd, "_simulate", always_degenerate)
+        resolved, attempts = rd.usable_seed(DDM_SDV, 3)
+        assert attempts == rd.MAX_TRUTH_REDRAWS + 1
+        assert resolved == 3 + rd.MAX_TRUTH_REDRAWS * rd.REDRAW_STRIDE
+        # Still returns a usable dataset rather than blowing up the task.
         data, truth = rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n500"], seed=3)
-        assert rd._min_choice_share(data, DDM_SDV) < rd.MIN_CHOICE_SHARE
         assert set(truth) == set(DDM_SDV.params)
+
+
+class TestRedrawKeepsTheLadderPaired:
+    """The redraw must not decide differently for L0 than for L1.
+
+    Degeneracy is far more common at L0 than at L1 -- varying a parameter
+    across conditions makes a wholly one-sided design much harder to draw --
+    so a redraw that looked at the requested design would redraw L0 where it
+    left L1 alone. The two levels would then hold different shared truths at
+    the same dataset index, and "L1 recovers this better" could just mean "L1
+    drew an easier one": the confound `draw_truth`'s two independent streams
+    exist to prevent, reintroduced one layer down. It would also be
+    directional, since the surviving L0 truths are the more balanced ones.
+    """
+
+    def test_the_resolution_does_not_take_a_design_at_all(self):
+        # The structural guarantee, asserted structurally: if a design ever
+        # becomes an argument, every empirical test below is one refactor away
+        # from being reassuring for the wrong reason.
+        import inspect
+
+        assert list(inspect.signature(rd.usable_seed).parameters) == ["model", "seed"]
+
+    @pytest.mark.parametrize("model", MODELS, ids=lambda m: m.name)
+    def test_every_design_resolves_to_the_same_shared_truth(self, model):
+        for seed in range(1, 9):
+            resolved, _ = rd.usable_seed(model, seed)
+            expected = rd.shared_draw(model, resolved)
+            for design in rd.DESIGNS.values():
+                truth = rd.draw_truth(model, design, resolved)
+                shared = [p for p in model.params if not isinstance(truth[p], list)]
+                assert shared, f"{design.name} varies every parameter"
+                for name in shared:
+                    assert truth[name] == expected[name], (design.name, name, seed)
+
+    @pytest.mark.parametrize("model", MODELS, ids=lambda m: m.name)
+    def test_shared_truths_agree_across_levels_at_every_seed(self, model):
+        l0, l1 = rd.DESIGNS["L0_n2000"], rd.DESIGNS["L1_n2000"]
+        for seed in range(1, 9):
+            _, t0 = rd.build_dataset(model, l0, seed)
+            _, t1 = rd.build_dataset(model, l1, seed)
+            shared = [p for p in model.params if not isinstance(t1[p], list)]
+            for name in shared:
+                assert t0[name] == t1[name], (name, seed)
+
+    def test_the_levels_disagree_about_degeneracy_so_this_is_not_vacuous(self):
+        # The tripwire. If no seed in this range makes L0 degenerate while L1
+        # is fine, the pairing tests above could pass for the trivial reason
+        # that nothing ever needed a redraw, and this whole class would be
+        # measuring nothing. Measured on gamma_drift: L0 degenerates on 11 of
+        # 20 draws against L1's 1.
+        model = rd.load_model("gamma_drift")
+        disagreeing = []
+        for seed in range(1, 21):
+            shares = {}
+            for key in ("L0_n2000", "L1_n2000"):
+                data, _ = rd._simulate_once(model, rd.DESIGNS[key], seed)
+                shares[key] = rd.min_choice_share(data["response"].to_numpy(), model)
+            usable = {k: v >= rd.MIN_CHOICE_SHARE for k, v in shares.items()}
+            if usable["L0_n2000"] != usable["L1_n2000"]:
+                disagreeing.append(seed)
+        assert disagreeing, "no seed forces unequal redraw outcomes any more"
+
+        # And on exactly those seeds -- where a design-aware redraw would have
+        # split the levels apart -- the shared truths still match.
+        for seed in disagreeing:
+            _, t0 = rd.build_dataset(model, rd.DESIGNS["L0_n2000"], seed)
+            _, t1 = rd.build_dataset(model, rd.DESIGNS["L1_n2000"], seed)
+            shared = [p for p in model.params if not isinstance(t1[p], list)]
+            for name in shared:
+                assert t0[name] == t1[name], (name, seed)
 
 
 class TestSummarise:
