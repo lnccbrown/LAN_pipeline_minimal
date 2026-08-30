@@ -664,6 +664,73 @@ class TestDegenerateRedraw:
         assert set(truth) == set(DDM_SDV.params)
 
 
+class TestChoiceCountIsNotAssumedBinary:
+    """`n_choices` decides whether the degeneracy guard works at all.
+
+    `min_choice_share` reports 0 only when FEWER response categories were
+    observed than the model has. Understate the count and a dataset that never
+    produced one of its responses scores as perfectly balanced, so both the
+    redraw and the aggregator's exclusion wave it through -- silently, and
+    for exactly the multi-alternative models where a missing category is most
+    likely.
+    """
+
+    # ssms models that carry no `choices` key at all, with what `nchoices`
+    # says. The old `len(config.get("choices", [-1, 1]))` declared every one of
+    # them binary.
+    NO_CHOICES_KEY = {
+        "lba_angle_3": 3,
+        "lca_3": 3,
+        "dev_rlwm_lba_pw_v1": 3,
+        "dev_rlwm_lba_race_v2": 3,
+        "tradeoff_weibull_no_bias": 4,
+    }
+
+    def test_the_models_with_no_choices_key_are_still_read_correctly(self):
+        from ssms.config import model_config
+
+        for name, expected in self.NO_CHOICES_KEY.items():
+            # The premise, so this fails loudly if ssms starts shipping the key
+            # rather than passing for a reason that no longer exists.
+            assert "choices" not in model_config[name], name
+            assert rd.load_model(name).n_choices == expected, name
+
+    def test_every_model_ssms_knows_reports_the_count_ssms_declares(self):
+        # The general form: all 113 of them, not a fixture list. Takes ~1s
+        # because nothing here simulates.
+        from ssms.config import model_config
+
+        checked, skipped = 0, 0
+        for name, config in model_config.items():
+            try:
+                live = rd.load_model(name)
+            except (ValueError, ModuleNotFoundError):
+                # Legitimately unavailable: HSSM knows the model but declares no
+                # approx_differentiable likelihood, or the validate group is not
+                # installed. Neither is a choice-count claim.
+                skipped += 1
+                continue
+            assert live.n_choices == config["nchoices"], (
+                f"{name}: harness says {live.n_choices}, ssms says {config['nchoices']}"
+            )
+            checked += 1
+        # Not vacuous: skipping everything would otherwise be a green run.
+        assert checked > 100, f"only {checked} models checked, {skipped} skipped"
+
+    def test_a_config_carrying_neither_key_raises_instead_of_guessing(self):
+        with pytest.raises(KeyError):
+            rd._n_choices({"params": ["v"]})
+
+    def test_a_missing_response_category_is_degenerate_at_three_choices(self):
+        # The consequence, stated directly. Two of three categories present:
+        # binary says 0.5 and sails through, three-way says 0 and is rejected.
+        two_of_three = np.array([0] * 250 + [1] * 250)
+        three = dataclasses.replace(ANGLE, n_choices=3)
+        assert rd.min_choice_share(two_of_three, ANGLE) == 0.5
+        assert rd.min_choice_share(two_of_three, three) == 0.0
+        assert rd.min_choice_share(two_of_three, three) < rd.MIN_CHOICE_SHARE
+
+
 class TestRedrawKeepsTheLadderPaired:
     """The redraw must not decide differently for L0 than for L1.
 

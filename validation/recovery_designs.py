@@ -209,6 +209,33 @@ def _default_condition_param(params: tuple[str, ...]) -> str:
     return drifts[0] if drifts else params[0]
 
 
+def _n_choices(config: dict) -> int:
+    """How many responses a model has, from an ssms or HSSM config.
+
+    Not `len(config.get("choices", [-1, 1]))`. The `choices` key is not
+    universal: five of ssms' 113 models omit it — `lba_angle_3`, `lca_3`,
+    `dev_rlwm_lba_pw_v1`, `dev_rlwm_lba_race_v2` (3 choices each) and
+    `tradeoff_weibull_no_bias` (4) — and a two-element default declares every
+    one of them binary. All five are outside HSSM's registry, so they take the
+    branch this pipeline exists to serve.
+
+    Getting it wrong is silent, not loud. `min_choice_share` reports 0 only
+    when FEWER response categories were observed than the model has, so a
+    3-choice dataset that never produced its third response scores 0.5 —
+    perfectly balanced — under `n_choices=2`, and both the redraw here and the
+    aggregator's exclusion wave it through. Measured: exactly that, on
+    `lba_angle_3`.
+
+    `nchoices` is present for all 113 ssms configs, so it is the fallback. No
+    default beyond that: a config carrying neither key should raise rather than
+    let the harness guess a model's response set.
+    """
+    choices = config.get("choices")
+    if choices is not None:
+        return len(choices)
+    return int(config["nchoices"])
+
+
 def load_model(
     name: str,
     *,
@@ -251,7 +278,7 @@ def load_model(
                 p: (float(lo), float(hi)) for p, lo, hi in zip(params, lows, highs)
             },
             condition_param=condition_param or _default_condition_param(params),
-            n_choices=len(sim_config.get("choices", [-1, 1])),
+            n_choices=_n_choices(sim_config),
             likelihood_kinds=("approx_differentiable",),
             notes={
                 "loglik_kind": loglik_kind,
@@ -293,7 +320,7 @@ def load_model(
         params=params,
         bounds={p: tuple(float(x) for x in bounds[p]) for p in params},
         condition_param=condition_param or _default_condition_param(params),
-        n_choices=len(config.get("choices", [-1, 1])),
+        n_choices=_n_choices(config),
         likelihood_kinds=tuple(sorted(likelihoods)),
         notes={"loglik_kind": loglik_kind},
     )
