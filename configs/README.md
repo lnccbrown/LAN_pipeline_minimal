@@ -12,16 +12,19 @@ and [generate Slurm jobs](https://lnccbrown.github.io/LAN_pipeline_minimal/how-t
 configs/
 ├── examples/       # larger generation and LAN/CPN training templates
 ├── quick_test/     # small configs exercised by local_test_run.sh and CI
-├── production_ddm_sdv/       # the recorded ddm_sdv production run (M1)
-├── production_gamma_drift/   # the recorded gamma_drift production run
+├── production_ddm_sdv/
+├── production_gamma_drift/
 ├── production_gamma_drift_angle/
 └── cluster/
     ├── oscar.yaml        # committed lab/cluster inventory and defaults
     └── oscar.local.yaml  # generated personal overlay; gitignored
 ```
 
-Production runs are recorded as committed `production_<model>/` config pairs so
-a run is reproducible from the repo alone. `tests/test_production_configs.py`
+Production-scale configurations are committed as `production_<model>/` pairs
+so a completed run or predeclared candidate is reproducible from the repo
+alone. A directory preserves the intended configuration; its presence does not
+by itself prove that the run completed or that an artifact shipped.
+`tests/test_production_configs.py`
 checks every pair for the mistakes that are only wrong in context — a model
 name the simulator does not know, an architecture without matching
 activations, a GPU batch that leaves a remainder on a training file — because

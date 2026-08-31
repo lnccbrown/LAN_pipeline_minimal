@@ -30,9 +30,11 @@ submission.
 
 ## Recorded production configurations
 
-A `production_<model>/` directory is a reproducibility record, not a general
-template. Each directory contains the exact generation and training pair for a
-recorded run. The current records are:
+A `production_<model>/` directory is a versioned production configuration, not
+a general template. Each directory contains a matched generation and training
+pair for a completed run or a predeclared candidate. Its presence preserves the
+intended configuration but does not by itself prove that execution completed or
+that an artifact shipped. The current pairs are:
 
 | Directory | Model |
 | --- | --- |
@@ -49,10 +51,10 @@ individual YAML loaders cannot check on their own:
 - the GPU batch divides one training file exactly, while CPU and GPU batch
   sizes agree;
 - `SHUFFLE` is off for the file-advancing loader; and
-- `LABELS_LOWER_BOUND` remains a quoted expression.
+- `LABELS_LOWER_BOUND` remains a quoted string.
 
 Run `uv run pytest tests/test_production_configs.py -q` after adding or changing
-a recorded pair. These checks protect contextual reproducibility; the upstream
+a versioned pair. These checks protect contextual reproducibility; the upstream
 simulator and trainer documentation still own their complete schemas. Start a
 new scientific configuration from `examples/`, not from a production record,
 unless reproducing that exact run.
