@@ -686,7 +686,20 @@ class TestChoiceCountIsNotAssumedBinary:
         "tradeoff_weibull_no_bias": 4,
     }
 
+    def test_every_ssms_config_resolves_to_the_count_it_declares(self):
+        # The general form: all 113 of them, not a fixture list. Asserted on
+        # `_n_choices` directly rather than through `load_model`, so it needs no
+        # inference stack and therefore runs in CI -- which is where a
+        # config-shape assertion is worth the most, since CI is where a new ssms
+        # release lands first.
+        from ssms.config import model_config
+
+        for name, config in model_config.items():
+            assert rd._n_choices(config) == config["nchoices"], name
+        assert len(model_config) > 100, "the ssms registry got suspiciously small"
+
     def test_the_models_with_no_choices_key_are_still_read_correctly(self):
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
         from ssms.config import model_config
 
         for name, expected in self.NO_CHOICES_KEY.items():
@@ -695,19 +708,20 @@ class TestChoiceCountIsNotAssumedBinary:
             assert "choices" not in model_config[name], name
             assert rd.load_model(name).n_choices == expected, name
 
-    def test_every_model_ssms_knows_reports_the_count_ssms_declares(self):
-        # The general form: all 113 of them, not a fixture list. Takes ~1s
-        # because nothing here simulates.
+    def test_load_model_threads_the_count_through_for_every_model(self):
+        # The same claim one layer up: `_n_choices` being right is no use if
+        # `load_model` does not use it. Needs HSSM, because `load_model` asks its
+        # registry which branch a model takes.
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
         from ssms.config import model_config
 
         checked, skipped = 0, 0
         for name, config in model_config.items():
             try:
                 live = rd.load_model(name)
-            except (ValueError, ModuleNotFoundError):
+            except ValueError:
                 # Legitimately unavailable: HSSM knows the model but declares no
-                # approx_differentiable likelihood, or the validate group is not
-                # installed. Neither is a choice-count claim.
+                # approx_differentiable likelihood. Not a choice-count claim.
                 skipped += 1
                 continue
             assert live.n_choices == config["nchoices"], (
@@ -780,6 +794,7 @@ class TestRedrawKeepsTheLadderPaired:
         # that nothing ever needed a redraw, and this whole class would be
         # measuring nothing. Measured on gamma_drift: L0 degenerates on 11 of
         # 20 draws against L1's 1.
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
         model = rd.load_model("gamma_drift")
         disagreeing = []
         for seed in range(1, 21):
