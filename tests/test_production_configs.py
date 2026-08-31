@@ -19,6 +19,9 @@ import pytest
 import yaml
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
+CONFIGURATION_REFERENCE = (
+    Path(__file__).resolve().parents[1] / "docs/reference/configuration.md"
+)
 PRODUCTION = sorted(p for p in CONFIGS.glob("production_*") if p.is_dir())
 
 
@@ -40,6 +43,17 @@ def test_at_least_one_production_run_is_recorded():
     # Guards the glob itself: a rename that emptied it would turn every test
     # below into a silent no-op.
     assert PRODUCTION, f"no production_* config directories under {CONFIGS}"
+
+
+def test_every_production_run_is_named_in_the_configuration_reference():
+    """Keep the rendered operational reference current with recorded runs."""
+    reference = CONFIGURATION_REFERENCE.read_text()
+    missing = [
+        directory.name
+        for directory in PRODUCTION
+        if f"`configs/{directory.name}/`" not in reference
+    ]
+    assert missing == [], f"production configs missing from docs: {missing}"
 
 
 class TestIdentity:
