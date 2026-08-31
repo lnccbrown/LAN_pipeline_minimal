@@ -13,13 +13,21 @@ These are cheap structural checks, not a schema. The pipeline's own loaders own
 the schema; this owns the things that are only wrong in context.
 """
 
+import re
 from pathlib import Path
 
 import pytest
 import yaml
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
+CONFIGURATION_REFERENCE = (
+    Path(__file__).resolve().parents[1] / "docs/reference/configuration.md"
+)
 PRODUCTION = sorted(p for p in CONFIGS.glob("production_*") if p.is_dir())
+PRODUCTION_REFERENCE_ROW = re.compile(
+    r"^\| `configs/(?P<directory>production_[^`/]+)/` \| `(?P<model>[^`]+)` \|$",
+    re.MULTILINE,
+)
 
 
 def _load(directory: Path, name: str) -> dict:
@@ -40,6 +48,22 @@ def test_at_least_one_production_run_is_recorded():
     # Guards the glob itself: a rename that emptied it would turn every test
     # below into a silent no-op.
     assert PRODUCTION, f"no production_* config directories under {CONFIGS}"
+
+
+def test_every_production_pair_is_named_in_the_configuration_reference():
+    """Keep the rendered operational reference exact, current, and unambiguous."""
+    reference = CONFIGURATION_REFERENCE.read_text()
+    expected = {
+        (directory.name, _load(directory, "data_generation.yaml")["MODEL"])
+        for directory in PRODUCTION
+    }
+    documented = {
+        (match["directory"], match["model"])
+        for match in PRODUCTION_REFERENCE_ROW.finditer(reference)
+    }
+    assert documented == expected, (
+        f"documented production configs differ: {documented ^ expected}"
+    )
 
 
 class TestIdentity:

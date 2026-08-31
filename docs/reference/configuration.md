@@ -15,6 +15,9 @@ configs/
   quick_test/
     data_generation.yaml
     network_training.yaml
+  production_<model>/
+    data_generation.yaml
+    network_training.yaml
   cluster/
     oscar.yaml
     oscar.local.yaml       # generated, gitignored, personal
@@ -24,6 +27,37 @@ configs/
 `local_test_run.sh` and CI. `examples/` starts at a much larger scale and must be
 reviewed for the intended model, network, storage budget, and allocation before
 submission.
+
+## Recorded production configurations
+
+A `production_<model>/` directory is a versioned production configuration, not
+a general template. Each directory contains a matched generation and training
+pair for a completed run or a predeclared candidate. Its presence preserves the
+intended configuration but does not by itself prove that execution completed or
+that an artifact shipped. The current pairs are:
+
+| Directory | Model |
+| --- | --- |
+| `configs/production_ddm_sdv/` | `ddm_sdv` |
+| `configs/production_gamma_drift/` | `gamma_drift` |
+| `configs/production_gamma_drift_angle/` | `gamma_drift_angle` |
+
+The production-config tests enforce the cross-file constraints that the
+individual YAML loaders cannot check on their own:
+
+- the directory name and both `MODEL` values agree, and the simulator supports
+  that model;
+- every architecture has a matching activation list and a scalar output;
+- the GPU batch divides one training file exactly, while CPU and GPU batch
+  sizes agree;
+- `SHUFFLE` is off for the file-advancing loader; and
+- `LABELS_LOWER_BOUND` remains a quoted string.
+
+Run `uv run pytest tests/test_production_configs.py -q` after adding or changing
+a versioned pair. These checks protect contextual reproducibility; the upstream
+simulator and trainer documentation still own their complete schemas. Start a
+new scientific configuration from `examples/`, not from a production record,
+unless reproducing that exact run.
 
 ## Data-generation YAML
 
