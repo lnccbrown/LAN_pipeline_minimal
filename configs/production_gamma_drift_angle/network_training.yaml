@@ -1,0 +1,57 @@
+# gamma_drift_angle production LAN training.
+#
+# Two candidates, not the four-way grid gamma_drift ran:
+#   --network-id 0: [128, 128, 128, 128]   the gamma_drift winner
+#   --network-id 1: [128, 128, 128, 128, 128]
+#
+# The grid has already answered the width question. Across gamma_drift's four
+# arms, depth moved val_loss and width did not: [100]x4 and [128]x4 finished
+# 0.007972 vs 0.007966 — 0.08% apart, under the ~0.5% run-to-run noise floor —
+# while both beat their 3-layer counterparts. Re-running the width axis on a
+# model that differs by one parameter would buy a third measurement of
+# something already measured twice.
+#
+# So the one contrast worth paying for is the axis that did move, one step
+# further, on a harder model: does an 8th parameter make a 5th layer earn its
+# keep? If it does, that is the signal to escalate depth for the rest of the
+# conflict batch. If it does not, [128] x 4 is the settled standard for this
+# class and later models need a single arm.
+#
+# 8 params -> input dim 10 (8 + rt + choice), inferred from the data at runtime.
+# Validation and the recovery sweep decide which candidate ships; on
+# gamma_drift the gates could not separate the arms at all and recovery was the
+# only discriminator, so budget for the sweep, not for more architectures.
+#
+# GPU_BATCH_SIZE must divide rows-per-file (N_PARAMETER_SETS x
+# N_SAMPLES_PER_PARAM = 10^7) exactly: 50000 -> 200 batches/file.
+
+NETWORK_TYPE: "lan"
+CPU_BATCH_SIZE: 50000       # equal to GPU so a CPU fallback is the same problem
+GPU_BATCH_SIZE: 50000
+GENERATOR_APPROACH: "lan"
+OPTIMIZER_: "adam"
+N_EPOCHS: 20
+TRAINING_DATA_FOLDER: ""    # overridden by the mandatory --training-data-folder
+MODEL: "gamma_drift_angle"
+# False deliberately, matching production_ddm_sdv and production_gamma_drift:
+# DatasetTorch advances files on batch index, so a shuffled index stream reads
+# rows from whichever file is loaded; rows are already bootstrap-resampled on
+# every file load.
+SHUFFLE: False
+LAYER_SIZES: [[128, 128, 128, 128, 1], [128, 128, 128, 128, 128, 1]]
+ACTIVATIONS: [['tanh', 'tanh', 'tanh', 'tanh'],
+              ['tanh', 'tanh', 'tanh', 'tanh', 'tanh']]
+WEIGHT_DECAY: 0.0
+TRAIN_VAL_SPLIT: 0.98
+N_TRAINING_FILES: 300
+# Must stay a quoted string: it is eval'd with numpy in scope, and a bare
+# numeric literal raises TypeError.
+LABELS_LOWER_BOUND: "np.log(1e-7)"
+LEARNING_RATE: 0.001
+LR_SCHEDULER: 'reduce_on_plateau'
+LR_SCHEDULER_PARAMS:
+  factor: 0.1
+  patience: 2
+  threshold: 0.001
+  min_lr: 0.00000001
+  verbose: True
