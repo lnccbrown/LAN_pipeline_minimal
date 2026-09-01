@@ -155,12 +155,77 @@ JOB_KIND_FALLBACKS = {
     },
 }
 
+
 # What `$UV run` actually executes per job kind. generate/jaxtrain/torchtrain
 # are console scripts installed by ssm-simulators/lanfactory; the recovery
 # worker is a repo script (bare sibling imports, so it cannot be a console
 # script) that additionally needs the `validate` dependency group — sync it on
 # the login node first (`uv sync --frozen --group validate`), compute nodes
 # frequently have no egress to install it themselves.
+def _validate_recover_identity(
+    model: str, design: str, arm: str | None, condition_param: str | None
+) -> None:
+    """Reject an identity the worker would reject, before anything is queued.
+
+    Imports live inside the function: `gen_sbatch` runs on a login node with
+    only the default dependency group, and `recovery_designs` pulls in the
+    simulator. Failing to import is not a reason to submit a typo, but it is
+    also not a reason to refuse a submission that would have worked, so an
+    unavailable check is skipped loudly rather than fatally.
+    """
+    import sys
+
+    sys.path.insert(0, str(PROJECT_ROOT / "validation"))
+    try:
+        import recover_parameters as rp
+        import recovery_designs as rd
+    except ImportError as e:  # noqa: BLE001 - see docstring
+        logging.getLogger("gen_sbatch").warning(
+            f"cannot validate --design/--arm before submitting: {e}"
+        )
+        return
+
+    if design not in rd.DESIGNS:
+        raise typer.BadParameter(
+            f"unknown design {design!r}. Available rungs: {', '.join(rd.DESIGNS)}",
+            param_hint="--design",
+        )
+    if arm is not None and not re.fullmatch(f"[{rp.ARM_CHARS}]+", arm):
+        raise typer.BadParameter(
+            f"{arm!r} is not a usable arm name; it may contain only letters, "
+            "digits, and '.', '_', '-', '@'.",
+            param_hint="--arm",
+        )
+    # Checked against ssms rather than HSSM: that needs no inference stack, so
+    # these run on a login node carrying only the default dependency group --
+    # exactly where the two checks above may already be skipping.
+    from ssms.config import model_config
+
+    config = model_config.get(model)
+    if config is None:
+        # Unconditional, not nested under the condition_param check below: an
+        # unknown model is just as fatal without one, and every worker would
+        # raise in `load_model` after the array had already been queued.
+        raise typer.BadParameter(
+            f"{model!r} is not a model ssms can simulate, so no fit in this "
+            "array could run.",
+            param_hint="--model",
+        )
+    if condition_param is not None:
+        # The worst of the three to get wrong. A bad condition parameter makes
+        # `load_model` raise, so every task in the array dies AND dies before it
+        # can name its design -- and a shard with no design_id is adopted into
+        # whichever variant of that rung did survive. The mistyped variant then
+        # disappears from the report entirely rather than failing in it.
+        params = config.get("params")
+        if params and condition_param not in params:
+            raise typer.BadParameter(
+                f"{condition_param!r} is not a parameter of {model}. "
+                f"Have: {', '.join(params)}",
+                param_hint="--condition-param",
+            )
+
+
 RUNNABLES = {"recover": "--group validate python validation/recover_parameters.py"}
 
 DEFAULT_MODULES = ["python", "gcc"]
@@ -1156,6 +1221,14 @@ def recover(
     `uv sync --frozen --group validate` on the login node before submitting;
     compute nodes frequently have no egress to install it themselves.
     """
+    # Validated here rather than left to the worker. A rung or arm the worker
+    # rejects fails inside every array task, and a task that dies before
+    # writing anything leaves no shard -- so the rung simply never appears in
+    # the report, and a report cannot fail on a cell it has never heard of.
+    # The cost of finding out late is a queued array; the cost of not finding
+    # out is a sweep that passes with a rung missing.
+    _validate_recover_identity(model, design, arm, condition_param)
+
     recover_args = {
         "model": model,
         "design": design,

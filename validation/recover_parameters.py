@@ -44,6 +44,7 @@ from pathlib import Path
 import typer
 
 sys.path.insert(0, str(Path(__file__).parent))
+import aggregate_recovery as agg  # noqa: E402
 import recovery_designs as rd  # noqa: E402
 
 logger = logging.getLogger("recover_parameters")
@@ -310,6 +311,14 @@ def run_one(
     )
 
 
+# The characters an arm may contain. An arm is joined into the aggregator's
+# cell keys AND interpolated into the shard filename, so it has to survive both
+# a separator-delimited round trip and a path join. `_default_arm` sanitises TO
+# this alphabet and an explicit --arm is checked AGAINST it, so there is one
+# notion of a usable arm rather than two that can drift apart.
+ARM_CHARS = "A-Za-z0-9._@-"
+
+
 def _default_arm(likelihood: str, onnx_path: Path | None) -> str:
     """Pooling key for one set of fits.
 
@@ -320,7 +329,7 @@ def _default_arm(likelihood: str, onnx_path: Path | None) -> str:
     """
     if onnx_path is None:
         return likelihood
-    stem = re.sub(r"[^A-Za-z0-9._-]", "_", Path(onnx_path).stem)
+    stem = re.sub(f"[^{ARM_CHARS}]", "_", Path(onnx_path).stem)
     return f"{likelihood}@{stem}"
 
 
@@ -369,7 +378,32 @@ def main(
     # alongside every network, so two arms wrote the same filename and the
     # second silently replaced the first. The arm is the identity now, and it
     # reaches both the shard body and its name.
-    arm = arm or _default_arm(likelihood, onnx_path)
+    # `is None`, not `or`: typer distinguishes an omitted --arm from an
+    # explicitly empty one, and `or` would collapse them -- silently substituting
+    # the derived name for a value the user typed and got wrong.
+    if arm is None:
+        arm = _default_arm(likelihood, onnx_path)
+    # Reject here, not in aggregation. The arm is the one identity field a user
+    # types freely, and it reaches two places that both constrain it: the
+    # aggregator's cell keys, where the separator would break the round trip,
+    # and the shard filename, where a path SEPARATOR writes the shard somewhere
+    # `load_shards` does not look -- it globs `recovery_*.json` one level deep,
+    # so a nested file is invisible to it. Measured: `net/a` nests, and
+    # `../escape` both nests and loses the `recovery_` prefix because the `..`
+    # cancels the component before it. A `..` with no separator does neither.
+    # The failure is silent, so the sweep would finish having quietly lost
+    # those fits.
+    #
+    # Only an explicit --arm can reach this; `_default_arm` sanitises the ONNX
+    # stem to the same alphabet it is checked against here.
+    if not re.fullmatch(f"[{ARM_CHARS}]+", arm):
+        raise typer.BadParameter(
+            f"{arm!r} is not a usable arm name. An arm is joined into the "
+            f"recovery cell identity (separator {agg.KEY_SEPARATOR!r}) and into "
+            "the shard filename, so it may contain only letters, digits, and "
+            "'.', '_', '-', '@'. Pass a different --arm.",
+            param_hint="--arm",
+        )
 
     try:
         record = run_one(
@@ -397,6 +431,23 @@ def main(
             "arm": arm,
             "error": f"{type(e).__name__}: {e}",
         }
+        # The aggregator keys cells on design_id, not design, because
+        # `L1_n500@v` and `L1_n500@c` are different experiments. A dead shard
+        # that carries only `design` therefore lands in a bucket of its own
+        # with no cells behind it, and the run fails on "nothing to judge"
+        # while eighteen healthy fits sit in the neighbouring bucket.
+        # Best-effort and last: whatever went wrong above is the error worth
+        # reporting, and a failure to name the design must not replace it.
+        try:
+            record["design_id"] = rd.design_id(
+                rd.load_model(model, condition_param=condition_param),
+                rd.DESIGNS[design],
+            )
+        except Exception as naming_error:  # noqa: BLE001 - see above
+            logger.warning(
+                f"could not name the design for the failed shard: "
+                f"{type(naming_error).__name__}: {naming_error}"
+            )
         logger.error(f"shard failed: {record['error']}")
 
     out_dir.mkdir(parents=True, exist_ok=True)

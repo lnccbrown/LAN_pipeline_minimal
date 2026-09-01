@@ -155,7 +155,80 @@ def load_shards(shard_dir: Path) -> list[dict]:
     return shards
 
 
-def _key(shard: dict) -> tuple[str, str, str]:
+# A cell identity is several fields joined into one string, because the report
+# is JSON -- whose keys must be strings -- and because a human opening it should
+# be able to read which cell a number belongs to. That makes the separator part
+# of the contract: a field containing it would round-trip into the wrong number
+# of pieces, and every consumer below unpacks a fixed arity.
+#
+# Enforced where keys are built rather than trusted. Model, design and parameter
+# names are identifiers, but `--arm` is a free-form CLI string, and the failure
+# would otherwise surface only in aggregation -- after a whole sweep has run,
+# which is exactly when it is most expensive to discover.
+KEY_SEPARATOR = "|"
+
+
+def _join_key(*fields: str) -> str:
+    """Build a cell identity, refusing fields that would not survive the split."""
+    for field in fields:
+        if KEY_SEPARATOR in str(field):
+            raise ValueError(
+                f"{field!r} contains {KEY_SEPARATOR!r}, which separates the fields "
+                f"of a cell identity, so this cell could not be read back. Rename "
+                f"it -- for an arm, pass a different --arm to recover_parameters."
+            )
+    return KEY_SEPARATOR.join(str(f) for f in fields)
+
+
+def _split_key(key: str, arity: int = 4) -> tuple[str, ...]:
+    """Read a cell identity back. The one place a key is taken apart."""
+    fields = tuple(key.split(KEY_SEPARATOR))
+    if len(fields) != arity:
+        raise ValueError(f"cell key {key!r} has {len(fields)} fields, expected {arity}")
+    return fields
+
+
+def _model_of(shard: dict) -> str:
+    """The model a shard belongs to.
+
+    Defaulted, not bare: shards written before the field existed all came from
+    a single ddm_sdv network. Factored out because `_key`, `_design_of` and
+    `adopted_design_ids` must agree on it -- when only `_key` defaulted, a
+    legacy dead shard keyed as "ddm_sdv" while its adoption entry was filed
+    under None, the lookup missed, and the split bucket this module exists to
+    prevent came straight back.
+    """
+    return shard.get("model", "ddm_sdv")
+
+
+def _arm_of(shard: dict) -> str:
+    """The arm a shard belongs to. Same drift hazard, same remedy."""
+    return shard.get("arm") or shard.get("likelihood", "?")
+
+
+def adopted_design_ids(shards: list[dict]) -> dict[tuple[str, str, str], str]:
+    """(model, arm, rung) -> design_id, learned from the shards that carry one.
+
+    Workers before the fix wrote no `design_id` on the failure path, so a dead
+    shard from an older sweep keys into a bucket of its own: no cells behind
+    it, and the run fails on "nothing to judge" while its healthy siblings sit
+    in the neighbouring bucket. Those siblings know which variant of the rung
+    was being run, so adopt it from them.
+
+    A rung with TWO variants in one sweep is left alone. Nothing in a bare
+    shard says which of them died, and guessing would file the error against an
+    experiment that may not have had it.
+    """
+    seen: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    for shard in shards:
+        design = shard.get("design_id")
+        if not design:
+            continue
+        seen[(_model_of(shard), _arm_of(shard), _rung_of(design))].add(design)
+    return {key: next(iter(v)) for key, v in seen.items() if len(v) == 1}
+
+
+def _key(shard: dict, adopted: dict | None = None) -> tuple[str, str, str]:
     """(model, arm, design) -- the cell prefix a shard belongs to.
 
     `model` is part of the key so one shard directory can hold a whole
@@ -166,14 +239,22 @@ def _key(shard: dict) -> tuple[str, str, str]:
     all came from a single ddm_sdv network.
     """
     return (
-        shard.get("model", "ddm_sdv"),
-        shard.get("arm") or shard.get("likelihood", "?"),
+        _model_of(shard),
+        _arm_of(shard),
         # The design identity, which carries WHICH parameter varies across
         # conditions: `L1_n500@v` and `L1_n500@sv` are different designs and
         # pooling their shared-parameter cells would average two different
         # experiments into one coverage number.
-        shard.get("design_id") or shard.get("design", "?"),
+        _design_of(shard, adopted or {}),
     )
+
+
+def _design_of(shard: dict, adopted: dict) -> str:
+    design = shard.get("design_id")
+    if design:
+        return design
+    rung = shard.get("design", "?")
+    return adopted.get((_model_of(shard), _arm_of(shard), rung), rung)
 
 
 def _is_reference(arm: str) -> bool:
@@ -200,9 +281,10 @@ def summarise(shards: list[dict]) -> dict:
     degenerate: dict[tuple[str, str, str], int] = defaultdict(int)
     attempted: dict[tuple[str, str, str], int] = defaultdict(int)
     likelihood_of: dict[tuple[str, str, str], str] = {}
+    adopted = adopted_design_ids(shards)
 
     for shard in shards:
-        key2 = _key(shard)
+        key2 = _key(shard, adopted)
         attempted[key2] += 1
         likelihood_of[key2] = shard.get("likelihood", "?")
         if "error" in shard or "parameters" not in shard:
@@ -210,7 +292,10 @@ def summarise(shards: list[dict]) -> dict:
                 {
                     "model": key2[0],
                     "arm": key2[1],
-                    "design": shard.get("design"),
+                    # The same token `attempted` is keyed on, so `_errors_for`
+                    # can match them; `shard["design"]` is the bare rung and
+                    # would not.
+                    "design": key2[2],
                     "likelihood": shard.get("likelihood"),
                     "dataset_index": shard.get("dataset_index"),
                     "error": shard.get("error", "shard has no parameters block"),
@@ -269,16 +354,18 @@ def summarise(shards: list[dict]) -> dict:
             entry["truth_recovered_corr"] = _corr(
                 [r["truth"] for r in usable], [r["mean"] for r in usable]
             )
-        summary[f"{model}|{arm}|{design}|{label}"] = entry
+        summary[_join_key(model, arm, design, label)] = entry
 
     return {
         "cells": summary,
         "errors": errors,
         "n_gated_tests": n_tests,
-        "excluded_for_divergences": {"|".join(k): v for k, v in diverged.items()},
-        "excluded_for_degenerate_data": {"|".join(k): v for k, v in degenerate.items()},
-        "attempted": {"|".join(k): v for k, v in attempted.items()},
-        "likelihood_by_arm": {"|".join(k): v for k, v in likelihood_of.items()},
+        "excluded_for_divergences": {_join_key(*k): v for k, v in diverged.items()},
+        "excluded_for_degenerate_data": {
+            _join_key(*k): v for k, v in degenerate.items()
+        },
+        "attempted": {_join_key(*k): v for k, v in attempted.items()},
+        "likelihood_by_arm": {_join_key(*k): v for k, v in likelihood_of.items()},
     }
 
 
@@ -329,7 +416,7 @@ def _reference_index(cells: dict) -> dict[tuple[str, str, str], dict]:
     """
     index = {}
     for key, entry in cells.items():
-        model, arm, design, label = key.split("|")
+        model, arm, design, label = _split_key(key)
         if _is_reference(arm):
             index[(model, design, label)] = entry
     return index
@@ -354,7 +441,7 @@ def _rung_recovers(cells: dict, model: str, arm: str, rung: str, label: str) -> 
     base = _base_param(label)
     by_variant: dict[str, list[dict]] = defaultdict(list)
     for key, entry in cells.items():
-        k_model, k_arm, k_design, k_label = key.split("|")
+        k_model, k_arm, k_design, k_label = _split_key(key)
         if (k_model, k_arm) == (model, arm) and _rung_of(k_design) == rung:
             if _base_param(k_label) == base:
                 by_variant[k_design].append(entry)
@@ -406,10 +493,10 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
 
     judged = 0
     for key, entry in cells.items():
-        model, arm, design, label = key.split("|")
+        model, arm, design, label = _split_key(key)
         if _is_reference(arm):
             continue
-        where = key.replace("|", "/")
+        where = key.replace(KEY_SEPARATOR, "/")
         if not entry["eligible"]:
             failures.append(
                 f"{where}: only {entry['n_converged']} converged fits, below the "
@@ -424,7 +511,13 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
             failures.extend(_explain_coverage(cells, key, entry, reference, low))
 
         contraction = entry["median_contraction"]
-        reference_contraction = (reference or {}).get("median_contraction")
+        # `reference or {}` alone is not enough: the coverage and bias gates
+        # both refuse an ineligible reference, and this one must too. A cell the
+        # module has already called inconclusive cannot be the standard another
+        # arm is measured against -- doing so charges the network for a
+        # shortfall sourced from a reference nobody trusts.
+        usable_reference = reference if (reference or {}).get("eligible") else {}
+        reference_contraction = usable_reference.get("median_contraction")
         vs_reference = (
             contraction / reference_contraction
             if contraction is not None and reference_contraction
@@ -460,11 +553,12 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
     # An arm that was attempted but yielded no eligible cell produced no
     # evidence, and no evidence is not evidence of calibration.
     for arm_key, n_attempted in summary["attempted"].items():
-        model, arm, design = arm_key.split("|")
+        model, arm, design = _split_key(arm_key, arity=3)
         if _is_reference(arm):
             continue
         if any(
-            key.startswith(f"{model}|{arm}|{design}|") and cells[key]["eligible"]
+            key.startswith(_join_key(model, arm, design) + KEY_SEPARATOR)
+            and cells[key]["eligible"]
             for key in cells
         ):
             continue
@@ -482,8 +576,8 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
 
 def _explain_coverage(cells, key, entry, reference, low) -> list[str]:
     """Decide whether a coverage shortfall is the network's fault, and say why."""
-    model, arm, design, label = key.split("|")
-    where = key.replace("|", "/")
+    model, arm, design, label = _split_key(key)
+    where = key.replace(KEY_SEPARATOR, "/")
     if reference is not None and reference["coverage"] is not None:
         if not reference["eligible"]:
             # Do NOT fall through to the ladder here. The old code did, and its
@@ -521,6 +615,13 @@ def main(
     out: Path | None = typer.Option(
         None, help="[default: <shard-dir>/recovery_report.json]"
     ),
+    expect_fits: int = typer.Option(
+        0,
+        help="How many shards this sweep was supposed to produce. The verdict "
+        "reads what is on disk, so a whole arm that never ran is not a "
+        "failure to it -- it is silence, and silence passes. Pass the number "
+        "you submitted and a sweep that lost fits wholesale fails instead.",
+    ),
     log_level: str = typer.Option("WARNING"),
 ):
     """Aggregate recovery shards into a report and a verdict."""
@@ -531,6 +632,19 @@ def main(
 
     summary = summarise(shards)
     passed, failures = verdict(summary)
+    # Checked here rather than inside `verdict`, which is a pure function of the
+    # shards it is handed and cannot know what was submitted. An arm whose jobs
+    # all died leaves no shard, no cell and no `attempted` entry, so nothing in
+    # the report is wrong -- the arm simply is not in it, and a driver gating on
+    # the exit code would ship a network that was never fitted.
+    if expect_fits and len(shards) < expect_fits:
+        passed = False
+        failures = [
+            f"{len(shards)} shards on disk but {expect_fits} were expected: "
+            f"{expect_fits - len(shards)} fits left no shard at all, so whatever "
+            "they would have said is missing from this verdict rather than "
+            "failing it"
+        ] + failures
     report = {
         "schema_version": 2,
         "n_shards": len(shards),
