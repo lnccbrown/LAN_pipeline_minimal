@@ -38,6 +38,7 @@ that an artifact shipped. The current pairs are:
 
 | Directory | Model |
 | --- | --- |
+| `configs/production_angle_extended/` | `angle_extended` |
 | `configs/production_ddm_sdv/` | `ddm_sdv` |
 | `configs/production_gamma_drift/` | `gamma_drift` |
 | `configs/production_gamma_drift_angle/` | `gamma_drift_angle` |

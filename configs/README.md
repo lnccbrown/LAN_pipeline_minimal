@@ -15,6 +15,7 @@ configs/
 ├── production_ddm_sdv/
 ├── production_gamma_drift/
 ├── production_gamma_drift_angle/
+├── production_angle_extended/
 └── cluster/
     ├── oscar.yaml        # committed lab/cluster inventory and defaults
     └── oscar.local.yaml  # generated personal overlay; gitignored
