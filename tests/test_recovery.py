@@ -79,6 +79,24 @@ RACE4 = rd.ModelUnderTest(
 
 MODELS = [DDM_SDV, ANGLE, RACE4]
 
+# For the aggregator, a shard's model, arm and parameter names are opaque
+# labels -- `aggregate_recovery` says so in its own docstring and
+# TestNamesAreOpaque asserts it. So its tests parametrise over the structure it
+# actually PARSES rather than over model names, which prove nothing:
+#
+#   * whether the design carries an `@variant` suffix, since `_rung_of` splits
+#     on it and `design_id != design` only at multi-condition rungs;
+#   * whether the shard carries `model`/`arm` at all, since both are defaulted.
+#
+# Both bugs this file has caught in the aggregator lived on exactly that axis.
+# Names are varied too -- it is free, and it keeps the opacity self-evident to
+# the next reader.
+SHAPES = [
+    pytest.param("ddm_sdv", "L0_n500", "v", id="bare-rung"),
+    pytest.param("race_no_bias_angle_4", "L1_n250@v0", "v0", id="variant-rung"),
+    pytest.param("conflict_stimflex", "L1_n1000@tcoh", "vt", id="variant-rung-long"),
+]
+
 
 class TestModelUnderTest:
     @pytest.mark.parametrize("model", MODELS)
@@ -817,6 +835,37 @@ class TestRedrawKeepsTheLadderPaired:
                 assert t0[name] == t1[name], (name, seed)
 
 
+class TestNamesAreOpaqueToTheAggregator:
+    """`aggregate_recovery` claims to work "for any model". This checks it.
+
+    The claim is that a shard's model, arm and parameter names are labels the
+    module carries but never reads. That is worth one direct assertion, because
+    it is what licenses every other aggregator test to use whatever names are
+    convenient -- and it is a stronger statement than any amount of
+    parametrising over model names, which only ever samples the space.
+    """
+
+    def test_renaming_everything_changes_nothing(self):
+        base = [
+            shard("approx_differentiable", design="L1_n500@v", index=i)
+            for i in range(20)
+        ]
+        renamed = []
+        for original in base:
+            copy = dict(original)
+            copy["model"] = "conflict_stimflex"
+            copy["design"], copy["design_id"] = "L1_n1000", "L1_n1000@tcoh"
+            copy["parameters"] = {"vt": next(iter(original["parameters"].values()))}
+            renamed.append(copy)
+        assert agg.verdict(agg.summarise(base)) == agg.verdict(agg.summarise(renamed))
+
+    def test_what_is_not_opaque_is_the_structure(self):
+        # Two things inside those strings ARE parsed, which is why the shared
+        # SHAPES fixture spans them rather than spanning model names.
+        assert agg._rung_of("L1_n500@v") == "L1_n500"
+        assert agg._rung_of("L0_n500") == "L0_n500"
+
+
 class TestDeadShardsKeepTheirDesignIdentity:
     """A dead fit must land in the same bucket as its healthy siblings.
 
@@ -826,78 +875,126 @@ class TestDeadShardsKeepTheirDesignIdentity:
     only `design`, so a dead shard at any multi-condition rung opened a bucket
     of its own with no cells behind it -- and `verdict` fails an arm that was
     attempted but yielded nothing to judge. Two OOM-killed fits out of twenty
-    were enough to fail a sweep whose other eighteen were fine, and only at L1:
-    the identical sweep at L0 passed, because there `design_id == design`.
+    were enough to fail a sweep whose other eighteen were fine, and only at a
+    variant rung: the identical sweep at a bare rung passed, because there
+    `design_id == design`.
     """
 
-    @staticmethod
-    def _dead(design, index, *, with_design_id=False):
+    ARM = "approx_differentiable"
+
+    @classmethod
+    def _dead(cls, model, design, index, *, with_design_id=False, with_model=True):
         """Exactly what the worker's `except` branch writes."""
         record = {
             "schema_version": 2,
-            "model": "ddm_sdv",
             "design": design.split("@", 1)[0],
             "dataset_index": index,
-            "likelihood": "approx_differentiable",
-            "arm": "approx_differentiable",
+            "likelihood": cls.ARM,
+            "arm": cls.ARM,
             "error": "RuntimeError: boom",
         }
+        if with_model:
+            record["model"] = model
         if with_design_id:
             record["design_id"] = design
         return record
 
-    @pytest.mark.parametrize("design", ["L0_n500", "L1_n500@v", "L1_n1000@sv"])
+    @classmethod
+    def _healthy(cls, model, design, label, n):
+        return [
+            shard(cls.ARM, model=model, design=design, label=label, index=i)
+            for i in range(n)
+        ]
+
+    @pytest.mark.parametrize(("model", "design", "label"), SHAPES)
     @pytest.mark.parametrize("with_design_id", [True, False])
-    def test_a_few_dead_fits_do_not_fail_a_healthy_sweep(self, design, with_design_id):
+    def test_a_few_dead_fits_do_not_fail_a_healthy_sweep(
+        self, model, design, label, with_design_id
+    ):
         # Both shard shapes: what the worker writes now, and what the sweeps
         # already on disk contain.
-        shards = [
-            shard("approx_differentiable", design=design, index=i) for i in range(18)
-        ]
+        shards = self._healthy(model, design, label, 18)
         shards += [
-            self._dead(design, i, with_design_id=with_design_id) for i in (18, 19)
+            self._dead(model, design, i, with_design_id=with_design_id)
+            for i in (18, 19)
         ]
         summary = agg.summarise(shards)
-        assert list(summary["attempted"]) == [
-            f"ddm_sdv|approx_differentiable|{design}"
-        ], "the dead shards opened a bucket of their own"
+        assert list(summary["attempted"]) == [f"{model}|{self.ARM}|{design}"], (
+            "the dead shards opened a bucket of their own"
+        )
         passed, failures = agg.verdict(summary)
         assert passed, failures
 
-    def test_the_error_count_reaches_the_cell_it_belongs_to(self):
+    @pytest.mark.parametrize(("model", "design", "label"), SHAPES)
+    def test_the_error_count_reaches_the_cell_it_belongs_to(self, model, design, label):
         # `_errors_for` matches on the design token, so an error filed under
         # the bare rung is invisible to the cell that actually lost the fits.
-        shards = [
-            shard("approx_differentiable", design="L1_n500@v", index=i)
-            for i in range(18)
-        ]
-        shards += [self._dead("L1_n500@v", i) for i in (18, 19)]
+        shards = self._healthy(model, design, label, 18)
+        shards += [self._dead(model, design, i) for i in (18, 19)]
         summary = agg.summarise(shards)
-        assert (
-            agg._errors_for(summary, "ddm_sdv", "approx_differentiable", "L1_n500@v")
-            == 2
-        )
+        assert agg._errors_for(summary, model, self.ARM, design) == 2
 
-    def test_a_sweep_where_everything_died_still_fails(self):
+    @pytest.mark.parametrize(("model", "design", "label"), SHAPES)
+    def test_a_shard_written_before_the_model_field_existed_still_adopts(
+        self, model, design, label
+    ):
+        # `_key` defaults a missing `model`, because shards written before the
+        # field existed all came from one network. Adoption has to default it
+        # the same way: when only `_key` did, the legacy shard keyed as the
+        # default while its adoption entry was filed under None, the lookup
+        # missed, and the split bucket came straight back. So the healthy
+        # siblings here carry the default name -- that is the only case in
+        # which a legacy shard can be attributed at all.
+        legacy_name = agg._model_of({})
+        shards = self._healthy(legacy_name, design, label, 18)
+        shards.append(self._dead(model, design, 18, with_model=False))
+        summary = agg.summarise(shards)
+        assert list(summary["attempted"]) == [f"{legacy_name}|{self.ARM}|{design}"]
+        passed, failures = agg.verdict(summary)
+        assert passed, failures
+
+    def test_the_identity_helpers_agree_with_the_cell_key(self):
+        # The structural form of the same claim: whatever `_key` uses to
+        # identify a shard is what adoption must file it under.
+        bare = {"design": "L1_n500", "likelihood": self.ARM}
+        model, arm, _ = agg._key(bare)
+        assert (model, arm) == (agg._model_of(bare), agg._arm_of(bare))
+
+    @pytest.mark.parametrize(("model", "design", "label"), SHAPES)
+    def test_a_sweep_where_everything_died_still_fails(self, model, design, label):
         # The guard against over-correcting: with no healthy sibling there is
         # nothing to adopt from, and nothing to judge either.
-        shards = [self._dead("L1_n500@v", i) for i in range(20)]
+        shards = [self._dead(model, design, i) for i in range(20)]
         passed, failures = agg.verdict(agg.summarise(shards))
         assert not passed
         assert "none usable" in failures[0]
 
-    def test_two_variants_of_one_rung_are_left_alone(self):
-        # `L1_n500@v` and `L1_n500@sv` in the same sweep: nothing in a bare
-        # shard says which of them died, and filing the error against the wrong
-        # experiment is worse than leaving it unattributed.
+    @pytest.mark.parametrize(("model", "design", "label"), SHAPES)
+    def test_two_variants_of_one_rung_are_left_alone(self, model, design, label):
+        # Two variants of one rung in the same sweep: nothing in a bare shard
+        # says which of them died, and filing the error against the wrong
+        # experiment is worse than leaving it unattributed. A bare rung has no
+        # variants, so it is the one shape where this cannot arise.
+        rung = agg._rung_of(design)
+        if rung == design:
+            pytest.skip("a bare rung has no variants to be ambiguous between")
         shards = [
-            shard("approx_differentiable", design=d, index=i)
-            for d in ("L1_n500@v", "L1_n500@sv")
-            for i in range(18)
+            *self._healthy(model, design, label, 18),
+            *self._healthy(model, f"{rung}@other", label, 18),
         ]
-        shards.append(self._dead("L1_n500", 18))
+        shards.append(self._dead(model, rung, 18))
         summary = agg.summarise(shards)
-        assert "ddm_sdv|approx_differentiable|L1_n500" in summary["attempted"]
+        assert f"{model}|{self.ARM}|{rung}" in summary["attempted"]
+
+    def test_adoption_does_not_cross_arms_or_models(self):
+        adopted = agg.adopted_design_ids(
+            [
+                shard("approx_differentiable", design="L1_n500@v", index=0),
+                shard("analytical", design="L1_n500@sv", index=0),
+            ]
+        )
+        assert adopted[("ddm_sdv", "approx_differentiable", "L1_n500")] == "L1_n500@v"
+        assert adopted[("ddm_sdv", "analytical", "L1_n500")] == "L1_n500@sv"
 
     NAMING_CASES = [
         ("L0_n500", None, "L0_n500"),
@@ -986,42 +1083,6 @@ class TestDeadShardsKeepTheirDesignIdentity:
         _, record = self._invoke_failing_worker(tmp_path, monkeypatch, "L1_n500", None)
         assert record["error"].startswith("RuntimeError: boom")
         assert "design_id" not in record
-
-    def test_a_shard_written_before_the_model_field_existed_still_adopts(self):
-        # `_key` defaults a missing `model` to ddm_sdv, because shards written
-        # before the field existed all came from one network. Adoption has to
-        # default it the same way: when only `_key` did, the legacy shard keyed
-        # as "ddm_sdv" while its adoption entry was filed under None, the lookup
-        # missed, and the split bucket came straight back. Reproduced at 18
-        # healthy plus 2 legacy-dead before the defaults were unified.
-        legacy = self._dead("L1_n500@v", 18)
-        del legacy["model"]
-        shards = [
-            shard("approx_differentiable", design="L1_n500@v", index=i)
-            for i in range(18)
-        ]
-        shards.append(legacy)
-        summary = agg.summarise(shards)
-        assert list(summary["attempted"]) == ["ddm_sdv|approx_differentiable|L1_n500@v"]
-        passed, failures = agg.verdict(summary)
-        assert passed, failures
-
-    def test_the_identity_helpers_agree_with_the_cell_key(self):
-        # The structural form of the same claim: whatever `_key` uses to
-        # identify a shard is what adoption must file it under.
-        bare = {"design": "L1_n500", "likelihood": "approx_differentiable"}
-        model, arm, _ = agg._key(bare)
-        assert (model, arm) == (agg._model_of(bare), agg._arm_of(bare))
-
-    def test_adoption_does_not_cross_arms_or_models(self):
-        adopted = agg.adopted_design_ids(
-            [
-                shard("approx_differentiable", design="L1_n500@v", index=0),
-                shard("analytical", design="L1_n500@sv", index=0),
-            ]
-        )
-        assert adopted[("ddm_sdv", "approx_differentiable", "L1_n500")] == "L1_n500@v"
-        assert adopted[("ddm_sdv", "analytical", "L1_n500")] == "L1_n500@sv"
 
 
 class TestSummarise:
@@ -1171,7 +1232,15 @@ def shard(
     min_choice_share=0.5,
     truth=1.0,
 ):
-    """One synthetic shard with a single parameter."""
+    """One synthetic shard with a single parameter.
+
+    The `model`, `design` and `label` defaults are arbitrary labels, not a
+    claim that anything here is DDM-specific: `aggregate_recovery` never reads
+    them, which TestNamesAreOpaqueToTheAggregator asserts directly. Tests whose
+    subject IS the structure inside those strings -- a design's `@variant`
+    suffix, a ladder rung's position -- pass their own values or parametrise
+    over SHAPES rather than relying on these.
+    """
     return {
         "schema_version": 2,
         "model": model,
