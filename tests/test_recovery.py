@@ -978,7 +978,7 @@ class TestDeadShardsKeepTheirDesignIdentity:
             for i in (18, 19)
         ]
         summary = agg.summarise(shards)
-        assert list(summary["attempted"]) == [f"{model}|{self.ARM}|{design}"], (
+        assert list(summary["attempted"]) == [arm_key(self.ARM)], (
             "the dead shards opened a bucket of their own"
         )
         passed, failures = agg.verdict(summary)
@@ -1006,7 +1006,7 @@ class TestDeadShardsKeepTheirDesignIdentity:
         shards = self._healthy(legacy_name, design, label, 18)
         shards.append(self._dead(model, design, 18, with_model=False))
         summary = agg.summarise(shards)
-        assert list(summary["attempted"]) == [f"{legacy_name}|{self.ARM}|{design}"]
+        assert list(summary["attempted"]) == [arm_key(self.ARM, model=legacy_name)]
         passed, failures = agg.verdict(summary)
         assert passed, failures
 
@@ -1041,7 +1041,7 @@ class TestDeadShardsKeepTheirDesignIdentity:
         ]
         shards.append(self._dead(model, rung, 18))
         summary = agg.summarise(shards)
-        assert f"{model}|{self.ARM}|{rung}" in summary["attempted"]
+        assert arm_key(self.ARM, design=rung) in summary["attempted"]
 
     def test_adoption_does_not_cross_arms_or_models(self):
         adopted = agg.adopted_design_ids(

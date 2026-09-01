@@ -374,10 +374,14 @@ def main(
     # Reject here, not in aggregation. The arm is the one identity field a user
     # types freely, and it is joined into the aggregator's cell keys; a name
     # carrying the separator would only fail once the whole sweep had run.
+    # Only an explicit --arm can reach this: `_default_arm` already replaces
+    # anything outside [A-Za-z0-9._-] when it derives a name from an ONNX stem.
     if agg.KEY_SEPARATOR in arm:
         raise typer.BadParameter(
-            f"arm {arm!r} contains {agg.KEY_SEPARATOR!r}, which separates the "
-            "fields of a recovery cell identity. Choose another name."
+            f"{arm!r} contains {agg.KEY_SEPARATOR!r}, which separates the fields "
+            "of a recovery cell identity, so the shard could not be read back. "
+            "Pass a different --arm.",
+            param_hint="--arm",
         )
 
     try:
