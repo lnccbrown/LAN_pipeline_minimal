@@ -817,6 +817,177 @@ class TestRedrawKeepsTheLadderPaired:
                 assert t0[name] == t1[name], (name, seed)
 
 
+class TestDeadShardsKeepTheirDesignIdentity:
+    """A dead fit must land in the same bucket as its healthy siblings.
+
+    Cells are keyed on `design_id`, not `design`, because `L1_n500@v` and
+    `L1_n500@c` are different experiments and pooling them would average two
+    ladders into one coverage number. The worker's failure path used to record
+    only `design`, so a dead shard at any multi-condition rung opened a bucket
+    of its own with no cells behind it -- and `verdict` fails an arm that was
+    attempted but yielded nothing to judge. Two OOM-killed fits out of twenty
+    were enough to fail a sweep whose other eighteen were fine, and only at L1:
+    the identical sweep at L0 passed, because there `design_id == design`.
+    """
+
+    @staticmethod
+    def _dead(design, index, *, with_design_id=False):
+        """Exactly what the worker's `except` branch writes."""
+        record = {
+            "schema_version": 2,
+            "model": "ddm_sdv",
+            "design": design.split("@", 1)[0],
+            "dataset_index": index,
+            "likelihood": "approx_differentiable",
+            "arm": "approx_differentiable",
+            "error": "RuntimeError: boom",
+        }
+        if with_design_id:
+            record["design_id"] = design
+        return record
+
+    @pytest.mark.parametrize("design", ["L0_n500", "L1_n500@v", "L1_n1000@sv"])
+    @pytest.mark.parametrize("with_design_id", [True, False])
+    def test_a_few_dead_fits_do_not_fail_a_healthy_sweep(self, design, with_design_id):
+        # Both shard shapes: what the worker writes now, and what the sweeps
+        # already on disk contain.
+        shards = [
+            shard("approx_differentiable", design=design, index=i) for i in range(18)
+        ]
+        shards += [
+            self._dead(design, i, with_design_id=with_design_id) for i in (18, 19)
+        ]
+        summary = agg.summarise(shards)
+        assert list(summary["attempted"]) == [
+            f"ddm_sdv|approx_differentiable|{design}"
+        ], "the dead shards opened a bucket of their own"
+        passed, failures = agg.verdict(summary)
+        assert passed, failures
+
+    def test_the_error_count_reaches_the_cell_it_belongs_to(self):
+        # `_errors_for` matches on the design token, so an error filed under
+        # the bare rung is invisible to the cell that actually lost the fits.
+        shards = [
+            shard("approx_differentiable", design="L1_n500@v", index=i)
+            for i in range(18)
+        ]
+        shards += [self._dead("L1_n500@v", i) for i in (18, 19)]
+        summary = agg.summarise(shards)
+        assert (
+            agg._errors_for(summary, "ddm_sdv", "approx_differentiable", "L1_n500@v")
+            == 2
+        )
+
+    def test_a_sweep_where_everything_died_still_fails(self):
+        # The guard against over-correcting: with no healthy sibling there is
+        # nothing to adopt from, and nothing to judge either.
+        shards = [self._dead("L1_n500@v", i) for i in range(20)]
+        passed, failures = agg.verdict(agg.summarise(shards))
+        assert not passed
+        assert "none usable" in failures[0]
+
+    def test_two_variants_of_one_rung_are_left_alone(self):
+        # `L1_n500@v` and `L1_n500@sv` in the same sweep: nothing in a bare
+        # shard says which of them died, and filing the error against the wrong
+        # experiment is worse than leaving it unattributed.
+        shards = [
+            shard("approx_differentiable", design=d, index=i)
+            for d in ("L1_n500@v", "L1_n500@sv")
+            for i in range(18)
+        ]
+        shards.append(self._dead("L1_n500", 18))
+        summary = agg.summarise(shards)
+        assert "ddm_sdv|approx_differentiable|L1_n500" in summary["attempted"]
+
+    @pytest.mark.parametrize(
+        ("design", "condition_param", "expected"),
+        [
+            ("L0_n500", None, "L0_n500"),
+            ("L1_n500", None, "L1_n500@v"),
+            ("L1_n500", "sv", "L1_n500@sv"),
+        ],
+    )
+    def test_the_worker_names_the_design_on_the_failure_path(
+        self, tmp_path, monkeypatch, design, condition_param, expected
+    ):
+        # The root cause, fixed at the source: a shard written by a fit that
+        # died still has to say which experiment it belonged to.
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
+        from typer.testing import CliRunner
+
+        def explode(**kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(rp, "run_one", explode)
+        argv = [
+            "--model",
+            "ddm_sdv",
+            "--design",
+            design,
+            "--dataset-index",
+            "0",
+            "--out-dir",
+            str(tmp_path),
+        ]
+        if condition_param:
+            argv += ["--condition-param", condition_param]
+        result = CliRunner().invoke(rp.app, argv)
+        # 1, not 0: a dead shard is written AND reported as a failure.
+        assert result.exit_code == 1, result.output
+        written = list(tmp_path.glob("*.json"))
+        assert len(written) == 1
+        record = json.loads(written[0].read_text())
+        assert record["error"].startswith("RuntimeError: boom")
+        assert record["design_id"] == expected
+        # And the filename follows the identity, so two variants of one rung
+        # cannot overwrite each other's dead shards.
+        assert expected in written[0].name
+
+    def test_a_failure_to_name_the_design_does_not_replace_the_real_error(
+        self, tmp_path, monkeypatch
+    ):
+        # Whatever went wrong in the fit is the thing worth reporting. Naming
+        # the design is best-effort and must never take its place.
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
+        from typer.testing import CliRunner
+
+        def explode(**kwargs):
+            raise RuntimeError("boom")
+
+        def no_model(*a, **k):
+            raise ValueError("cannot load")
+
+        monkeypatch.setattr(rp, "run_one", explode)
+        monkeypatch.setattr(rd, "load_model", no_model)
+        result = CliRunner().invoke(
+            rp.app,
+            [
+                "--model",
+                "ddm_sdv",
+                "--design",
+                "L1_n500",
+                "--dataset-index",
+                "0",
+                "--out-dir",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code == 1, result.output
+        record = json.loads(next(tmp_path.glob("*.json")).read_text())
+        assert record["error"].startswith("RuntimeError: boom")
+        assert "design_id" not in record
+
+    def test_adoption_does_not_cross_arms_or_models(self):
+        adopted = agg.adopted_design_ids(
+            [
+                shard("approx_differentiable", design="L1_n500@v", index=0),
+                shard("analytical", design="L1_n500@sv", index=0),
+            ]
+        )
+        assert adopted[("ddm_sdv", "approx_differentiable", "L1_n500")] == "L1_n500@v"
+        assert adopted[("ddm_sdv", "analytical", "L1_n500")] == "L1_n500@sv"
+
+
 class TestSummarise:
     """_summarise produces every number in the report, so it gets pinned."""
 
