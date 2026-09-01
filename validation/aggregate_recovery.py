@@ -155,6 +155,39 @@ def load_shards(shard_dir: Path) -> list[dict]:
     return shards
 
 
+# A cell identity is several fields joined into one string, because the report
+# is JSON -- whose keys must be strings -- and because a human opening it should
+# be able to read which cell a number belongs to. That makes the separator part
+# of the contract: a field containing it would round-trip into the wrong number
+# of pieces, and every consumer below unpacks a fixed arity.
+#
+# Enforced where keys are built rather than trusted. Model, design and parameter
+# names are identifiers, but `--arm` is a free-form CLI string, and the failure
+# would otherwise surface only in aggregation -- after a whole sweep has run,
+# which is exactly when it is most expensive to discover.
+KEY_SEPARATOR = "|"
+
+
+def _join_key(*fields: str) -> str:
+    """Build a cell identity, refusing fields that would not survive the split."""
+    for field in fields:
+        if KEY_SEPARATOR in str(field):
+            raise ValueError(
+                f"{field!r} contains {KEY_SEPARATOR!r}, which separates the fields "
+                f"of a cell identity, so this cell could not be read back. Rename "
+                f"it -- for an arm, pass a different --arm to recover_parameters."
+            )
+    return KEY_SEPARATOR.join(str(f) for f in fields)
+
+
+def _split_key(key: str, arity: int = 4) -> tuple[str, ...]:
+    """Read a cell identity back. The one place a key is taken apart."""
+    fields = tuple(key.split(KEY_SEPARATOR))
+    if len(fields) != arity:
+        raise ValueError(f"cell key {key!r} has {len(fields)} fields, expected {arity}")
+    return fields
+
+
 def _model_of(shard: dict) -> str:
     """The model a shard belongs to.
 
@@ -321,16 +354,18 @@ def summarise(shards: list[dict]) -> dict:
             entry["truth_recovered_corr"] = _corr(
                 [r["truth"] for r in usable], [r["mean"] for r in usable]
             )
-        summary[f"{model}|{arm}|{design}|{label}"] = entry
+        summary[_join_key(model, arm, design, label)] = entry
 
     return {
         "cells": summary,
         "errors": errors,
         "n_gated_tests": n_tests,
-        "excluded_for_divergences": {"|".join(k): v for k, v in diverged.items()},
-        "excluded_for_degenerate_data": {"|".join(k): v for k, v in degenerate.items()},
-        "attempted": {"|".join(k): v for k, v in attempted.items()},
-        "likelihood_by_arm": {"|".join(k): v for k, v in likelihood_of.items()},
+        "excluded_for_divergences": {_join_key(*k): v for k, v in diverged.items()},
+        "excluded_for_degenerate_data": {
+            _join_key(*k): v for k, v in degenerate.items()
+        },
+        "attempted": {_join_key(*k): v for k, v in attempted.items()},
+        "likelihood_by_arm": {_join_key(*k): v for k, v in likelihood_of.items()},
     }
 
 
@@ -381,7 +416,7 @@ def _reference_index(cells: dict) -> dict[tuple[str, str, str], dict]:
     """
     index = {}
     for key, entry in cells.items():
-        model, arm, design, label = key.split("|")
+        model, arm, design, label = _split_key(key)
         if _is_reference(arm):
             index[(model, design, label)] = entry
     return index
@@ -406,7 +441,7 @@ def _rung_recovers(cells: dict, model: str, arm: str, rung: str, label: str) -> 
     base = _base_param(label)
     by_variant: dict[str, list[dict]] = defaultdict(list)
     for key, entry in cells.items():
-        k_model, k_arm, k_design, k_label = key.split("|")
+        k_model, k_arm, k_design, k_label = _split_key(key)
         if (k_model, k_arm) == (model, arm) and _rung_of(k_design) == rung:
             if _base_param(k_label) == base:
                 by_variant[k_design].append(entry)
@@ -458,10 +493,10 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
 
     judged = 0
     for key, entry in cells.items():
-        model, arm, design, label = key.split("|")
+        model, arm, design, label = _split_key(key)
         if _is_reference(arm):
             continue
-        where = key.replace("|", "/")
+        where = key.replace(KEY_SEPARATOR, "/")
         if not entry["eligible"]:
             failures.append(
                 f"{where}: only {entry['n_converged']} converged fits, below the "
@@ -512,11 +547,12 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
     # An arm that was attempted but yielded no eligible cell produced no
     # evidence, and no evidence is not evidence of calibration.
     for arm_key, n_attempted in summary["attempted"].items():
-        model, arm, design = arm_key.split("|")
+        model, arm, design = _split_key(arm_key, arity=3)
         if _is_reference(arm):
             continue
         if any(
-            key.startswith(f"{model}|{arm}|{design}|") and cells[key]["eligible"]
+            key.startswith(_join_key(model, arm, design) + KEY_SEPARATOR)
+            and cells[key]["eligible"]
             for key in cells
         ):
             continue
@@ -534,8 +570,8 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
 
 def _explain_coverage(cells, key, entry, reference, low) -> list[str]:
     """Decide whether a coverage shortfall is the network's fault, and say why."""
-    model, arm, design, label = key.split("|")
-    where = key.replace("|", "/")
+    model, arm, design, label = _split_key(key)
+    where = key.replace(KEY_SEPARATOR, "/")
     if reference is not None and reference["coverage"] is not None:
         if not reference["eligible"]:
             # Do NOT fall through to the ladder here. The old code did, and its

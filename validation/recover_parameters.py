@@ -44,6 +44,7 @@ from pathlib import Path
 import typer
 
 sys.path.insert(0, str(Path(__file__).parent))
+import aggregate_recovery as agg  # noqa: E402
 import recovery_designs as rd  # noqa: E402
 
 logger = logging.getLogger("recover_parameters")
@@ -370,6 +371,14 @@ def main(
     # second silently replaced the first. The arm is the identity now, and it
     # reaches both the shard body and its name.
     arm = arm or _default_arm(likelihood, onnx_path)
+    # Reject here, not in aggregation. The arm is the one identity field a user
+    # types freely, and it is joined into the aggregator's cell keys; a name
+    # carrying the separator would only fail once the whole sweep had run.
+    if agg.KEY_SEPARATOR in arm:
+        raise typer.BadParameter(
+            f"arm {arm!r} contains {agg.KEY_SEPARATOR!r}, which separates the "
+            "fields of a recovery cell identity. Choose another name."
+        )
 
     try:
         record = run_one(

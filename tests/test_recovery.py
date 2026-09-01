@@ -16,6 +16,7 @@ choices, eight parameters and a drift called `v0`.
 
 import dataclasses
 import json
+import sys
 
 import numpy as np
 import pytest
@@ -79,23 +80,83 @@ RACE4 = rd.ModelUnderTest(
 
 MODELS = [DDM_SDV, ANGLE, RACE4]
 
+
 # For the aggregator, a shard's model, arm and parameter names are opaque
 # labels -- `aggregate_recovery` says so in its own docstring and
-# TestNamesAreOpaque asserts it. So its tests parametrise over the structure it
-# actually PARSES rather than over model names, which prove nothing:
-#
-#   * whether the design carries an `@variant` suffix, since `_rung_of` splits
-#     on it and `design_id != design` only at multi-condition rungs;
-#   * whether the shard carries `model`/`arm` at all, since both are defaulted.
-#
-# Both bugs this file has caught in the aggregator lived on exactly that axis.
-# Names are varied too -- it is free, and it keeps the opacity self-evident to
-# the next reader.
+# TestNamesAreOpaqueToTheAggregator asserts it directly. So what these vary is
+# the structure it actually PARSES: whether a design carries an `@variant`
+# suffix, since `_rung_of` splits on it and `design_id != design` only at
+# multi-condition rungs. Both aggregator bugs this file has caught lived on
+# exactly that axis. Names vary along the way because it is free, and it keeps
+# the opacity evident to the next reader.
+@dataclasses.dataclass(frozen=True)
+class Shape:
+    """The identity fields a synthetic shard carries."""
+
+    id: str
+    model: str
+    design: str
+    label: str
+
+    @property
+    def rung(self) -> str:
+        return self.design.split("@", 1)[0]
+
+    @property
+    def has_variant(self) -> bool:
+        return self.rung != self.design
+
+
 SHAPES = [
-    pytest.param("ddm_sdv", "L0_n500", "v", id="bare-rung"),
-    pytest.param("race_no_bias_angle_4", "L1_n250@v0", "v0", id="variant-rung"),
-    pytest.param("conflict_stimflex", "L1_n1000@tcoh", "vt", id="variant-rung-long"),
+    Shape("bare-rung", "ddm_sdv", "L0_n500", "v"),
+    Shape("variant-rung", "race_no_bias_angle_4", "L1_n250@v0", "v0"),
+    Shape("variant-rung-long", "conflict_stimflex", "L1_n1000@tcoh", "vt"),
 ]
+
+# What `shard()` uses unless a test class opts into the sweep below.
+SHAPE = SHAPES[0]
+
+# For tests whose subject is "two distinct identities must not be pooled". Its
+# only requirement is being different from whatever shape is active.
+OTHER_MODEL = "a_different_model"
+
+
+def cell_key(arm, *, model=None, design=None, label=None):
+    """The report key for one cell, built the way `aggregate_recovery` builds it.
+
+    Defaults to the active shape, so a test that names a cell says *which* cell
+    without pinning the identity -- and goes through `_join_key`, so the tests
+    cannot drift from the separator the report actually uses.
+    """
+    return agg._join_key(
+        model or SHAPE.model,
+        arm,
+        design or SHAPE.design,
+        label or SHAPE.label,
+    )
+
+
+def arm_key(arm, *, model=None, design=None):
+    """The report key for one (model, arm, design) bucket in `attempted`."""
+    return agg._join_key(model or SHAPE.model, arm, design or SHAPE.design)
+
+
+@pytest.fixture(params=SHAPES, ids=lambda s: s.id)
+def shape(request, monkeypatch):
+    """Run a test once per identity shape, and point `shard()` at each one.
+
+    A class whose subject is the aggregator's arithmetic rather than any
+    particular model opts in with a single line --
+
+        pytestmark = pytest.mark.usefixtures("shape")
+
+    -- and needs no other edit: its `shard()` calls pick up that shape's model,
+    design and label automatically, so the tests read as they did while running
+    across all three. A test that needs the values names `shape` as an argument;
+    one that needs a specific design still passes it explicitly.
+    """
+    monkeypatch.setattr(sys.modules[__name__], "SHAPE", request.param)
+    return request.param
 
 
 class TestModelUnderTest:
@@ -906,11 +967,9 @@ class TestDeadShardsKeepTheirDesignIdentity:
             for i in range(n)
         ]
 
-    @pytest.mark.parametrize(("model", "design", "label"), SHAPES)
     @pytest.mark.parametrize("with_design_id", [True, False])
-    def test_a_few_dead_fits_do_not_fail_a_healthy_sweep(
-        self, model, design, label, with_design_id
-    ):
+    def test_a_few_dead_fits_do_not_fail_a_healthy_sweep(self, shape, with_design_id):
+        model, design, label = shape.model, shape.design, shape.label
         # Both shard shapes: what the worker writes now, and what the sweeps
         # already on disk contain.
         shards = self._healthy(model, design, label, 18)
@@ -925,8 +984,8 @@ class TestDeadShardsKeepTheirDesignIdentity:
         passed, failures = agg.verdict(summary)
         assert passed, failures
 
-    @pytest.mark.parametrize(("model", "design", "label"), SHAPES)
-    def test_the_error_count_reaches_the_cell_it_belongs_to(self, model, design, label):
+    def test_the_error_count_reaches_the_cell_it_belongs_to(self, shape):
+        model, design, label = shape.model, shape.design, shape.label
         # `_errors_for` matches on the design token, so an error filed under
         # the bare rung is invisible to the cell that actually lost the fits.
         shards = self._healthy(model, design, label, 18)
@@ -934,10 +993,8 @@ class TestDeadShardsKeepTheirDesignIdentity:
         summary = agg.summarise(shards)
         assert agg._errors_for(summary, model, self.ARM, design) == 2
 
-    @pytest.mark.parametrize(("model", "design", "label"), SHAPES)
-    def test_a_shard_written_before_the_model_field_existed_still_adopts(
-        self, model, design, label
-    ):
+    def test_a_shard_written_before_the_model_field_existed_still_adopts(self, shape):
+        model, design, label = shape.model, shape.design, shape.label
         # `_key` defaults a missing `model`, because shards written before the
         # field existed all came from one network. Adoption has to default it
         # the same way: when only `_key` did, the legacy shard keyed as the
@@ -960,8 +1017,8 @@ class TestDeadShardsKeepTheirDesignIdentity:
         model, arm, _ = agg._key(bare)
         assert (model, arm) == (agg._model_of(bare), agg._arm_of(bare))
 
-    @pytest.mark.parametrize(("model", "design", "label"), SHAPES)
-    def test_a_sweep_where_everything_died_still_fails(self, model, design, label):
+    def test_a_sweep_where_everything_died_still_fails(self, shape):
+        model, design = shape.model, shape.design
         # The guard against over-correcting: with no healthy sibling there is
         # nothing to adopt from, and nothing to judge either.
         shards = [self._dead(model, design, i) for i in range(20)]
@@ -969,15 +1026,15 @@ class TestDeadShardsKeepTheirDesignIdentity:
         assert not passed
         assert "none usable" in failures[0]
 
-    @pytest.mark.parametrize(("model", "design", "label"), SHAPES)
-    def test_two_variants_of_one_rung_are_left_alone(self, model, design, label):
+    def test_two_variants_of_one_rung_are_left_alone(self, shape):
+        model, design, label = shape.model, shape.design, shape.label
         # Two variants of one rung in the same sweep: nothing in a bare shard
         # says which of them died, and filing the error against the wrong
         # experiment is worse than leaving it unattributed. A bare rung has no
         # variants, so it is the one shape where this cannot arise.
-        rung = agg._rung_of(design)
-        if rung == design:
+        if not shape.has_variant:
             pytest.skip("a bare rung has no variants to be ambiguous between")
+        rung = shape.rung
         shards = [
             *self._healthy(model, design, label, 18),
             *self._healthy(model, f"{rung}@other", label, 18),
@@ -1176,6 +1233,10 @@ class TestShardHygiene:
 
 
 class TestSanity:
+    # Swept across every identity shape --
+    # the data checks read numbers off a shard, never its names.
+    pytestmark = pytest.mark.usefixtures("shape")
+
     def _frame(self, responses):
         import pandas as pd
 
@@ -1217,12 +1278,12 @@ class TestSanity:
 
 def shard(
     likelihood,
-    model="ddm_sdv",
-    design="L0_n500",
+    model=None,
+    design=None,
     index=0,
     *,
     arm=None,
-    label="v",
+    label=None,
     covered=True,
     z=0.5,
     rhat=1.0,
@@ -1234,13 +1295,18 @@ def shard(
 ):
     """One synthetic shard with a single parameter.
 
-    The `model`, `design` and `label` defaults are arbitrary labels, not a
-    claim that anything here is DDM-specific: `aggregate_recovery` never reads
-    them, which TestNamesAreOpaqueToTheAggregator asserts directly. Tests whose
-    subject IS the structure inside those strings -- a design's `@variant`
-    suffix, a ladder rung's position -- pass their own values or parametrise
-    over SHAPES rather than relying on these.
+    `model`, `design` and `label` default to the active SHAPE rather than to
+    fixed names: `aggregate_recovery` never reads them, which
+    TestNamesAreOpaqueToTheAggregator asserts directly, so a class that opts
+    into the `shape` fixture sweeps all three identities without changing a
+    line of its own. Tests whose subject IS the structure inside those strings
+    -- a design's `@variant` suffix, a ladder rung's position -- pass their own
+    values.
     """
+
+    model = SHAPE.model if model is None else model
+    design = SHAPE.design if design is None else design
+    label = SHAPE.label if label is None else label
     return {
         "schema_version": 2,
         "model": model,
@@ -1310,13 +1376,17 @@ class TestBand:
 
 
 class TestAggregation:
+    # Swept across every identity shape --
+    # coverage and bias arithmetic is identity-blind.
+    pytestmark = pytest.mark.usefixtures("shape")
+
     def test_two_models_in_one_directory_do_not_share_cells(self):
-        shards = [shard("analytical", model="ddm_sdv", index=i) for i in range(3)]
-        shards += [shard("analytical", model="angle", index=i) for i in range(3)]
+        shards = [shard("analytical", index=i) for i in range(3)]
+        shards += [shard("analytical", model=OTHER_MODEL, index=i) for i in range(3)]
         cells = agg.summarise(shards)["cells"]
         assert set(cells) == {
-            "ddm_sdv|analytical|L0_n500|v",
-            "angle|analytical|L0_n500|v",
+            cell_key("analytical"),
+            cell_key("analytical", model=OTHER_MODEL),
         }
 
     def test_two_candidate_networks_are_separate_arms(self):
@@ -1329,13 +1399,18 @@ class TestAggregation:
         assert all(cell["n_fits"] == 20 for cell in cells.values())
 
     def test_a_shard_without_model_or_arm_is_read_as_the_legacy_single_network(self):
+        # The one place a concrete model name is the SUBJECT rather than a
+        # label: shards predating the field all came from one network, so the
+        # default is a compatibility constant. Read from the code, not spelled
+        # out here, so the two cannot drift.
         legacy = shard("analytical")
         del legacy["model"], legacy["arm"]
-        assert "ddm_sdv|analytical|L0_n500|v" in agg.summarise([legacy])["cells"]
+        cells = agg.summarise([legacy])["cells"]
+        assert cell_key("analytical", model=agg._model_of({})) in cells
 
     def test_non_converged_fits_are_excluded_not_failed(self):
         shards = [shard("analytical", index=i, rhat=1.5) for i in range(5)]
-        cell = agg.summarise(shards)["cells"]["ddm_sdv|analytical|L0_n500|v"]
+        cell = agg.summarise(shards)["cells"][cell_key("analytical")]
         assert cell["n_fits"] == 5
         assert cell["n_converged"] == 0
         assert cell["coverage"] is None
@@ -1345,13 +1420,13 @@ class TestAggregation:
         # only by accident of IEEE semantics, so it is pinned.
         cell = agg.summarise(
             [shard("analytical", index=i, rhat=float("nan")) for i in range(20)]
-        )["cells"]["ddm_sdv|analytical|L0_n500|v"]
+        )["cells"][cell_key("analytical")]
         assert cell["n_converged"] == 0
 
     def test_divergent_fits_are_dropped_before_scoring(self):
         summary = agg.summarise([shard("analytical", index=0, divergence_rate=0.5)])
         assert summary["cells"] == {}
-        assert summary["excluded_for_divergences"]["ddm_sdv|analytical|L0_n500"] == 1
+        assert summary["excluded_for_divergences"][arm_key("analytical")] == 1
 
     def test_a_dataset_missing_a_response_category_is_excluded(self):
         # _sanity's docstring promises "the aggregator decides what to do with
@@ -1360,14 +1435,12 @@ class TestAggregation:
             [shard("analytical", index=i, min_choice_share=0.0) for i in range(20)]
         )
         assert summary["cells"] == {}
-        assert (
-            summary["excluded_for_degenerate_data"]["ddm_sdv|analytical|L0_n500"] == 20
-        )
+        assert summary["excluded_for_degenerate_data"][arm_key("analytical")] == 20
 
     def test_errored_shards_are_collected_rather_than_crashing(self):
         summary = agg.summarise([errored_shard("analytical", model="angle", index=3)])
         assert summary["errors"][0]["error"] == "boom"
-        assert summary["attempted"]["angle|analytical|L0_n500"] == 1
+        assert summary["attempted"][arm_key("analytical", model="angle")] == 1
 
     def test_a_shard_with_no_parameters_block_is_an_error_not_a_crash(self):
         broken = shard("analytical")
@@ -1383,7 +1456,7 @@ class TestAggregation:
             shard("analytical", index=i, contraction=c)
             for i, c in enumerate([0.1, 0.2, 0.3, 0.4])
         ]
-        cell = agg.summarise(shards)["cells"]["ddm_sdv|analytical|L0_n500|v"]
+        cell = agg.summarise(shards)["cells"][cell_key("analytical")]
         assert cell["median_contraction"] == pytest.approx(0.25)
 
     def test_correlation_is_none_when_truth_does_not_vary(self):
@@ -1401,6 +1474,10 @@ class TestAggregation:
 
 
 class TestVerdict:
+    # Swept across every identity shape --
+    # the pass/fail rules are identity-blind.
+    pytestmark = pytest.mark.usefixtures("shape")
+
     def test_a_network_missing_coverage_the_exact_arm_reaches_fails(self):
         shards = arm_shards("analytical")
         shards += arm_shards("approx_differentiable", covered_count=8)
@@ -1442,7 +1519,7 @@ class TestVerdict:
         summary = agg.summarise(shards)
         passed, failures = agg.verdict(summary)
         assert passed, failures
-        assert summary["cells"]["ddm_sdv|approx_differentiable|L0_n500|v"][
+        assert summary["cells"][cell_key("approx_differentiable")][
             "median_contraction"
         ] == pytest.approx(0.7)
 
@@ -1472,11 +1549,12 @@ class TestVerdict:
         reference against the NETWORK's floor -- which is what the code did --
         reads it as a clean reference and blames the network instead.
         """
+
         shards = arm_shards("analytical", n=50, covered_count=41)
         shards += arm_shards("approx_differentiable", n=10, covered_count=7)
         summary = agg.summarise(shards)
-        ref = summary["cells"]["ddm_sdv|analytical|L0_n500|v"]
-        net = summary["cells"]["ddm_sdv|approx_differentiable|L0_n500|v"]
+        ref = summary["cells"][cell_key("analytical")]
+        net = summary["cells"][cell_key("approx_differentiable")]
         assert ref["coverage"] < ref["coverage_band"][0]  # misses its own floor
         assert ref["coverage"] > net["coverage_band"][0]  # clears the network's
         assert net["coverage"] < net["coverage_band"][0]  # network misses too
@@ -1493,6 +1571,10 @@ class TestVerdict:
 
 class TestSilenceIsNotAPass:
     """The gate must distinguish "calibrated" from "nothing ran"."""
+
+    # Swept across every identity shape --
+    # so is the guard against silent non-evidence.
+    pytestmark = pytest.mark.usefixtures("shape")
 
     def test_a_sweep_where_every_fit_errored_does_not_pass(self):
         shards = [
@@ -1521,18 +1603,14 @@ class TestSilenceIsNotAPass:
         # An arm label says nothing about which model or design it ran on, so
         # counting errors by arm alone inflates the one number an operator
         # reads to decide whether a sweep is worth rerunning.
-        shards = [
-            errored_shard("approx_differentiable", model="ddm_sdv", index=i)
-            for i in range(3)
-        ]
+        shards = [errored_shard("approx_differentiable", index=i) for i in range(3)]
         shards += [
-            errored_shard("approx_differentiable", model="angle", index=i)
+            errored_shard("approx_differentiable", model=OTHER_MODEL, index=i)
             for i in range(9)
         ]
         _, failures = agg.verdict(agg.summarise(shards))
-        assert any(
-            "ddm_sdv/approx_differentiable/L0_n500: 3 fits" in f for f in failures
-        )
+        where = arm_key("approx_differentiable").replace(agg.KEY_SEPARATOR, "/")
+        assert any(f"{where}: 3 fits" in f for f in failures)
         assert any("(3 errored)" in f for f in failures)
         assert any("(9 errored)" in f for f in failures)
         assert not any("(12 errored)" in f for f in failures)
@@ -1547,9 +1625,7 @@ class TestSilenceIsNotAPass:
         # admit almost anything, and the stdout line still said n_shards: 20.
         shards = arm_shards("approx_differentiable", n=3)
         summary = agg.summarise(shards)
-        assert not summary["cells"]["ddm_sdv|approx_differentiable|L0_n500|v"][
-            "eligible"
-        ]
+        assert not summary["cells"][cell_key("approx_differentiable")]["eligible"]
         passed, failures = agg.verdict(summary)
         assert not passed
         assert "inconclusive" in failures[0]
@@ -1635,8 +1711,12 @@ class TestLadderAttribution:
         shards += self._arm("L1_n500@sv", 8, label="z")
         cells = agg.summarise(shards)["cells"]
         assert set(cells) == {
-            "angle|approx_differentiable|L1_n500@v|z",
-            "angle|approx_differentiable|L1_n500@sv|z",
+            cell_key(
+                "approx_differentiable", model="angle", design="L1_n500@v", label="z"
+            ),
+            cell_key(
+                "approx_differentiable", model="angle", design="L1_n500@sv", label="z"
+            ),
         }
 
     def test_one_variant_recovering_is_enough_to_excuse_the_rung_below(self):
