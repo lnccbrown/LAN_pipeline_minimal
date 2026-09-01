@@ -94,7 +94,8 @@ job_defaults:
     account: carney-mjfrank-condo2
     partition: batch
     cores: 1
-    mem: 8G
+    # See gen_sbatch.JOB_KIND_FALLBACKS: 8G OOMs the largest designs.
+    mem: 24G
     num_gpus: 0
     time: "04:00:00"
 

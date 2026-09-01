@@ -457,26 +457,51 @@ class TestAnyParameterCanVary:
             if other != param:
                 assert isinstance(truth[other], float), other
 
-    @pytest.mark.parametrize("param", ["a", "t", "sv"])
+    @staticmethod
+    def _moment_correlation(model, design, param, seed):
+        """|r| between a parameter's per-condition truth and an RT moment.
+
+        Which moment moves is the parameter's own business, and assuming it is
+        always the mean would be the drift-centric habit this test exists to
+        break -- so take whichever of mean and spread tracks it better.
+        """
+        data, truth = rd.build_dataset(model, design, seed=seed)
+        groups = [data.loc[data["condition"] == c, "rt"] for c in range(4)]
+        return max(
+            abs(np.corrcoef(truth[param], [f(g) for g in groups])[0, 1])
+            for f in (np.mean, np.std)
+        )
+
+    @pytest.mark.parametrize("param", ["a", "t"])
     def test_a_non_drift_parameter_really_moves_the_data(self, param):
         # The check that matters: it is not enough for the formula to name the
         # parameter, the simulated conditions have to actually differ.
         #
-        # Which RT moment moves is the parameter's own business, and assuming
-        # it is always the mean would be the drift-centric habit this test
-        # exists to break. Measured at n=2000: `a` and `t` track the mean
-        # (r = 0.998, 1.000) while `sv` barely does (0.872) and tracks the
-        # spread instead (0.955) -- inter-trial drift variability is a
-        # dispersion effect, which is a large part of why sv is the hard one.
+        # Measured over seeds 1-8 at 500 trials per condition, `a` and `t`
+        # track the mean on every seed (min r = 0.995 and 0.982), so the bar is
+        # the worst seed, not a lucky one.
         model = varying(DDM_SDV, param)
         design = rd.DESIGNS["L1_n2000"]
-        data, truth = rd.build_dataset(model, design, seed=4)
-        groups = [data.loc[data["condition"] == c, "rt"] for c in range(4)]
-        moved = max(
-            abs(np.corrcoef(truth[param], [f(g) for g in groups])[0, 1])
-            for f in (np.mean, np.std)
-        )
-        assert moved > 0.9, f"{param} left the RT distribution unchanged"
+        moved = [
+            self._moment_correlation(model, design, param, seed) for seed in range(1, 9)
+        ]
+        assert min(moved) > 0.95, f"{param} left the RT distribution unchanged"
+
+    def test_sv_moves_the_data_but_only_on_average(self):
+        # sv gets its own bar because the honest measurement is much weaker:
+        # over the same eight seeds it ranges 0.42 to 0.995 (mean 0.73).
+        # Inter-trial drift variability is a dispersion effect and a faint one
+        # at this sample size, which is a large part of why sv is the hard
+        # parameter to recover -- so a single-seed bar here would be testing the
+        # draw, not the design. It previously "passed" at 0.9 on one seed only
+        # because that seed drew a dataset in which one response never occurred;
+        # the degeneracy redraw removed it and exposed the real spread.
+        model = varying(DDM_SDV, "sv")
+        design = rd.DESIGNS["L1_n2000"]
+        moved = [
+            self._moment_correlation(model, design, "sv", seed) for seed in range(1, 9)
+        ]
+        assert sum(moved) / len(moved) > 0.5, "sv left the RT distribution unchanged"
 
     @pytest.mark.parametrize("param", ["a", "theta"])
     def test_the_formula_and_posterior_name_follow_the_choice(self, param):
@@ -567,6 +592,229 @@ class TestConditionBroadcast:
         l0, _ = rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n2000"], seed=4)
         l1, _ = rd.build_dataset(DDM_SDV, rd.DESIGNS["L1_n2000"], seed=4)
         assert not np.array_equal(l0["rt"].to_numpy(), l1["rt"].to_numpy())
+
+
+class TestDegenerateRedraw:
+    """Drawing a truth that makes one response unreachable is a wasted fit."""
+
+    def test_the_draw_and_the_exclusion_use_the_same_threshold(self):
+        # These live in two modules because aggregate_recovery imports
+        # recovery_designs and not the other way round. If they drift apart,
+        # build_dataset would happily hand back datasets the aggregator then
+        # throws away -- the exact waste the redraw exists to stop.
+        assert rd.MIN_CHOICE_SHARE == agg.MIN_CHOICE_SHARE
+
+    @pytest.mark.parametrize("model", MODELS, ids=lambda m: m.name)
+    def test_the_share_counts_missing_responses_against_the_model(self, model):
+        # A response that never appeared contributes 0, not a missing key. The
+        # count that matters is model.n_choices, not the number of distinct
+        # values observed -- otherwise a 4-choice dataset in which only two
+        # alternatives were ever taken would score as perfectly balanced.
+        all_one = np.ones(100, dtype=int)
+        assert rd.min_choice_share(all_one, model) == 0.0
+        every = np.arange(model.n_choices).repeat(25)
+        assert rd.min_choice_share(every, model) == pytest.approx(1 / model.n_choices)
+
+    def test_a_clean_draw_is_untouched_by_the_redraw(self):
+        # Attempt 0 uses the seed unchanged, so re-running a sweep moves the
+        # degenerate datasets and nothing else.
+        design = rd.DESIGNS["L0_n500"]
+        resolved, attempts = rd.usable_seed(DDM_SDV, 1)
+        assert (resolved, attempts) == (1, 1)
+        plain, plain_truth = rd._simulate_once(DDM_SDV, design, 1)
+        data, truth = rd.build_dataset(DDM_SDV, design, seed=1)
+        assert np.array_equal(data["rt"].to_numpy(), plain["rt"].to_numpy())
+        assert truth == plain_truth
+
+    def test_a_degenerate_draw_is_redrawn(self, monkeypatch):
+        seen = []
+        real = rd._simulate
+
+        def fake(model, theta, seed):
+            seen.append(seed)
+            rt, response = real(model, theta, seed)
+            # Force the first two probes to look one-sided.
+            if len(seen) <= 2:
+                response = np.ones_like(response)
+            return rt, response
+
+        monkeypatch.setattr(rd, "_simulate", fake)
+        resolved, attempts = rd.usable_seed(DDM_SDV, 3)
+        assert seen == [3, 3 + rd.REDRAW_STRIDE, 3 + 2 * rd.REDRAW_STRIDE]
+        assert (resolved, attempts) == (3 + 2 * rd.REDRAW_STRIDE, 3)
+
+    def test_exhausting_the_budget_returns_the_last_draw_instead_of_raising(
+        self, monkeypatch
+    ):
+        # An array task that dies takes its shard with it; one that returns a
+        # degenerate dataset gets excluded by the aggregator and stays visible
+        # in the report as an excluded fit. The second is the useful failure.
+        real = rd._simulate
+
+        def always_degenerate(model, theta, seed):
+            rt, response = real(model, theta, seed)
+            return rt, np.ones_like(response)
+
+        monkeypatch.setattr(rd, "_simulate", always_degenerate)
+        resolved, attempts = rd.usable_seed(DDM_SDV, 3)
+        assert attempts == rd.MAX_TRUTH_REDRAWS + 1
+        assert resolved == 3 + rd.MAX_TRUTH_REDRAWS * rd.REDRAW_STRIDE
+        # Still returns a usable dataset rather than blowing up the task.
+        data, truth = rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n500"], seed=3)
+        assert set(truth) == set(DDM_SDV.params)
+
+
+class TestChoiceCountIsNotAssumedBinary:
+    """`n_choices` decides whether the degeneracy guard works at all.
+
+    `min_choice_share` reports 0 only when FEWER response categories were
+    observed than the model has. Understate the count and a dataset that never
+    produced one of its responses scores as perfectly balanced, so both the
+    redraw and the aggregator's exclusion wave it through -- silently, and
+    for exactly the multi-alternative models where a missing category is most
+    likely.
+    """
+
+    # ssms models that carry no `choices` key at all, with what `nchoices`
+    # says. The old `len(config.get("choices", [-1, 1]))` declared every one of
+    # them binary.
+    NO_CHOICES_KEY = {
+        "lba_angle_3": 3,
+        "lca_3": 3,
+        "dev_rlwm_lba_pw_v1": 3,
+        "dev_rlwm_lba_race_v2": 3,
+        "tradeoff_weibull_no_bias": 4,
+    }
+
+    def test_every_ssms_config_resolves_to_the_count_it_declares(self):
+        # The general form: all 113 of them, not a fixture list. Asserted on
+        # `_n_choices` directly rather than through `load_model`, so it needs no
+        # inference stack and therefore runs in CI -- which is where a
+        # config-shape assertion is worth the most, since CI is where a new ssms
+        # release lands first.
+        from ssms.config import model_config
+
+        for name, config in model_config.items():
+            assert rd._n_choices(config) == config["nchoices"], name
+        assert len(model_config) > 100, "the ssms registry got suspiciously small"
+
+    def test_the_models_with_no_choices_key_are_still_read_correctly(self):
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
+        from ssms.config import model_config
+
+        for name, expected in self.NO_CHOICES_KEY.items():
+            # The premise, so this fails loudly if ssms starts shipping the key
+            # rather than passing for a reason that no longer exists.
+            assert "choices" not in model_config[name], name
+            assert rd.load_model(name).n_choices == expected, name
+
+    def test_load_model_threads_the_count_through_for_every_model(self):
+        # The same claim one layer up: `_n_choices` being right is no use if
+        # `load_model` does not use it. Needs HSSM, because `load_model` asks its
+        # registry which branch a model takes.
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
+        from ssms.config import model_config
+
+        checked, skipped = 0, 0
+        for name, config in model_config.items():
+            try:
+                live = rd.load_model(name)
+            except ValueError:
+                # Legitimately unavailable: HSSM knows the model but declares no
+                # approx_differentiable likelihood. Not a choice-count claim.
+                skipped += 1
+                continue
+            assert live.n_choices == config["nchoices"], (
+                f"{name}: harness says {live.n_choices}, ssms says {config['nchoices']}"
+            )
+            checked += 1
+        # Not vacuous: skipping everything would otherwise be a green run.
+        assert checked > 100, f"only {checked} models checked, {skipped} skipped"
+
+    def test_a_config_carrying_neither_key_raises_instead_of_guessing(self):
+        with pytest.raises(KeyError):
+            rd._n_choices({"params": ["v"]})
+
+    def test_a_missing_response_category_is_degenerate_at_three_choices(self):
+        # The consequence, stated directly. Two of three categories present:
+        # binary says 0.5 and sails through, three-way says 0 and is rejected.
+        two_of_three = np.array([0] * 250 + [1] * 250)
+        three = dataclasses.replace(ANGLE, n_choices=3)
+        assert rd.min_choice_share(two_of_three, ANGLE) == 0.5
+        assert rd.min_choice_share(two_of_three, three) == 0.0
+        assert rd.min_choice_share(two_of_three, three) < rd.MIN_CHOICE_SHARE
+
+
+class TestRedrawKeepsTheLadderPaired:
+    """The redraw must not decide differently for L0 than for L1.
+
+    Degeneracy is far more common at L0 than at L1 -- varying a parameter
+    across conditions makes a wholly one-sided design much harder to draw --
+    so a redraw that looked at the requested design would redraw L0 where it
+    left L1 alone. The two levels would then hold different shared truths at
+    the same dataset index, and "L1 recovers this better" could just mean "L1
+    drew an easier one": the confound `draw_truth`'s two independent streams
+    exist to prevent, reintroduced one layer down. It would also be
+    directional, since the surviving L0 truths are the more balanced ones.
+    """
+
+    def test_the_resolution_does_not_take_a_design_at_all(self):
+        # The structural guarantee, asserted structurally: if a design ever
+        # becomes an argument, every empirical test below is one refactor away
+        # from being reassuring for the wrong reason.
+        import inspect
+
+        assert list(inspect.signature(rd.usable_seed).parameters) == ["model", "seed"]
+
+    @pytest.mark.parametrize("model", MODELS, ids=lambda m: m.name)
+    def test_every_design_resolves_to_the_same_shared_truth(self, model):
+        for seed in range(1, 9):
+            resolved, _ = rd.usable_seed(model, seed)
+            expected = rd.shared_draw(model, resolved)
+            for design in rd.DESIGNS.values():
+                truth = rd.draw_truth(model, design, resolved)
+                shared = [p for p in model.params if not isinstance(truth[p], list)]
+                assert shared, f"{design.name} varies every parameter"
+                for name in shared:
+                    assert truth[name] == expected[name], (design.name, name, seed)
+
+    @pytest.mark.parametrize("model", MODELS, ids=lambda m: m.name)
+    def test_shared_truths_agree_across_levels_at_every_seed(self, model):
+        l0, l1 = rd.DESIGNS["L0_n2000"], rd.DESIGNS["L1_n2000"]
+        for seed in range(1, 9):
+            _, t0 = rd.build_dataset(model, l0, seed)
+            _, t1 = rd.build_dataset(model, l1, seed)
+            shared = [p for p in model.params if not isinstance(t1[p], list)]
+            for name in shared:
+                assert t0[name] == t1[name], (name, seed)
+
+    def test_the_levels_disagree_about_degeneracy_so_this_is_not_vacuous(self):
+        # The tripwire. If no seed in this range makes L0 degenerate while L1
+        # is fine, the pairing tests above could pass for the trivial reason
+        # that nothing ever needed a redraw, and this whole class would be
+        # measuring nothing. Measured on gamma_drift: L0 degenerates on 11 of
+        # 20 draws against L1's 1.
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
+        model = rd.load_model("gamma_drift")
+        disagreeing = []
+        for seed in range(1, 21):
+            shares = {}
+            for key in ("L0_n2000", "L1_n2000"):
+                data, _ = rd._simulate_once(model, rd.DESIGNS[key], seed)
+                shares[key] = rd.min_choice_share(data["response"].to_numpy(), model)
+            usable = {k: v >= rd.MIN_CHOICE_SHARE for k, v in shares.items()}
+            if usable["L0_n2000"] != usable["L1_n2000"]:
+                disagreeing.append(seed)
+        assert disagreeing, "no seed forces unequal redraw outcomes any more"
+
+        # And on exactly those seeds -- where a design-aware redraw would have
+        # split the levels apart -- the shared truths still match.
+        for seed in disagreeing:
+            _, t0 = rd.build_dataset(model, rd.DESIGNS["L0_n2000"], seed)
+            _, t1 = rd.build_dataset(model, rd.DESIGNS["L1_n2000"], seed)
+            shared = [p for p in model.params if not isinstance(t1[p], list)]
+            for name in shared:
+                assert t0[name] == t1[name], (name, seed)
 
 
 class TestSummarise:
