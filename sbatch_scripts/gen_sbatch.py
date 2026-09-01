@@ -196,17 +196,28 @@ def _validate_recover_identity(
             "digits, and '.', '_', '-', '@'.",
             param_hint="--arm",
         )
+    # Checked against ssms rather than HSSM: that needs no inference stack, so
+    # these run on a login node carrying only the default dependency group --
+    # exactly where the two checks above may already be skipping.
+    from ssms.config import model_config
+
+    config = model_config.get(model)
+    if config is None:
+        # Unconditional, not nested under the condition_param check below: an
+        # unknown model is just as fatal without one, and every worker would
+        # raise in `load_model` after the array had already been queued.
+        raise typer.BadParameter(
+            f"{model!r} is not a model ssms can simulate, so no fit in this "
+            "array could run.",
+            param_hint="--model",
+        )
     if condition_param is not None:
         # The worst of the three to get wrong. A bad condition parameter makes
         # `load_model` raise, so every task in the array dies AND dies before it
         # can name its design -- and a shard with no design_id is adopted into
         # whichever variant of that rung did survive. The mistyped variant then
         # disappears from the report entirely rather than failing in it.
-        # Checked against ssms directly: that needs no inference stack, so this
-        # works on a login node carrying only the default dependency group.
-        from ssms.config import model_config
-
-        params = (model_config.get(model) or {}).get("params")
+        params = config.get("params")
         if params and condition_param not in params:
             raise typer.BadParameter(
                 f"{condition_param!r} is not a parameter of {model}. "

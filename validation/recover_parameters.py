@@ -378,15 +378,21 @@ def main(
     # alongside every network, so two arms wrote the same filename and the
     # second silently replaced the first. The arm is the identity now, and it
     # reaches both the shard body and its name.
-    arm = arm or _default_arm(likelihood, onnx_path)
+    # `is None`, not `or`: typer distinguishes an omitted --arm from an
+    # explicitly empty one, and `or` would collapse them -- silently substituting
+    # the derived name for a value the user typed and got wrong.
+    if arm is None:
+        arm = _default_arm(likelihood, onnx_path)
     # Reject here, not in aggregation. The arm is the one identity field a user
     # types freely, and it reaches two places that both constrain it: the
     # aggregator's cell keys, where the separator would break the round trip,
-    # and the shard filename, where a path separator writes the shard somewhere
-    # `load_shards` does not look: a `/` nests the file out of the glob's reach.
-    # (A bare `..` is harmless -- it is only a path component next to a
-    # separator, and the alphabet already excludes separators.) The failure is
-    # silent either way, so the sweep would finish having quietly lost the fits.
+    # and the shard filename, where a path SEPARATOR writes the shard somewhere
+    # `load_shards` does not look -- it globs `recovery_*.json` one level deep,
+    # so a nested file is invisible to it. Measured: `net/a` nests, and
+    # `../escape` both nests and loses the `recovery_` prefix because the `..`
+    # cancels the component before it. A `..` with no separator does neither.
+    # The failure is silent, so the sweep would finish having quietly lost
+    # those fits.
     #
     # Only an explicit --arm can reach this; `_default_arm` sanitises the ONNX
     # stem to the same alphabet it is checked against here.

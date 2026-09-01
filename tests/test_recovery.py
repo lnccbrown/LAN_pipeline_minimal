@@ -943,10 +943,13 @@ class TestArmNamesStayUsable:
 
     It is joined into the aggregator's cell identity, where the separator would
     break the round trip, and interpolated into the shard filename, where a
-    path separator writes the file somewhere `load_shards` does not look: a `/`
-    nests it out of the non-recursive glob's reach, and a `..` eats the
-    `recovery_` prefix the glob matches on. Either way the sweep finishes having
-    quietly lost those fits -- the failure this module exists to stop.
+    path SEPARATOR writes the file somewhere `load_shards` does not look --
+    it globs `recovery_*.json` one level deep, so a nested file is invisible.
+    Measured: `net/a` nests, and `../escape` both nests and loses the
+    `recovery_` prefix, because the `..` cancels the component before it. A
+    `..` with no separator does neither, which is why the check is an alphabet
+    rather than a blocklist. Either way the loss is silent -- the failure this
+    module exists to stop.
     """
 
     @pytest.mark.parametrize(
@@ -955,10 +958,11 @@ class TestArmNamesStayUsable:
             "net|a",  # the cell-identity separator
             "net/a",  # nests the shard below the glob
             "net\\a",
-            "../escape",  # eats the recovery_ prefix
+            "../escape",  # nests, and loses the prefix with it
             "sp ace",
-            # Not "": an empty --arm is falsy, so it reads as "unset" and falls
-            # back to `_default_arm`, whose output is valid by construction.
+            # An explicitly empty --arm is a typed mistake, not an omission,
+            # and typer can tell the two apart even though `or` could not.
+            "",
         ],
     )
     def test_an_unusable_arm_is_refused_at_parse_time(self, tmp_path, arm):
@@ -1066,6 +1070,10 @@ class TestSilenceCannotPass:
             # that rung survived -- the mistyped one vanishing from the report
             # rather than failing in it.
             ("--condition-param", "not_a_parameter"),
+            # Checked without a --condition-param, because the model lookup
+            # used to sit inside that branch and an unknown model slipped past
+            # whenever the flag was absent.
+            ("--model", "not_a_model"),
         )
         for flag, value in cases:
             argv = [
@@ -1080,6 +1088,8 @@ class TestSilenceCannotPass:
             ]
             if flag == "--design":
                 argv[argv.index("L0_n500")] = value
+            elif flag == "--model":
+                argv[argv.index("ddm_sdv")] = value
             else:
                 argv += [flag, value]
             result = CliRunner().invoke(gen_sbatch.app, argv)
