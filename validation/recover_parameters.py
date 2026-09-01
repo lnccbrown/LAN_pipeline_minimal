@@ -311,6 +311,14 @@ def run_one(
     )
 
 
+# The characters an arm may contain. An arm is joined into the aggregator's
+# cell keys AND interpolated into the shard filename, so it has to survive both
+# a separator-delimited round trip and a path join. `_default_arm` sanitises TO
+# this alphabet and an explicit --arm is checked AGAINST it, so there is one
+# notion of a usable arm rather than two that can drift apart.
+ARM_CHARS = "A-Za-z0-9._@-"
+
+
 def _default_arm(likelihood: str, onnx_path: Path | None) -> str:
     """Pooling key for one set of fits.
 
@@ -321,7 +329,7 @@ def _default_arm(likelihood: str, onnx_path: Path | None) -> str:
     """
     if onnx_path is None:
         return likelihood
-    stem = re.sub(r"[^A-Za-z0-9._-]", "_", Path(onnx_path).stem)
+    stem = re.sub(f"[^{ARM_CHARS}]", "_", Path(onnx_path).stem)
     return f"{likelihood}@{stem}"
 
 
@@ -372,15 +380,21 @@ def main(
     # reaches both the shard body and its name.
     arm = arm or _default_arm(likelihood, onnx_path)
     # Reject here, not in aggregation. The arm is the one identity field a user
-    # types freely, and it is joined into the aggregator's cell keys; a name
-    # carrying the separator would only fail once the whole sweep had run.
-    # Only an explicit --arm can reach this: `_default_arm` already replaces
-    # anything outside [A-Za-z0-9._-] when it derives a name from an ONNX stem.
-    if agg.KEY_SEPARATOR in arm:
+    # types freely, and it reaches two places that both constrain it: the
+    # aggregator's cell keys, where the separator would break the round trip,
+    # and the shard filename, where a path separator writes the shard somewhere
+    # `load_shards` does not look. Both failures are silent -- a `/` nests the
+    # file out of the glob's reach and a `..` eats the `recovery_` prefix -- so
+    # the sweep would finish having quietly lost those fits.
+    #
+    # Only an explicit --arm can reach this; `_default_arm` sanitises the ONNX
+    # stem to the same alphabet it is checked against here.
+    if not re.fullmatch(f"[{ARM_CHARS}]+", arm):
         raise typer.BadParameter(
-            f"{arm!r} contains {agg.KEY_SEPARATOR!r}, which separates the fields "
-            "of a recovery cell identity, so the shard could not be read back. "
-            "Pass a different --arm.",
+            f"{arm!r} is not a usable arm name. An arm is joined into the "
+            f"recovery cell identity (separator {agg.KEY_SEPARATOR!r}) and into "
+            "the shard filename, so it may contain only letters, digits, and "
+            "'.', '_', '-', '@'. Pass a different --arm.",
             param_hint="--arm",
         )
 

@@ -16,7 +16,9 @@ choices, eight parameters and a drift called `v0`.
 
 import dataclasses
 import json
+import re
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -894,6 +896,91 @@ class TestRedrawKeepsTheLadderPaired:
             shared = [p for p in model.params if not isinstance(t1[p], list)]
             for name in shared:
                 assert t0[name] == t1[name], (name, seed)
+
+
+class TestArmNamesStayUsable:
+    """An arm reaches two places that constrain it, and both fail silently.
+
+    It is joined into the aggregator's cell identity, where the separator would
+    break the round trip, and interpolated into the shard filename, where a
+    path separator writes the file somewhere `load_shards` does not look: a `/`
+    nests it out of the non-recursive glob's reach, and a `..` eats the
+    `recovery_` prefix the glob matches on. Either way the sweep finishes having
+    quietly lost those fits -- the failure this module exists to stop.
+    """
+
+    @pytest.mark.parametrize(
+        "arm",
+        [
+            "net|a",  # the cell-identity separator
+            "net/a",  # nests the shard below the glob
+            "net\\a",
+            "../escape",  # eats the recovery_ prefix
+            "sp ace",
+            # Not "": an empty --arm is falsy, so it reads as "unset" and falls
+            # back to `_default_arm`, whose output is valid by construction.
+        ],
+    )
+    def test_an_unusable_arm_is_refused_at_parse_time(self, tmp_path, arm):
+        # At parse time, because aggregation happens after a whole sweep has
+        # run -- which is the most expensive moment to learn about it.
+        from typer.testing import CliRunner
+
+        result = CliRunner().invoke(
+            rp.app,
+            [
+                "--model",
+                "ddm_sdv",
+                "--design",
+                "L0_n500",
+                "--dataset-index",
+                "0",
+                "--arm",
+                arm,
+                "--out-dir",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code == 2, result.output
+        assert not list(tmp_path.glob("*.json"))
+
+    @pytest.mark.parametrize(
+        "stem",
+        ["net_a", "gamma|drift", "a/b", "../../x", "sp ace", "n\u00dcll", "x@y"],
+    )
+    def test_a_derived_arm_is_always_one_the_check_would_accept(self, stem):
+        # The anti-drift assertion: `_default_arm` sanitises to the alphabet
+        # the explicit path validates against, so the two cannot disagree about
+        # what a usable arm is. If they did, a perfectly ordinary ONNX filename
+        # could produce an arm the CLI refuses.
+        derived = rp._default_arm("approx_differentiable", Path(f"/n/{stem}.onnx"))
+        assert re.fullmatch(f"[{rp.ARM_CHARS}]+", derived), derived
+
+    def test_a_usable_arm_still_gets_through(self, tmp_path, monkeypatch):
+        def explode(**kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(rp, "run_one", explode)
+        from typer.testing import CliRunner
+
+        result = CliRunner().invoke(
+            rp.app,
+            [
+                "--model",
+                "ddm_sdv",
+                "--design",
+                "L0_n500",
+                "--dataset-index",
+                "0",
+                "--arm",
+                "approx_differentiable@b50k",
+                "--out-dir",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code == 1, result.output  # the fit failed, not the parse
+        written = list(tmp_path.glob("recovery_*.json"))
+        assert len(written) == 1, "the shard must land where load_shards looks"
 
 
 class TestNamesAreOpaqueToTheAggregator:
