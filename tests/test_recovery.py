@@ -1057,7 +1057,17 @@ class TestSilenceCannotPass:
         import gen_sbatch
         from typer.testing import CliRunner
 
-        for flag, value in (("--design", "L1_n50"), ("--arm", "net|0")):
+        cases = (
+            ("--design", "L1_n50"),
+            ("--arm", "net|0"),
+            # The worst of the three: a bad condition parameter makes
+            # `load_model` raise, so every task dies BEFORE naming its design,
+            # and an unnamed dead shard is adopted into whichever variant of
+            # that rung survived -- the mistyped one vanishing from the report
+            # rather than failing in it.
+            ("--condition-param", "not_a_parameter"),
+        )
+        for flag, value in cases:
             argv = [
                 "recover",
                 "--model",

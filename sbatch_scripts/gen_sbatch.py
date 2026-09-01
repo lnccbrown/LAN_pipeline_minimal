@@ -162,8 +162,10 @@ JOB_KIND_FALLBACKS = {
 # script) that additionally needs the `validate` dependency group — sync it on
 # the login node first (`uv sync --frozen --group validate`), compute nodes
 # frequently have no egress to install it themselves.
-def _validate_recover_identity(design: str, arm: str | None) -> None:
-    """Reject a rung or arm the worker would reject, before anything is queued.
+def _validate_recover_identity(
+    model: str, design: str, arm: str | None, condition_param: str | None
+) -> None:
+    """Reject an identity the worker would reject, before anything is queued.
 
     Imports live inside the function: `gen_sbatch` runs on a login node with
     only the default dependency group, and `recovery_designs` pulls in the
@@ -194,6 +196,23 @@ def _validate_recover_identity(design: str, arm: str | None) -> None:
             "digits, and '.', '_', '-', '@'.",
             param_hint="--arm",
         )
+    if condition_param is not None:
+        # The worst of the three to get wrong. A bad condition parameter makes
+        # `load_model` raise, so every task in the array dies AND dies before it
+        # can name its design -- and a shard with no design_id is adopted into
+        # whichever variant of that rung did survive. The mistyped variant then
+        # disappears from the report entirely rather than failing in it.
+        # Checked against ssms directly: that needs no inference stack, so this
+        # works on a login node carrying only the default dependency group.
+        from ssms.config import model_config
+
+        params = (model_config.get(model) or {}).get("params")
+        if params and condition_param not in params:
+            raise typer.BadParameter(
+                f"{condition_param!r} is not a parameter of {model}. "
+                f"Have: {', '.join(params)}",
+                param_hint="--condition-param",
+            )
 
 
 RUNNABLES = {"recover": "--group validate python validation/recover_parameters.py"}
@@ -1197,7 +1216,7 @@ def recover(
     # the report, and a report cannot fail on a cell it has never heard of.
     # The cost of finding out late is a queued array; the cost of not finding
     # out is a sweep that passes with a rung missing.
-    _validate_recover_identity(design, arm)
+    _validate_recover_identity(model, design, arm, condition_param)
 
     recover_args = {
         "model": model,
