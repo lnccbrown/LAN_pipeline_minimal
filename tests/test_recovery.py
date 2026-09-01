@@ -899,20 +899,15 @@ class TestDeadShardsKeepTheirDesignIdentity:
         summary = agg.summarise(shards)
         assert "ddm_sdv|approx_differentiable|L1_n500" in summary["attempted"]
 
-    @pytest.mark.parametrize(
-        ("design", "condition_param", "expected"),
-        [
-            ("L0_n500", None, "L0_n500"),
-            ("L1_n500", None, "L1_n500@v"),
-            ("L1_n500", "sv", "L1_n500@sv"),
-        ],
-    )
-    def test_the_worker_names_the_design_on_the_failure_path(
-        self, tmp_path, monkeypatch, design, condition_param, expected
-    ):
-        # The root cause, fixed at the source: a shard written by a fit that
-        # died still has to say which experiment it belonged to.
-        pytest.importorskip("hssm", reason="validate dependency group not installed")
+    NAMING_CASES = [
+        ("L0_n500", None, "L0_n500"),
+        ("L1_n500", None, "L1_n500@v"),
+        ("L1_n500", "sv", "L1_n500@sv"),
+    ]
+
+    @staticmethod
+    def _invoke_failing_worker(tmp_path, monkeypatch, design, condition_param):
+        """Run the CLI with the fit itself raising. Returns the written shard."""
         from typer.testing import CliRunner
 
         def explode(**kwargs):
@@ -936,46 +931,87 @@ class TestDeadShardsKeepTheirDesignIdentity:
         assert result.exit_code == 1, result.output
         written = list(tmp_path.glob("*.json"))
         assert len(written) == 1
-        record = json.loads(written[0].read_text())
+        return written[0], json.loads(written[0].read_text())
+
+    @pytest.mark.parametrize(("design", "condition_param", "expected"), NAMING_CASES)
+    def test_the_worker_names_the_design_without_an_inference_stack(
+        self, tmp_path, monkeypatch, design, condition_param, expected
+    ):
+        # The root cause, fixed at the source: a shard written by a fit that
+        # died still has to say which experiment it belonged to.
+        #
+        # Stubbed rather than skipped. `load_model` needs HSSM, which CI does
+        # not install, but what is under test here is the failure path writing
+        # the identity -- not the registry lookup that supplies it. Stubbing
+        # keeps this covered in CI; the test below runs the same cases against
+        # the real lookup wherever HSSM is available.
+        def stub(name, *, condition_param=None, **kwargs):
+            return dataclasses.replace(
+                DDM_SDV, condition_param=condition_param or DDM_SDV.condition_param
+            )
+
+        monkeypatch.setattr(rd, "load_model", stub)
+        path, record = self._invoke_failing_worker(
+            tmp_path, monkeypatch, design, condition_param
+        )
         assert record["error"].startswith("RuntimeError: boom")
         assert record["design_id"] == expected
         # And the filename follows the identity, so two variants of one rung
         # cannot overwrite each other's dead shards.
-        assert expected in written[0].name
+        assert expected in path.name
+
+    @pytest.mark.parametrize(("design", "condition_param", "expected"), NAMING_CASES)
+    def test_the_worker_names_the_design_on_the_failure_path(
+        self, tmp_path, monkeypatch, design, condition_param, expected
+    ):
+        # The same cases against the real registry lookup, so the stub above
+        # cannot drift away from what `load_model` actually returns.
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
+        path, record = self._invoke_failing_worker(
+            tmp_path, monkeypatch, design, condition_param
+        )
+        assert record["error"].startswith("RuntimeError: boom")
+        assert record["design_id"] == expected
+        assert expected in path.name
 
     def test_a_failure_to_name_the_design_does_not_replace_the_real_error(
         self, tmp_path, monkeypatch
     ):
         # Whatever went wrong in the fit is the thing worth reporting. Naming
         # the design is best-effort and must never take its place.
-        pytest.importorskip("hssm", reason="validate dependency group not installed")
-        from typer.testing import CliRunner
-
-        def explode(**kwargs):
-            raise RuntimeError("boom")
-
         def no_model(*a, **k):
             raise ValueError("cannot load")
 
-        monkeypatch.setattr(rp, "run_one", explode)
         monkeypatch.setattr(rd, "load_model", no_model)
-        result = CliRunner().invoke(
-            rp.app,
-            [
-                "--model",
-                "ddm_sdv",
-                "--design",
-                "L1_n500",
-                "--dataset-index",
-                "0",
-                "--out-dir",
-                str(tmp_path),
-            ],
-        )
-        assert result.exit_code == 1, result.output
-        record = json.loads(next(tmp_path.glob("*.json")).read_text())
+        _, record = self._invoke_failing_worker(tmp_path, monkeypatch, "L1_n500", None)
         assert record["error"].startswith("RuntimeError: boom")
         assert "design_id" not in record
+
+    def test_a_shard_written_before_the_model_field_existed_still_adopts(self):
+        # `_key` defaults a missing `model` to ddm_sdv, because shards written
+        # before the field existed all came from one network. Adoption has to
+        # default it the same way: when only `_key` did, the legacy shard keyed
+        # as "ddm_sdv" while its adoption entry was filed under None, the lookup
+        # missed, and the split bucket came straight back. Reproduced at 18
+        # healthy plus 2 legacy-dead before the defaults were unified.
+        legacy = self._dead("L1_n500@v", 18)
+        del legacy["model"]
+        shards = [
+            shard("approx_differentiable", design="L1_n500@v", index=i)
+            for i in range(18)
+        ]
+        shards.append(legacy)
+        summary = agg.summarise(shards)
+        assert list(summary["attempted"]) == ["ddm_sdv|approx_differentiable|L1_n500@v"]
+        passed, failures = agg.verdict(summary)
+        assert passed, failures
+
+    def test_the_identity_helpers_agree_with_the_cell_key(self):
+        # The structural form of the same claim: whatever `_key` uses to
+        # identify a shard is what adoption must file it under.
+        bare = {"design": "L1_n500", "likelihood": "approx_differentiable"}
+        model, arm, _ = agg._key(bare)
+        assert (model, arm) == (agg._model_of(bare), agg._arm_of(bare))
 
     def test_adoption_does_not_cross_arms_or_models(self):
         adopted = agg.adopted_design_ids(

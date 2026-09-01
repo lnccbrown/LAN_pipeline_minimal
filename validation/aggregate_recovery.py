@@ -155,6 +155,24 @@ def load_shards(shard_dir: Path) -> list[dict]:
     return shards
 
 
+def _model_of(shard: dict) -> str:
+    """The model a shard belongs to.
+
+    Defaulted, not bare: shards written before the field existed all came from
+    a single ddm_sdv network. Factored out because `_key`, `_design_of` and
+    `adopted_design_ids` must agree on it -- when only `_key` defaulted, a
+    legacy dead shard keyed as "ddm_sdv" while its adoption entry was filed
+    under None, the lookup missed, and the split bucket this module exists to
+    prevent came straight back.
+    """
+    return shard.get("model", "ddm_sdv")
+
+
+def _arm_of(shard: dict) -> str:
+    """The arm a shard belongs to. Same drift hazard, same remedy."""
+    return shard.get("arm") or shard.get("likelihood", "?")
+
+
 def adopted_design_ids(shards: list[dict]) -> dict[tuple[str, str, str], str]:
     """(model, arm, rung) -> design_id, learned from the shards that carry one.
 
@@ -173,8 +191,7 @@ def adopted_design_ids(shards: list[dict]) -> dict[tuple[str, str, str], str]:
         design = shard.get("design_id")
         if not design:
             continue
-        arm = shard.get("arm") or shard.get("likelihood", "?")
-        seen[(shard.get("model"), arm, _rung_of(design))].add(design)
+        seen[(_model_of(shard), _arm_of(shard), _rung_of(design))].add(design)
     return {key: next(iter(v)) for key, v in seen.items() if len(v) == 1}
 
 
@@ -189,8 +206,8 @@ def _key(shard: dict, adopted: dict | None = None) -> tuple[str, str, str]:
     all came from a single ddm_sdv network.
     """
     return (
-        shard.get("model", "ddm_sdv"),
-        shard.get("arm") or shard.get("likelihood", "?"),
+        _model_of(shard),
+        _arm_of(shard),
         # The design identity, which carries WHICH parameter varies across
         # conditions: `L1_n500@v` and `L1_n500@sv` are different designs and
         # pooling their shared-parameter cells would average two different
@@ -204,8 +221,7 @@ def _design_of(shard: dict, adopted: dict) -> str:
     if design:
         return design
     rung = shard.get("design", "?")
-    arm = shard.get("arm") or shard.get("likelihood", "?")
-    return adopted.get((shard.get("model"), arm, rung), rung)
+    return adopted.get((_model_of(shard), _arm_of(shard), rung), rung)
 
 
 def _is_reference(arm: str) -> bool:
