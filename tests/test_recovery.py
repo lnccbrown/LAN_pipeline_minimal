@@ -1023,6 +1023,59 @@ class TestArmNamesStayUsable:
         assert len(written) == 1, "the shard must land where load_shards looks"
 
 
+class TestSilenceCannotPass:
+    """A fit that leaves no shard leaves no failure either.
+
+    `verdict` is a pure function of the shards it is handed, so an arm whose
+    jobs all died is not wrong in the report -- it is absent from it, and a
+    driver gating on the exit code would ship a network that was never fitted.
+    Two guards, at the two ends: the submitter refuses an identity that would
+    make every task die, and the aggregator can be told what it should have
+    received.
+    """
+
+    def test_a_sweep_missing_shards_wholesale_fails(self, tmp_path):
+        for i in range(10):
+            (tmp_path / f"recovery_m_a_L0_n500_{i:04d}.json").write_text(
+                json.dumps(shard("approx_differentiable", index=i))
+            )
+        from typer.testing import CliRunner
+
+        base = ["--shard-dir", str(tmp_path), "--out", str(tmp_path / "r.json")]
+        # Silent today: ten shards, no complaint about the ten that never ran.
+        quiet = CliRunner().invoke(agg.app, base)
+        assert "were expected" not in quiet.output
+        # Told what to expect, the same ten shards are a failure.
+        loud = CliRunner().invoke(agg.app, base + ["--expect-fits", "20"])
+        assert loud.exit_code == 1
+        assert "10 fits left no shard at all" in loud.output
+
+    def test_the_submitter_refuses_an_identity_that_would_kill_every_task(self):
+        # The other end: a mistyped rung fails inside all 20 array tasks, and
+        # tasks that die before writing leave nothing for the aggregator to
+        # notice. Cheaper to refuse the submission.
+        import gen_sbatch
+        from typer.testing import CliRunner
+
+        for flag, value in (("--design", "L1_n50"), ("--arm", "net|0")):
+            argv = [
+                "recover",
+                "--model",
+                "ddm_sdv",
+                "--design",
+                "L0_n500",
+                "--output-path",
+                "/tmp/unused",
+                "--script-only",
+            ]
+            if flag == "--design":
+                argv[argv.index("L0_n500")] = value
+            else:
+                argv += [flag, value]
+            result = CliRunner().invoke(gen_sbatch.app, argv)
+            assert result.exit_code == 2, (flag, result.output)
+
+
 class TestNamesAreOpaqueToTheAggregator:
     """`aggregate_recovery` claims to work "for any model". This checks it.
 

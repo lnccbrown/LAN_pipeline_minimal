@@ -511,7 +511,13 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
             failures.extend(_explain_coverage(cells, key, entry, reference, low))
 
         contraction = entry["median_contraction"]
-        reference_contraction = (reference or {}).get("median_contraction")
+        # `reference or {}` alone is not enough: the coverage and bias gates
+        # both refuse an ineligible reference, and this one must too. A cell the
+        # module has already called inconclusive cannot be the standard another
+        # arm is measured against -- doing so charges the network for a
+        # shortfall sourced from a reference nobody trusts.
+        usable_reference = reference if (reference or {}).get("eligible") else {}
+        reference_contraction = usable_reference.get("median_contraction")
         vs_reference = (
             contraction / reference_contraction
             if contraction is not None and reference_contraction
@@ -609,6 +615,13 @@ def main(
     out: Path | None = typer.Option(
         None, help="[default: <shard-dir>/recovery_report.json]"
     ),
+    expect_fits: int = typer.Option(
+        0,
+        help="How many shards this sweep was supposed to produce. The verdict "
+        "reads what is on disk, so a whole arm that never ran is not a "
+        "failure to it -- it is silence, and silence passes. Pass the number "
+        "you submitted and a sweep that lost fits wholesale fails instead.",
+    ),
     log_level: str = typer.Option("WARNING"),
 ):
     """Aggregate recovery shards into a report and a verdict."""
@@ -619,6 +632,19 @@ def main(
 
     summary = summarise(shards)
     passed, failures = verdict(summary)
+    # Checked here rather than inside `verdict`, which is a pure function of the
+    # shards it is handed and cannot know what was submitted. An arm whose jobs
+    # all died leaves no shard, no cell and no `attempted` entry, so nothing in
+    # the report is wrong -- the arm simply is not in it, and a driver gating on
+    # the exit code would ship a network that was never fitted.
+    if expect_fits and len(shards) < expect_fits:
+        passed = False
+        failures = [
+            f"{len(shards)} shards on disk but {expect_fits} were expected: "
+            f"{expect_fits - len(shards)} fits left no shard at all, so whatever "
+            "they would have said is missing from this verdict rather than "
+            "failing it"
+        ] + failures
     report = {
         "schema_version": 2,
         "n_shards": len(shards),

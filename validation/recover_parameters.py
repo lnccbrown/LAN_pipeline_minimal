@@ -383,9 +383,10 @@ def main(
     # types freely, and it reaches two places that both constrain it: the
     # aggregator's cell keys, where the separator would break the round trip,
     # and the shard filename, where a path separator writes the shard somewhere
-    # `load_shards` does not look. Both failures are silent -- a `/` nests the
-    # file out of the glob's reach and a `..` eats the `recovery_` prefix -- so
-    # the sweep would finish having quietly lost those fits.
+    # `load_shards` does not look: a `/` nests the file out of the glob's reach.
+    # (A bare `..` is harmless -- it is only a path component next to a
+    # separator, and the alphabet already excludes separators.) The failure is
+    # silent either way, so the sweep would finish having quietly lost the fits.
     #
     # Only an explicit --arm can reach this; `_default_arm` sanitises the ONNX
     # stem to the same alphabet it is checked against here.
