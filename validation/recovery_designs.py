@@ -118,8 +118,15 @@ REDRAW_STRIDE = 7_000_003
 # Trials in the probe that decides whether an attempt is usable. The criterion
 # is a *rate*, so this only sets how precisely the rate is estimated: at the
 # 0.02 threshold the binomial standard error here is 0.44 percentage points.
-# It is deliberately not any design's trial count -- see `build_dataset`.
+# It is deliberately not any design's trial count -- see `usable_seed`.
 PROBE_TRIALS = 1000
+# Conditions in the second probe. Two, because that is the smallest L1 rung in
+# DESIGNS and by far the most degeneracy-prone: with only two condition values
+# drawn, both landing on the same side of zero is common, while four values
+# are protected by their own spread. And because `Generator.uniform(lo, hi, n)`
+# draws sequentially, two values are the exact prefix of the four a wider rung
+# would draw -- so probing two also covers the start of every richer rung.
+PROBE_CONDITIONS = 2
 # The aggregator's exclusion threshold (aggregate_recovery.MIN_CHOICE_SHARE),
 # duplicated rather than imported because that module imports this one. Drawing
 # and excluding must agree, so they are asserted equal in the tests.
@@ -365,6 +372,14 @@ class Design:
 # purpose, so the ladder should visibly fail at the bottom — a ladder that
 # never fails is not measuring anything. L1_n1000's 250/condition is the first
 # rung above that floor.
+# The shapes `usable_seed` probes. Both are CONSTANTS, not the design being
+# built: that is what keeps the redraw a pure function of (model, seed), and
+# with it the ladder's paired truths. See `usable_seed`.
+PROBE_DESIGNS: tuple[Design, ...] = (
+    Design(name="__probe_L0__", n_trials=PROBE_TRIALS, n_conditions=1),
+    Design(name="__probe_L1__", n_trials=PROBE_TRIALS, n_conditions=PROBE_CONDITIONS),
+)
+
 DESIGNS: dict[str, Design] = {
     d.name: d
     for d in (
@@ -553,12 +568,22 @@ def usable_seed(model: ModelUnderTest, seed: int) -> tuple[int, int]:
     confound: the redrawn L0 truths are, by construction, the more balanced
     ones.
 
-    So the decision is made on a probe that no design influences: the
-    shared-stream draw, every parameter scalar, simulated as a single
-    condition. The attempt therefore depends only on `(model, seed)`, every
-    level resolves to the same attempt, and the shared truths stay identical
-    across the ladder. The probe is L0-shaped, which is the hardest level, so
-    clearing it clears the multi-condition levels a fortiori.
+    So the decision is made on PROBE_DESIGNS, which are constants rather than
+    the design being built. The attempt therefore depends only on
+    `(model, seed)`, every level resolves to the same attempt, and the shared
+    truths stay identical across the ladder.
+
+    Two probes, not one, and the second is the one that took a measurement to
+    find. An earlier version probed only the single-condition shape and claimed
+    that clearing it cleared the rest a fortiori. That was wrong: `draw_truth`
+    discards the shared draw of the condition parameter and replaces it from a
+    SECOND stream (`seed + 500_000`), which a single-condition probe never
+    touches -- so the probe was blind to exactly the parameter the L1 rungs
+    vary, and that parameter is the drift. Measured on the sweep's own twenty
+    seeds, `L1_n250` still degenerated 3/20 for gamma_drift, 2/20 for
+    gamma_drift_angle and 1/20 for ddm_sdv while every other rung was clean.
+    Two conditions is the vulnerable shape: both values landing on the same
+    side of zero is common, where four are protected by their own spread.
 
     Rejecting on the aggregator's own criterion, rather than on a
     hand-tightened box, keeps this model-general: nothing here knows what makes
@@ -569,18 +594,24 @@ def usable_seed(model: ModelUnderTest, seed: int) -> tuple[int, int]:
         # degenerate is byte-identical to what it was before this existed:
         # re-running a sweep moves the bad draws and nothing else.
         resolved = seed + attempt * REDRAW_STRIDE
-        truth = shared_draw(model, resolved)
-        theta = np.tile(
-            np.array([truth[name] for name in model.params], dtype=float),
-            (PROBE_TRIALS, 1),
-        )
-        _, response = _simulate(model, theta, resolved)
-        if min_choice_share(response, model) >= MIN_CHOICE_SHARE:
+        if all(_probe_clears(model, probe, resolved) for probe in PROBE_DESIGNS):
             return resolved, attempt + 1
     # Exhausted. Hand back the last attempt rather than raising: the shard's
     # own data check records the share and the aggregator excludes the fit, so
     # the failure stays visible in the report instead of killing the array task.
     return resolved, MAX_TRUTH_REDRAWS + 1
+
+
+def _probe_clears(model: ModelUnderTest, probe: Design, seed: int) -> bool:
+    """Whether this seed survives one probe shape.
+
+    Built through `_simulate_once`, not by assembling theta here, so the probe
+    consumes the same two RNG streams in the same order as the dataset it is
+    vouching for. Rebuilding that by hand is how the first version of this came
+    to miss the condition stream entirely.
+    """
+    data, _ = _simulate_once(model, probe, seed)
+    return min_choice_share(data["response"].to_numpy(), model) >= MIN_CHOICE_SHARE
 
 
 def build_dataset(model: ModelUnderTest, design: Design, seed: int):

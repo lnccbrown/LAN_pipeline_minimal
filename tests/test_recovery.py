@@ -721,7 +721,11 @@ class TestDegenerateRedraw:
 
         monkeypatch.setattr(rd, "_simulate", fake)
         resolved, attempts = rd.usable_seed(DDM_SDV, 3)
-        assert seen == [3, 3 + rd.REDRAW_STRIDE, 3 + 2 * rd.REDRAW_STRIDE]
+        # Distinct seeds in first-seen order: an attempt runs one probe per
+        # shape in PROBE_DESIGNS, so a seed appears once per probe it reaches
+        # and the count of calls is not the count of attempts.
+        tried = list(dict.fromkeys(seen))
+        assert tried == [3, 3 + rd.REDRAW_STRIDE, 3 + 2 * rd.REDRAW_STRIDE]
         assert (resolved, attempts) == (3 + 2 * rd.REDRAW_STRIDE, 3)
 
     def test_exhausting_the_budget_returns_the_last_draw_instead_of_raising(
@@ -868,6 +872,42 @@ class TestRedrawKeepsTheLadderPaired:
             shared = [p for p in model.params if not isinstance(t1[p], list)]
             for name in shared:
                 assert t0[name] == t1[name], (name, seed)
+
+    def test_the_probe_covers_the_condition_stream_not_only_the_shared_one(self):
+        """The second probe shape, and the measurement that forced it.
+
+        `draw_truth` discards the shared draw of the condition parameter and
+        replaces it from a second stream (`seed + 500_000`). A probe built only
+        from the shared draw never touches that stream, so it is blind to
+        exactly the parameter the L1 rungs vary -- and that parameter is the
+        drift, which is what makes a dataset one-sided.
+
+        The two-condition rung is where it showed, because two values landing
+        on the same side of zero is common while four are protected by their
+        own spread. On the sweep's own twenty seeds, before the second probe:
+        L1_n250 degenerated 3/20 for gamma_drift, 2/20 for gamma_drift_angle
+        and 1/20 for ddm_sdv, with every other rung clean. This test walks the
+        whole ladder rather than the widest rung, which is what let that
+        through.
+        """
+        pytest.importorskip("hssm", reason="validate dependency group not installed")
+        model = rd.load_model("gamma_drift")
+        # The sweep's real seeds: recover_parameters uses 10_000 + index.
+        for seed in range(10_000, 10_010):
+            for name, design in rd.DESIGNS.items():
+                if design.optional:
+                    continue
+                data, _ = rd.build_dataset(model, design, seed)
+                share = rd.min_choice_share(data["response"].to_numpy(), model)
+                assert share >= rd.MIN_CHOICE_SHARE, (name, seed, share)
+
+    def test_the_probes_are_constants_and_span_the_vulnerable_shape(self):
+        # Structural, so the fix cannot be quietly undone: the probes must not
+        # be the requested design (that is what keeps the pairing), and one of
+        # them must be multi-condition (that is what closes the blind spot).
+        assert all(d.name.startswith("__probe") for d in rd.PROBE_DESIGNS)
+        assert any(d.n_conditions > 1 for d in rd.PROBE_DESIGNS)
+        assert min(d.n_conditions for d in rd.PROBE_DESIGNS) == 1
 
     def test_the_levels_disagree_about_degeneracy_so_this_is_not_vacuous(self):
         # The tripwire. If no seed in this range makes L0 degenerate while L1
