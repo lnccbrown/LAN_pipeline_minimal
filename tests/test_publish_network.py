@@ -331,3 +331,140 @@ class TestProductionGuard:
         monkeypatch.setattr(builtins, "__import__", explode)
         with pytest.raises(PublishError, match="production repo"):
             run_publish(hf_repo="franklab/HSSM", model="ddm", network_type="lan")
+
+    def test_allow_production_opens_the_guard(self, monkeypatch):
+        # The refusal branch is covered four ways above; the escape hatch had
+        # no coverage at all, so nothing proved it actually opens -- a typo in
+        # the parameter name would have looked exactly like a working guard.
+        # Block the first import *after* the guard: reaching it is the proof.
+        import builtins
+
+        from publish.publish_network import run_publish
+
+        real_import = builtins.__import__
+
+        def explode(name, *args, **kwargs):
+            if name.split(".")[0] == "lanfactory":
+                raise ImportError("got past the guard")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", explode)
+        with pytest.raises(ImportError, match="got past the guard"):
+            run_publish(
+                hf_repo="franklab/HSSM",
+                model="ddm",
+                network_type="lan",
+                allow_production=True,
+            )
+
+
+class TestProductionConfirmation:
+    """--allow-production is necessary but not sufficient.
+
+    A flag survives shell history and a copied runbook line, which is the
+    "ordinary CLI invocation" the refusal exists to prevent. Retyping the repo
+    id does not survive either.
+    """
+
+    def invoke(self, monkeypatch, argv, stdin=None):
+        """Run the CLI with run_publish stubbed; returns (result, calls)."""
+        from typer.testing import CliRunner
+
+        from publish import publish_network
+
+        calls = []
+        monkeypatch.setattr(
+            publish_network,
+            "run_publish",
+            lambda **kwargs: calls.append(kwargs) or {"published": True},
+        )
+        result = CliRunner().invoke(publish_network.app, argv, input=stdin)
+        return result, calls
+
+    def test_a_non_interactive_invocation_does_not_promote(self, monkeypatch):
+        # The flag on its own, with no one at the keyboard -- a cron job, a CI
+        # step, a runbook line pasted into a script. There is no confirmation
+        # to give, so nothing is published.
+        result, calls = self.invoke(
+            monkeypatch,
+            ["--hf-repo", "franklab/HSSM", "--model", "ddm", "--allow-production"],
+        )
+        assert result.exit_code != 0
+        assert calls == []
+
+    def test_a_near_miss_does_not_promote(self, monkeypatch):
+        # The staging repo is one token away on the keyboard and in muscle
+        # memory, and it is the repo the operator was just working in.
+        result, calls = self.invoke(
+            monkeypatch,
+            ["--hf-repo", "franklab/HSSM", "--model", "ddm", "--allow-production"],
+            stdin="franklab/HSSM_staging\n",
+        )
+        assert result.exit_code == 1
+        assert "confirmation did not match" in result.stdout
+        assert calls == []
+
+    def test_retyping_the_repo_id_proceeds(self, monkeypatch):
+        from publish import publish_network
+
+        seen = {}
+
+        def record(**kwargs):
+            seen.update(kwargs)
+            return {"published": True}
+
+        monkeypatch.setattr(publish_network, "run_publish", record)
+        from typer.testing import CliRunner
+
+        result = CliRunner().invoke(
+            publish_network.app,
+            ["--hf-repo", "franklab/HSSM", "--model", "ddm", "--allow-production"],
+            input="franklab/HSSM\n",
+        )
+        assert result.exit_code == 0
+        assert seen["allow_production"] is True
+
+    def test_a_staging_repo_is_never_prompted(self, monkeypatch):
+        from publish import publish_network
+
+        called = {}
+
+        def record(**kwargs):
+            called.update(kwargs)
+            return {"published": True}
+
+        monkeypatch.setattr(publish_network, "run_publish", record)
+        from typer.testing import CliRunner
+
+        # No input supplied: a prompt here would hang or abort, so passing
+        # proves the confirmation stays out of the ordinary staging path.
+        result = CliRunner().invoke(
+            publish_network.app,
+            ["--hf-repo", "franklab/HSSM_staging", "--model", "ddm"],
+        )
+        assert result.exit_code == 0
+        assert called["hf_repo"] == "franklab/HSSM_staging"
+
+    def test_a_dry_run_is_not_prompted(self, monkeypatch):
+        # --dry-run writes nothing anywhere, so gating it behind a prompt is
+        # friction that buys nothing -- and it is the rehearsal that catches
+        # the things --dry-run *can* see before a real promote.
+        from publish import publish_network
+
+        monkeypatch.setattr(
+            publish_network, "run_publish", lambda **kw: {"published": False}
+        )
+        from typer.testing import CliRunner
+
+        result = CliRunner().invoke(
+            publish_network.app,
+            [
+                "--hf-repo",
+                "franklab/HSSM",
+                "--model",
+                "ddm",
+                "--allow-production",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0

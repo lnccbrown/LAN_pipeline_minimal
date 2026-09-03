@@ -71,8 +71,10 @@ job IDs, run IDs, paths, and outcomes without scraping logs.
 
 The validator gathers mechanical, integration, and statistical evidence. The
 publisher isolates a single run by `run_uuid`, requires the promotion-critical
-gates to have actually run, and uploads only to a non-production target. The
-normal CLI cannot write to the production repository.
+gates to have actually run, and defaults to a non-production target. Reaching
+the production repository takes `--allow-production` *and* retyping the repo id
+at an interactive prompt, so it cannot happen as a side effect of an ordinary
+invocation.
 
 ## Reproducibility boundary
 

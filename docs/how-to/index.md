@@ -26,5 +26,6 @@ are templates for larger runs, not universal production settings.
   run, inspect a dry-run plan, and upload only to a staging repository.
 
 The promotion guides deliberately stop short of the production Hugging Face
-repository. The normal `lan-publish` CLI refuses that destination so production
-promotion remains an explicit, separately governed action.
+repository. `lan-publish` refuses that destination unless given
+`--allow-production` and an interactive confirmation, so production promotion
+remains an explicit, separately governed action.
