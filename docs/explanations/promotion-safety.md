@@ -45,12 +45,19 @@ plan, but writes neither Hugging Face nor MLflow publication state. A persistent
 staging directory lets the operator inspect the exact files and report before
 repeating the command.
 
-### 5. Staging-only destination
+### 5. Production is reachable only deliberately
 
-The public CLI refuses `franklab/HSSM`, normalized for capitalization,
+The CLI refuses `franklab/HSSM` by default, normalized for capitalization,
 whitespace, and trailing slashes. That repository is the production source for
-released HSSM versions. The pipeline command can upload only to another target,
-where humans and downstream checks can review the candidate.
+released HSSM versions, so the ordinary path uploads elsewhere, where humans and
+downstream checks can review the candidate.
+
+Promotion requires `--allow-production` *and* retyping the repo id at an
+interactive prompt. The second half is the load-bearing one: a flag survives
+shell history, a copied runbook line, and a re-run of the wrong command, so a
+flag alone would be the ordinary invocation this check exists to prevent.
+`--dry-run` is not prompted: it touches neither Hugging Face nor MLflow,
+though it still stages files locally and rewrites `validation_report.json`.
 
 ### 6. Explicit replacement and verifiable records
 

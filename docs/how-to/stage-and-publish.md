@@ -78,9 +78,12 @@ If the target already has the canonical root artifact, replacement requires an
 explicit `--overwrite-root`. That flag is consequential: HSSM consumers of the
 target resolve the root name.
 
-The normal CLI refuses `franklab/HSSM`, including capitalization and trailing
-slash variants. That repository is the production source used by released HSSM
-versions; promotion from staging must be a separate deliberate action.
+Non-production destinations are the default. The CLI refuses `franklab/HSSM`
+unless told otherwise, including capitalization and trailing slash variants:
+that repository is the production source used by released HSSM versions.
+Promoting to it requires `--allow-production` and retyping the repo id at an
+interactive terminal -- piped input is refused outright, so an ordinary script
+or copied runbook line cannot answer the prompt.
 
 ## Verify the records
 

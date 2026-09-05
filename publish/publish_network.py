@@ -40,9 +40,11 @@ import json
 import logging
 import os
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import click
 import typer
 
 logger = logging.getLogger("publish_network")
@@ -53,14 +55,44 @@ PUBLISH_EXPERIMENT = "publishing"
 
 # Writing these is not reversible in any way that matters: every released HSSM
 # downloads from the repo root at `main` with no revision pin, so a bad file is
-# live for every user the moment it lands. Publishing here is deliberately not
-# reachable from the CLI in this version.
+# live for every user the moment it lands. Reaching it takes --allow-production
+# *and* retyping the repo id at the prompt: the point is that a promotion
+# cannot be collapsed into an ordinary CLI invocation, not that it is
+# impossible.
 PRODUCTION_REPOS = frozenset({"franklab/HSSM"})
 
 # Parity is allowed to skip — it needs a *_train_state.jax sibling, which
 # torch-trained networks legitimately do not have. The other three have no
 # excuse: if one of them did not run, the network is unproven.
 REQUIRED_GATES = ("structure", "hssm_load", "density")
+
+
+def _normalize_repo(hf_repo: str) -> str:
+    """Strip what a copy-paste adds without naming a different repo."""
+    return hf_repo.strip().strip("/")
+
+
+def _stdin_is_a_terminal() -> bool:
+    """Whether a person is actually at a keyboard.
+
+    A function rather than an inline `sys.stdin.isatty()` so tests can fake it:
+    click's CliRunner replaces `sys.stdin` during a run, so patching the real
+    one has no effect and the check would go untested -- which for a check
+    standing in front of a production write is the same as not having it.
+    """
+    return sys.stdin.isatty()
+
+
+def _is_production(hf_repo: str) -> bool:
+    """Whether this names the repo every released HSSM downloads from.
+
+    Compared case-insensitively: HuggingFace namespaces are case-insensitively
+    unique, so "Franklab/HSSM" is not some other repo -- it is this one with a
+    capital letter.
+    """
+    return _normalize_repo(hf_repo).casefold() in {
+        repo.casefold() for repo in PRODUCTION_REPOS
+    }
 
 
 class PublishError(RuntimeError):
@@ -400,6 +432,12 @@ def main(
         help="Replace an existing root {model}.onnx. Needed to republish a "
         "model that is already in the target repo.",
     ),
+    allow_production: bool = typer.Option(
+        False,
+        help="Permit writing to the production repo. Requires retyping the "
+        "repo id at an interactive prompt -- promoting is a review decision, "
+        "not a flag.",
+    ),
     log_level: str = typer.Option("INFO"),
 ):
     """Validate a trained network and publish it to HuggingFace."""
@@ -407,6 +445,37 @@ def main(
     if not isinstance(level, int):
         raise typer.BadParameter(f"Unknown log level {log_level!r}.")
     logging.basicConfig(level=level, format="%(levelname)s %(message)s")
+
+    # A flag on its own is exactly the "ordinary CLI invocation" the refusal
+    # exists to prevent: it survives shell history, a copied runbook line, and
+    # a re-run of the wrong command. Retyping the repo id does not. Skipped
+    # under --dry-run, which touches neither HF nor MLflow -- it still writes
+    # local staging files and the gate report, but nothing irreversible.
+    if allow_production and not dry_run and _is_production(hf_repo):
+        # The prompt is only a check if a person answers it. Piping the answer
+        # in -- `echo franklab/HSSM | lan-publish ... --allow-production` -- is
+        # a script, which is precisely what this is guarding against, so a
+        # non-terminal stdin is refused before anything is asked.
+        error = None
+        if not _stdin_is_a_terminal():
+            error = (
+                "--allow-production needs an interactive terminal: the "
+                "confirmation is what makes a promotion deliberate, and piped "
+                "input is not a person. Run it from a terminal."
+            )
+        else:
+            try:
+                typed = typer.prompt(f"Retype {_normalize_repo(hf_repo)} to confirm")
+            except (click.Abort, EOFError):
+                # Ctrl-C or a closed stdin. Without this the CLI dies on a
+                # traceback and skips the JSON line every caller parses.
+                typed = ""
+            if _normalize_repo(typed).casefold() != _normalize_repo(hf_repo).casefold():
+                error = "production confirmation did not match; nothing was written"
+        if error is not None:
+            logger.error(error)
+            print(json.dumps({"published": False, "error": error}))
+            raise typer.Exit(code=1)
 
     try:
         result = run_publish(
@@ -419,6 +488,7 @@ def main(
             skip_density=skip_density,
             dry_run=dry_run,
             overwrite_root=overwrite_root,
+            allow_production=allow_production,
         )
     except PublishError as e:
         logger.error(str(e))
@@ -452,9 +522,8 @@ def run_publish(
     # lets it walk past the only check standing in front of an irreversible
     # write. Surrounding whitespace and a trailing slash survive a copy-paste
     # and name the same repo too.
-    hf_repo = hf_repo.strip().strip("/")
-    production = {repo.casefold() for repo in PRODUCTION_REPOS}
-    if hf_repo.casefold() in production and not allow_production:
+    hf_repo = _normalize_repo(hf_repo)
+    if _is_production(hf_repo) and not allow_production:
         raise PublishError(
             f"{hf_repo} is the production repo every released HSSM downloads "
             "from. Publish to a staging repo and promote deliberately."
