@@ -1027,6 +1027,122 @@ class TestArmNamesStayUsable:
         assert len(written) == 1, "the shard must land where load_shards looks"
 
 
+class TestAnUnidentifiedCellSaysSo:
+    """A chain cannot mix toward a value the data do not pick out.
+
+    When the likelihood says nothing about a parameter its posterior IS the
+    prior, the sampler wanders it, and the fit fails the rhat/ESS filter -- so
+    the cell used to report "only k converged fits, inconclusive". That reads as
+    sampler trouble, which is the wrong story and the wrong verdict: the recipe
+    holds that a design which cannot identify a parameter is not evidence
+    against the network.
+
+    Measured on gamma_drift_angle, where the gamma bump often peaks after the
+    decision window closes: 12 cells, every one of them `shape` or `scale`.
+    """
+
+    @staticmethod
+    def _fits(n, label=None, **kw):
+        return [
+            shard("approx_differentiable", index=i, label=label, **kw) for i in range(n)
+        ]
+
+    # A fit whose posterior never tightened past its prior: no mixing, and
+    # with 3 effective samples the sd estimate overshoots, so contraction
+    # lands above 1 -- what matters is only that it clears MAX_CONTRACTION.
+    AT_PRIOR = dict(rhat=1.9, ess=3.0, contraction=1.36)
+    # A fit that failed for some other reason -- still tight, still stuck.
+    STUCK = dict(rhat=1.4, ess=50.0, contraction=0.30)
+    HEALTHY = dict(rhat=1.0, ess=1000.0, contraction=0.05)
+
+    def test_a_design_limited_cell_is_reported_not_failed(self):
+        # One parameter the design cannot identify, alongside one it can. The
+        # sweep still has evidence, so it can pass -- and the unidentified
+        # parameter must not take it down with it.
+        shards = self._fits(12, label="scale", **self.AT_PRIOR)
+        shards += self._fits(4, label="scale", **self.HEALTHY)
+        shards += self._fits(20, label="v", **self.HEALTHY)
+        summary = agg.summarise(shards)
+        notes = agg.unidentified_cells(summary)
+        assert len(notes) == 1 and "/scale:" in notes[0]
+        assert "does not identify it at these truths" in notes[0]
+        passed, failures = agg.verdict(summary)
+        assert passed, failures
+        assert not any("inconclusive" in f for f in failures)
+
+    def test_discarded_attempts_are_not_hidden_behind_the_exemption(self):
+        # An arm whose surviving cells are all unidentified, but a chunk of
+        # whose fits never survived at all. Unidentifiability explains the
+        # cells it produced -- it does not explain the fits that died on the
+        # way in, and the exemption must not launder them. Another design
+        # keeps the sweep judgeable, which is exactly the case where the old
+        # exemption let the verdict pass.
+        dead_design = "L0_n250"
+        shards = self._fits(12, design=dead_design, **self.AT_PRIOR)
+        shards += [
+            errored_shard("approx_differentiable", design=dead_design, index=50 + i)
+            for i in range(8)
+        ]
+        shards += self._fits(20, design="L1_n500", label="v", **self.HEALTHY)
+
+        passed, failures = agg.verdict(agg.summarise(shards))
+
+        assert not passed
+        assert any(dead_design in f and "8 errored" in f for f in failures)
+
+    def test_ordinary_non_convergence_still_fails(self):
+        # Nothing at the prior: the sampler really is in trouble, and the cell
+        # must keep saying so rather than being excused. Paired with a judged
+        # cell so the failure is the inconclusive one, not plain silence.
+        shards = self._fits(16, label="scale", **self.STUCK)
+        shards += self._fits(4, label="scale", **self.HEALTHY)
+        shards += self._fits(20, label="v", **self.HEALTHY)
+        summary = agg.summarise(shards)
+        assert agg.unidentified_cells(summary) == []
+        passed, failures = agg.verdict(summary)
+        assert not passed
+        assert any("inconclusive" in f for f in failures)
+
+    @pytest.mark.parametrize(
+        ("at_prior", "healthy", "stuck", "expected"),
+        [
+            (12, 4, 4, True),  # the plurality
+            (9, 7, 4, True),  # beats both without reaching any fixed count
+            (9, 4, 7, True),
+            (6, 8, 6, False),  # converged wins
+            (6, 4, 10, False),  # the unexplained group wins
+            (1, 0, 19, False),  # a lone prior-spanning fit explains nothing
+        ],
+    )
+    def test_the_rule_is_a_plurality_not_a_threshold(
+        self, at_prior, healthy, stuck, expected
+    ):
+        entry = {
+            "n_unidentified": at_prior,
+            "n_converged": healthy,
+            "n_fits": at_prior + healthy + stuck,
+        }
+        assert agg._is_unidentified(entry) is expected
+
+    def test_a_sweep_that_is_entirely_unidentified_still_does_not_pass(self):
+        # Silence is not a pass, and neither is a design that said nothing --
+        # it is a real finding, but not evidence the network is calibrated.
+        summary = agg.summarise(self._fits(20, **self.AT_PRIOR))
+        passed, failures = agg.verdict(summary)
+        assert not passed
+        assert "nothing here to pass" in failures[0]
+        assert "unidentified by their design" in failures[0]
+
+    def test_verdict_does_not_write_into_the_summary_it_is_handed(self):
+        # `verdict` is documented as a pure function of the shards it is given;
+        # the notes are derived by `unidentified_cells`, not stored during the
+        # verdict, so a caller can score the same summary twice.
+        summary = agg.summarise(self._fits(12, **self.AT_PRIOR))
+        before = json.dumps(summary, sort_keys=True, default=str)
+        agg.verdict(summary)
+        assert json.dumps(summary, sort_keys=True, default=str) == before
+
+
 class TestSilenceCannotPass:
     """A fit that leaves no shard leaves no failure either.
 

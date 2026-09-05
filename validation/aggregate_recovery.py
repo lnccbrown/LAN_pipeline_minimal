@@ -262,6 +262,60 @@ def _is_reference(arm: str) -> bool:
     return arm.split("@", 1)[0] in REFERENCE_LIKELIHOODS
 
 
+def _is_unidentified(entry: dict) -> bool:
+    """Whether a cell has nothing to judge BECAUSE its design says nothing.
+
+    Distinct from ordinary non-convergence, and the distinction is a plurality
+    rather than a threshold: a cell's fits fall into three groups -- converged,
+    left at the prior, and failed for some other reason -- and this asks only
+    whether the second is the largest. No constant to tune, and it cannot fire
+    on a cell where most fits failed for reasons nobody has explained.
+
+    A bare count would have been wrong in both directions. Reusing
+    MIN_CONVERGED_FITS caught 6 of gamma_drift_angle's 109 ineligible cells,
+    leaving ones with 9 unidentified fits against 4 converged still labelled
+    sampler trouble; "more unidentified than converged" caught 18, including
+    cells where the unexplained group was larger than either. The plurality
+    catches 12, and leaves all 64 cells with no unidentified fits alone.
+    """
+    unidentified = entry.get("n_unidentified", 0)
+    converged = entry.get("n_converged", 0)
+    other = entry.get("n_fits", 0) - unidentified - converged
+    return unidentified > converged and unidentified > other
+
+
+def unidentified_cells(summary: dict) -> list[str]:
+    """One note per cell the design could not identify.
+
+    Never failures. The recipe's whole point is that a design which cannot
+    identify a parameter is not evidence against the network -- an honest wide
+    posterior is the likelihood telling the truth about what the data support.
+    What was wrong before is that these arrived dressed as sampler trouble.
+    """
+    notes = []
+    for key, entry in sorted(summary["cells"].items()):
+        if entry["eligible"] or not _is_unidentified(entry):
+            continue
+        where = key.replace(KEY_SEPARATOR, "/")
+        notes.append(
+            f"{where}: {entry['n_unidentified']} of {entry['n_fits']} fits left "
+            "this parameter at its prior -- the design does not identify it at "
+            "these truths, so there is nothing here to hold against the network"
+        )
+    return notes
+
+
+def _converged(record: dict) -> bool:
+    """Whether one fit's parameter estimate is trustworthy enough to score."""
+    rhat = record.get("rhat")
+    return (
+        rhat == rhat  # NaN fails this: single-chain fits go out
+        and rhat is not None
+        and rhat <= MAX_RHAT
+        and record.get("ess_bulk", 0.0) >= MIN_ESS
+    )
+
+
 def _base_param(label: str) -> str:
     """`v[2]` -> `v`. The parameter behind a per-condition label.
 
@@ -322,17 +376,35 @@ def summarise(shards: list[dict]) -> dict:
 
     summary = {}
     for (model, arm, design, label), records in sorted(cells.items()):
-        usable = [
+        usable = [r for r in records if _converged(r)]
+        # A chain cannot mix toward a value the data do not pick out. When the
+        # likelihood says nothing about a parameter, its posterior IS the prior,
+        # the sampler wanders it, and the fit fails the rhat/ESS filter above --
+        # so it is dropped here and the cell reports "only k converged fits,
+        # inconclusive". That reads as sampler trouble, which is the wrong
+        # story: nothing is wrong with the sampler, the design simply does not
+        # identify this parameter at that truth.
+        #
+        # The module already knows the difference -- MAX_CONTRACTION exists to
+        # separate a posterior that is wide because the data are uninformative
+        # from one that is wide because the likelihood contributed nothing --
+        # but that gate runs on `usable`, which these never join. Measured on
+        # gamma_drift_angle: 174 of 240 fits, with shape/scale posteriors
+        # spanning their whole prior box (contraction 1.36 against a 0.95 bar)
+        # at ESS 3 and rhat 1.9, all reported as inconclusive.
+        unidentified = [
             r
             for r in records
-            if r["rhat"] == r["rhat"]  # NaN fails this: single-chain fits go out
-            and r["rhat"] <= MAX_RHAT
-            and r["ess_bulk"] >= MIN_ESS
+            if not _converged(r) and r.get("contraction", 0.0) >= MAX_CONTRACTION
         ]
         n = len(usable)
         entry = {
             "n_fits": len(records),
             "n_converged": n,
+            # Not a subset of the converged count: these are fits the
+            # convergence filter removed, counted separately so a cell can say
+            # WHY it has nothing to judge.
+            "n_unidentified": len(unidentified),
             "eligible": n >= MIN_CONVERGED_FITS,
             "base_param": _base_param(label),
             "coverage": None,
@@ -489,6 +561,14 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
     """
     failures: list[str] = []
     cells = summary["cells"]
+    # Reported, never blocking -- see the ineligible branch below. A count, not
+    # the formatted notes: `unidentified_cells` builds report prose, and the
+    # only thing `verdict` says about these cells is how many there were.
+    n_unidentified = sum(
+        1
+        for entry in cells.values()
+        if not entry["eligible"] and _is_unidentified(entry)
+    )
     references = _reference_index(cells)
 
     judged = 0
@@ -498,6 +578,15 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
             continue
         where = key.replace(KEY_SEPARATOR, "/")
         if not entry["eligible"]:
+            if _is_unidentified(entry):
+                # Not a failure, and deliberately not counted as one. The
+                # recipe's whole point is that a design which cannot identify a
+                # parameter is not evidence against the network -- an honest
+                # wide posterior is the likelihood telling the truth about what
+                # the data support. What was wrong before is that these arrived
+                # dressed as sampler trouble; they are reported as themselves
+                # now, and `unidentified` carries them into the report.
+                continue
             failures.append(
                 f"{where}: only {entry['n_converged']} converged fits, below the "
                 f"{MIN_CONVERGED_FITS} needed to judge -- inconclusive, not a pass"
@@ -556,11 +645,27 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
         model, arm, design = _split_key(arm_key, arity=3)
         if _is_reference(arm):
             continue
-        if any(
-            key.startswith(_join_key(model, arm, design) + KEY_SEPARATOR)
-            and cells[key]["eligible"]
-            for key in cells
-        ):
+        prefix = _join_key(model, arm, design) + KEY_SEPARATOR
+        mine = [key for key in cells if key.startswith(prefix)]
+        if any(cells[key]["eligible"] for key in mine):
+            continue
+        # An arm with no eligible cell has produced no evidence -- but if every
+        # one of its cells was unidentified, the reason is the design, and the
+        # cell-level notes have already said so. Failing here as well would
+        # charge the network for it twice. The "no network cells at all" check
+        # below is what still stops a wholly unidentified sweep from passing.
+        #
+        # The exemption only holds when unidentifiability accounts for every
+        # attempt. `mine` contains just the cells that survived shard-error,
+        # divergence and data-quality filtering -- an arm can read as "all
+        # unidentified" while a third of its fits died on the way in, and
+        # those deaths are not the design telling the truth about anything.
+        discarded = (
+            _errors_for(summary, model, arm, design)
+            + summary["excluded_for_divergences"].get(arm_key, 0)
+            + summary["excluded_for_degenerate_data"].get(arm_key, 0)
+        )
+        if not discarded and mine and all(_is_unidentified(cells[key]) for key in mine):
             continue
         failures.append(
             f"{model}/{arm}/{design}: {n_attempted} fits attempted, none usable "
@@ -569,7 +674,17 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
         )
 
     if not judged and not failures:
-        failures.append("no network cells at all: there is nothing here to pass")
+        # Silence is still not a pass -- including the silence of a sweep whose
+        # every cell was unidentified. That is a real finding about the design,
+        # but it is not evidence the network is calibrated.
+        failures.append(
+            "no network cells at all: there is nothing here to pass"
+            + (
+                f" ({n_unidentified} cells were unidentified by their design)"
+                if n_unidentified
+                else ""
+            )
+        )
 
     return not failures, failures
 
@@ -645,6 +760,7 @@ def main(
             "they would have said is missing from this verdict rather than "
             "failing it"
         ] + failures
+    unidentified = unidentified_cells(summary)
     report = {
         "schema_version": 2,
         "n_shards": len(shards),
@@ -663,6 +779,7 @@ def main(
         },
         "passed": passed,
         "failures": failures,
+        "unidentified": unidentified,
         **summary,
     }
 
@@ -681,6 +798,11 @@ def main(
                     c["n_converged"] for c in summary["cells"].values()
                 ),
                 "n_errored_shards": len(summary["errors"]),
+                # Cells the design could not identify. These do not fail the
+                # run -- an unidentifiable design is not evidence against the
+                # network -- but a driver that never opens the report still has
+                # to see that a verdict rested on fewer cells than it looks.
+                "n_unidentified_cells": len(unidentified),
                 "failures": failures,
             }
         )
