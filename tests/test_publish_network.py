@@ -5,6 +5,9 @@ exercised by hand against the staging repo, but the decisions that stop a bad
 publish are pure functions and belong here.
 """
 
+import json
+
+import click
 import pytest
 
 from publish.publish_network import (
@@ -366,12 +369,18 @@ class TestProductionConfirmation:
     id does not survive either.
     """
 
-    def invoke(self, monkeypatch, argv, stdin=None):
-        """Run the CLI with run_publish stubbed; returns (result, calls)."""
+    def invoke(self, monkeypatch, argv, stdin=None, tty=True):
+        """Run the CLI with run_publish stubbed; returns (result, calls).
+
+        `tty` fakes an interactive terminal, which the confirmation now
+        requires. CliRunner's stdin never is one, so without this every
+        confirmation path would be untestable.
+        """
         from typer.testing import CliRunner
 
         from publish import publish_network
 
+        monkeypatch.setattr(publish_network, "_stdin_is_a_terminal", lambda: tty)
         calls = []
         monkeypatch.setattr(
             publish_network,
@@ -381,13 +390,44 @@ class TestProductionConfirmation:
         result = CliRunner().invoke(publish_network.app, argv, input=stdin)
         return result, calls
 
-    def test_a_non_interactive_invocation_does_not_promote(self, monkeypatch):
-        # The flag on its own, with no one at the keyboard -- a cron job, a CI
-        # step, a runbook line pasted into a script. There is no confirmation
-        # to give, so nothing is published.
+    def test_piped_input_does_not_promote(self, monkeypatch):
+        # `echo franklab/HSSM | lan-publish ... --allow-production` answers the
+        # prompt perfectly and is exactly the scripted invocation the whole
+        # check exists to stop. A pipe is not a person.
         result, calls = self.invoke(
             monkeypatch,
             ["--hf-repo", "franklab/HSSM", "--model", "ddm", "--allow-production"],
+            stdin="franklab/HSSM\n",
+            tty=False,
+        )
+        assert result.exit_code == 1
+        assert "interactive terminal" in result.stdout
+        assert calls == []
+
+    def test_an_aborted_prompt_still_emits_the_json_line(self, monkeypatch):
+        # Ctrl-C at the prompt. Every caller parses the JSON line on stdout, so
+        # dying on a traceback would break the contract, not just the publish.
+        from publish import publish_network
+
+        def abort(*args, **kwargs):
+            raise click.Abort()
+
+        monkeypatch.setattr(publish_network.typer, "prompt", abort)
+        result, calls = self.invoke(
+            monkeypatch,
+            ["--hf-repo", "franklab/HSSM", "--model", "ddm", "--allow-production"],
+        )
+        assert result.exit_code == 1
+        assert json.loads(result.stdout.strip().splitlines()[-1])["published"] is False
+        assert calls == []
+
+    def test_a_non_interactive_invocation_does_not_promote(self, monkeypatch):
+        # The flag on its own, with no one at the keyboard -- a cron job, a CI
+        # step, a runbook line pasted into a script.
+        result, calls = self.invoke(
+            monkeypatch,
+            ["--hf-repo", "franklab/HSSM", "--model", "ddm", "--allow-production"],
+            tty=False,
         )
         assert result.exit_code != 0
         assert calls == []
@@ -407,6 +447,7 @@ class TestProductionConfirmation:
     def test_retyping_the_repo_id_proceeds(self, monkeypatch):
         from publish import publish_network
 
+        monkeypatch.setattr(publish_network, "_stdin_is_a_terminal", lambda: True)
         seen = {}
 
         def record(**kwargs):
@@ -427,6 +468,7 @@ class TestProductionConfirmation:
     def test_a_staging_repo_is_never_prompted(self, monkeypatch):
         from publish import publish_network
 
+        # No tty fake: a staging publish must not consult stdin at all.
         called = {}
 
         def record(**kwargs):

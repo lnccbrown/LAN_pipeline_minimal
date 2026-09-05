@@ -40,9 +40,11 @@ import json
 import logging
 import os
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import click
 import typer
 
 logger = logging.getLogger("publish_network")
@@ -68,6 +70,17 @@ REQUIRED_GATES = ("structure", "hssm_load", "density")
 def _normalize_repo(hf_repo: str) -> str:
     """Strip what a copy-paste adds without naming a different repo."""
     return hf_repo.strip().strip("/")
+
+
+def _stdin_is_a_terminal() -> bool:
+    """Whether a person is actually at a keyboard.
+
+    A function rather than an inline `sys.stdin.isatty()` so tests can fake it:
+    click's CliRunner replaces `sys.stdin` during a run, so patching the real
+    one has no effect and the check would go untested -- which for a check
+    standing in front of a production write is the same as not having it.
+    """
+    return sys.stdin.isatty()
 
 
 def _is_production(hf_repo: str) -> bool:
@@ -438,9 +451,27 @@ def main(
     # a re-run of the wrong command. Retyping the repo id does not. Skipped
     # under --dry-run, which writes nothing anywhere.
     if allow_production and not dry_run and _is_production(hf_repo):
-        typed = typer.prompt(f"Retype {_normalize_repo(hf_repo)} to confirm")
-        if _normalize_repo(typed).casefold() != _normalize_repo(hf_repo).casefold():
-            error = "production confirmation did not match; nothing was written"
+        # The prompt is only a check if a person answers it. Piping the answer
+        # in -- `echo franklab/HSSM | lan-publish ... --allow-production` -- is
+        # a script, which is precisely what this is guarding against, so a
+        # non-terminal stdin is refused before anything is asked.
+        error = None
+        if not _stdin_is_a_terminal():
+            error = (
+                "--allow-production needs an interactive terminal: the "
+                "confirmation is what makes a promotion deliberate, and piped "
+                "input is not a person. Run it from a terminal."
+            )
+        else:
+            try:
+                typed = typer.prompt(f"Retype {_normalize_repo(hf_repo)} to confirm")
+            except (click.Abort, EOFError):
+                # Ctrl-C or a closed stdin. Without this the CLI dies on a
+                # traceback and skips the JSON line every caller parses.
+                typed = ""
+            if _normalize_repo(typed).casefold() != _normalize_repo(hf_repo).casefold():
+                error = "production confirmation did not match; nothing was written"
+        if error is not None:
             logger.error(error)
             print(json.dumps({"published": False, "error": error}))
             raise typer.Exit(code=1)
