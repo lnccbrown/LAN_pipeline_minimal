@@ -449,7 +449,8 @@ def main(
     # A flag on its own is exactly the "ordinary CLI invocation" the refusal
     # exists to prevent: it survives shell history, a copied runbook line, and
     # a re-run of the wrong command. Retyping the repo id does not. Skipped
-    # under --dry-run, which writes nothing anywhere.
+    # under --dry-run, which touches neither HF nor MLflow -- it still writes
+    # local staging files and the gate report, but nothing irreversible.
     if allow_production and not dry_run and _is_production(hf_repo):
         # The prompt is only a check if a person answers it. Piping the answer
         # in -- `echo franklab/HSSM | lan-publish ... --allow-production` -- is

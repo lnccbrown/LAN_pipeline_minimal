@@ -13,7 +13,7 @@ and safety at their boundaries.
 | `LANfactory` | Train LAN/CPN/OPN networks and export artifacts | Cross-run staging or production approval |
 | `sbatch_scripts/gen_sbatch.py` | Resolve resources, create MLflow identity, render and submit jobs | Simulation or training algorithms |
 | `validation/validate_network.py` | Test an ONNX candidate against the ecosystem contract | Deciding which training run to select |
-| `publish/publish_network.py` | Resolve one run, isolate its artifacts, gate, upload to staging, and record | Direct production publication |
+| `publish/publish_network.py` | Resolve one run, isolate its artifacts, gate, upload (staging by default; production behind a governed confirmation), and record | Deciding that a candidate merits production |
 | HSSM | Load the resulting likelihood in an inference model | Training or publishing the network |
 
 This separation lets the pipeline remain a small orchestration repository. It

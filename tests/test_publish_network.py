@@ -488,7 +488,8 @@ class TestProductionConfirmation:
         assert called["hf_repo"] == "franklab/HSSM_staging"
 
     def test_a_dry_run_is_not_prompted(self, monkeypatch):
-        # --dry-run writes nothing anywhere, so gating it behind a prompt is
+        # --dry-run touches neither HF nor MLflow (it does stage files and
+        # rewrite the gate report locally), so gating it behind a prompt is
         # friction that buys nothing -- and it is the rehearsal that catches
         # the things --dry-run *can* see before a real promote.
         from publish import publish_network

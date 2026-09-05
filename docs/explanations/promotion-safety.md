@@ -56,7 +56,8 @@ Promotion requires `--allow-production` *and* retyping the repo id at an
 interactive prompt. The second half is the load-bearing one: a flag survives
 shell history, a copied runbook line, and a re-run of the wrong command, so a
 flag alone would be the ordinary invocation this check exists to prevent.
-`--dry-run` is not prompted, because it writes nothing.
+`--dry-run` is not prompted: it touches neither Hugging Face nor MLflow,
+though it still stages files locally and rewrites `validation_report.json`.
 
 ### 6. Explicit replacement and verifiable records
 
