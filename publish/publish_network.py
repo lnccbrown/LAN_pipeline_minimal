@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -127,13 +128,33 @@ def resolve_training_run(
 
 
 MODEL_CARD = "model_card.yaml"
+RECOVERY_REPORT = "recovery_report.json"
+
+# Files the artifact folder may carry whose names do not embed the run_uuid,
+# so the glob in stage_artifacts cannot find them. Copied through explicitly.
+SIDECAR_FILES = (MODEL_CARD, RECOVERY_REPORT)
 
 # Names the publish itself writes into the staging directory: the gate report,
 # and the card and README lanfactory renders during upload. They are not
 # leftovers from someone else's run, so finding them is not a reason to refuse
 # — without this a *successful* publish poisons its own staging directory and
 # the identical command can never be run again.
-PUBLISH_WRITES = frozenset({"validation_report.json", MODEL_CARD, "README.md"})
+PUBLISH_WRITES = frozenset({"validation_report.json", *SIDECAR_FILES, "README.md"})
+
+
+def upload_include_patterns(defaults: Sequence[str]) -> list[str]:
+    """lanfactory's upload patterns, plus the evidence this repo produces.
+
+    Named here rather than added to lanfactory's defaults: parameter recovery
+    is this pipeline's concept, and lanfactory has no notion of it — it neither
+    produces nor reads the report. Baking the filename into the uploader would
+    make an upstream package carry a downstream one's vocabulary.
+
+    The gate report is the counter-example, already in lanfactory's defaults
+    for the same non-reason. Left alone here rather than moved, to keep this
+    change from altering what other callers upload.
+    """
+    return [*defaults, RECOVERY_REPORT]
 
 
 def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
@@ -187,14 +208,40 @@ def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
     for path in matches:
         shutil.copy2(path, destination / path.name)
 
-    # An operator-authored card, if the artifact folder carries one. It has no
-    # run_uuid in its name, so the glob above cannot find it, and without this
-    # lanfactory falls back to generating a default card whose usage example
-    # assumes the model is already a built-in HSSM name. For a model published
-    # before its HSSM config ships, that example does not run.
-    card = source / MODEL_CARD
-    if card.is_file():
-        shutil.copy2(card, destination / MODEL_CARD)
+    # Sidecars the artifact folder may carry. Neither name embeds the run_uuid,
+    # so the glob above cannot find them.
+    #
+    # The card: without it lanfactory generates a default whose usage example
+    # assumes the model is already a built-in HSSM name, which does not run for
+    # a model published before its HSSM config ships.
+    #
+    # The recovery report: validation_report.json cannot see a recovery
+    # failure — the gate has no recovery check in it — so without this the only
+    # evidence travelling with the network is the one that could not have
+    # caught the problem.
+    # Copy-or-delete, not copy-if-present: the staging directory survives
+    # between runs (PUBLISH_WRITES exists so a re-run does not refuse its own
+    # leftovers), so a sidecar staged last time and since removed from the
+    # source would otherwise stay behind and upload as if it described this
+    # network. For the recovery report that is the exact failure this publish
+    # step exists to prevent -- shipping evidence that belongs to another run.
+    for name in SIDECAR_FILES:
+        staged = destination / name
+        if staged.is_dir():
+            # Guarding both branches at once: unlink() raises on a directory
+            # regardless of missing_ok, and copy2() onto one silently copies
+            # INTO it -- producing model_card.yaml/model_card.yaml that the
+            # upload would then miss. Either way the operator put it there,
+            # so the operator removes it.
+            raise PublishError(
+                f"{staged} is a directory, not a staged sidecar. "
+                "Remove it or pass a different --staging-dir."
+            )
+        sidecar = source / name
+        if sidecar.is_file():
+            shutil.copy2(sidecar, staged)
+        else:
+            staged.unlink(missing_ok=True)
 
     onnx = [p for p in destination.iterdir() if p.suffix == ".onnx"]
     if len(onnx) != 1:
@@ -464,6 +511,7 @@ def run_publish(
 
     from lanfactory.hf import VALID_NETWORK_TYPES
     from lanfactory.hf.upload import (
+        DEFAULT_INCLUDE_PATTERNS,
         RootArtifactExistsError,
         canonical_root_filename,
         upload_model,
@@ -556,6 +604,7 @@ def run_publish(
                 repo_id=hf_repo,
                 commit_message=commit_message,
                 overwrite_root=overwrite_root,
+                include_patterns=upload_include_patterns(DEFAULT_INCLUDE_PATTERNS),
             )
         except RootArtifactExistsError as e:
             # Not re-raising lanfactory's text: it is written for lanfactory's

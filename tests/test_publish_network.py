@@ -12,6 +12,7 @@ from publish.publish_network import (
     PublishError,
     gate_verdict,
     stage_artifacts,
+    upload_include_patterns,
 )
 
 
@@ -165,6 +166,33 @@ class TestStaging:
 
         assert (staged / "model_card.yaml").read_text() == "title: gamma_drift (LAN)\n"
 
+    def test_stages_the_recovery_report(self, tmp_path):
+        # Same problem as the card: no run_uuid in the name, so the glob cannot
+        # find it. It matters because validation_report.json cannot see a
+        # recovery failure -- the gate has no recovery check in it -- so a
+        # network whose recovery verdict is false would otherwise ship with
+        # only the evidence that could not have caught the problem.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        (source / "recovery_report.json").write_text('{"passed": false}')
+        staged = tmp_path / "staged"
+
+        stage_artifacts(source, "a" * 32, staged)
+
+        assert (staged / "recovery_report.json").read_text() == '{"passed": false}'
+
+    def test_a_staged_recovery_report_is_not_a_foreign_leftover(self, tmp_path):
+        # It is copied from the source folder, so re-running the identical
+        # command finds it already there. Refusing on it would make the command
+        # unrepeatable, the same way the card once did.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        (source / "recovery_report.json").write_text('{"passed": false}')
+        staged = tmp_path / "staged"
+        stage_artifacts(source, "a" * 32, staged)
+
+        assert stage_artifacts(source, "a" * 32, staged).exists()
+
     def test_absent_model_card_is_not_an_error(self, tmp_path):
         source = tmp_path / "src"
         self.make_run(source, "a" * 32)
@@ -172,6 +200,37 @@ class TestStaging:
         stage_artifacts(source, "a" * 32, tmp_path / "staged")
 
         assert not (tmp_path / "staged" / "model_card.yaml").exists()
+
+    def test_a_sidecar_removed_from_source_is_removed_from_staging(self, tmp_path):
+        # The staging directory survives between runs. A recovery report staged
+        # last time and since deleted from the source would otherwise linger
+        # and upload as if it described this network -- shipping another run's
+        # evidence, which is the exact failure this publish step exists to
+        # prevent.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        (source / "recovery_report.json").write_text('{"passed": true}')
+        staged = tmp_path / "staged"
+
+        stage_artifacts(source, "a" * 32, staged)
+        assert (staged / "recovery_report.json").exists()
+
+        (source / "recovery_report.json").unlink()
+        stage_artifacts(source, "a" * 32, staged)
+
+        assert not (staged / "recovery_report.json").exists()
+
+    def test_a_directory_squatting_on_a_sidecar_name_is_refused(self, tmp_path):
+        # unlink() raises on a directory no matter what missing_ok says, and
+        # copy2() onto one silently copies INTO it -- either branch, the
+        # publish must stop with a clear refusal instead.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        staged = tmp_path / "staged"
+        (staged / "model_card.yaml").mkdir(parents=True)
+
+        with pytest.raises(PublishError, match="is a directory"):
+            stage_artifacts(source, "a" * 32, staged)
 
     def test_a_successful_publish_does_not_poison_its_staging_directory(self, tmp_path):
         # lanfactory renders the card and README into the staging dir during
@@ -186,6 +245,14 @@ class TestStaging:
             (staged / produced).write_text("written by the upload")
 
         assert stage_artifacts(source, "a" * 32, staged).exists()
+
+    def test_absent_recovery_report_is_not_an_error(self, tmp_path):
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+
+        stage_artifacts(source, "a" * 32, tmp_path / "staged")
+
+        assert not (tmp_path / "staged" / "recovery_report.json").exists()
 
     def test_refuses_a_staging_path_that_is_not_a_directory(self, tmp_path):
         source = tmp_path / "src"
@@ -331,3 +398,33 @@ class TestProductionGuard:
         monkeypatch.setattr(builtins, "__import__", explode)
         with pytest.raises(PublishError, match="production repo"):
             run_publish(hf_repo="franklab/HSSM", model="ddm", network_type="lan")
+
+
+class TestUploadIncludePatterns:
+    """What the pipeline asks lanfactory to upload.
+
+    Staging the recovery report is only half the job: lanfactory filters the
+    staging directory by pattern, so a file staged but not matched is silently
+    dropped.
+    """
+
+    def test_the_recovery_report_is_uploaded(self):
+        assert "recovery_report.json" in upload_include_patterns(["*.onnx"])
+
+    def test_lanfactory_defaults_are_preserved(self):
+        # Extended, never replaced: the defaults name the trainer's own
+        # artifacts, and re-listing them here would be a second copy to drift.
+        defaults = ["*.onnx", "*.pt", "model_card.yaml"]
+
+        assert upload_include_patterns(defaults)[: len(defaults)] == defaults
+
+    def test_the_pipeline_names_its_own_report(self):
+        # The ownership decision, asserted rather than left to a comment:
+        # parameter recovery is this repo's concept, so the filename lives at
+        # this call site and not in lanfactory's defaults.
+        from lanfactory.hf.upload import DEFAULT_INCLUDE_PATTERNS
+
+        assert "recovery_report.json" not in DEFAULT_INCLUDE_PATTERNS
+        assert "recovery_report.json" in upload_include_patterns(
+            DEFAULT_INCLUDE_PATTERNS
+        )
