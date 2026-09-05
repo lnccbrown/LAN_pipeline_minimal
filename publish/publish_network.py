@@ -226,11 +226,22 @@ def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
     # network. For the recovery report that is the exact failure this publish
     # step exists to prevent -- shipping evidence that belongs to another run.
     for name in SIDECAR_FILES:
+        staged = destination / name
+        if staged.is_dir():
+            # Guarding both branches at once: unlink() raises on a directory
+            # regardless of missing_ok, and copy2() onto one silently copies
+            # INTO it -- producing model_card.yaml/model_card.yaml that the
+            # upload would then miss. Either way the operator put it there,
+            # so the operator removes it.
+            raise PublishError(
+                f"{staged} is a directory, not a staged sidecar. "
+                "Remove it or pass a different --staging-dir."
+            )
         sidecar = source / name
         if sidecar.is_file():
-            shutil.copy2(sidecar, destination / name)
+            shutil.copy2(sidecar, staged)
         else:
-            (destination / name).unlink(missing_ok=True)
+            staged.unlink(missing_ok=True)
 
     onnx = [p for p in destination.iterdir() if p.suffix == ".onnx"]
     if len(onnx) != 1:

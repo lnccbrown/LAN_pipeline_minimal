@@ -220,6 +220,18 @@ class TestStaging:
 
         assert not (staged / "recovery_report.json").exists()
 
+    def test_a_directory_squatting_on_a_sidecar_name_is_refused(self, tmp_path):
+        # unlink() raises on a directory no matter what missing_ok says, and
+        # copy2() onto one silently copies INTO it -- either branch, the
+        # publish must stop with a clear refusal instead.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        staged = tmp_path / "staged"
+        (staged / "model_card.yaml").mkdir(parents=True)
+
+        with pytest.raises(PublishError, match="is a directory"):
+            stage_artifacts(source, "a" * 32, staged)
+
     def test_a_successful_publish_does_not_poison_its_staging_directory(self, tmp_path):
         # lanfactory renders the card and README into the staging dir during
         # upload. Treating those as foreign leftovers made the identical
