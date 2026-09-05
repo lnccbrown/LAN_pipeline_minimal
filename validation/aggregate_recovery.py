@@ -654,7 +654,18 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
         # cell-level notes have already said so. Failing here as well would
         # charge the network for it twice. The "no network cells at all" check
         # below is what still stops a wholly unidentified sweep from passing.
-        if mine and all(_is_unidentified(cells[key]) for key in mine):
+        #
+        # The exemption only holds when unidentifiability accounts for every
+        # attempt. `mine` contains just the cells that survived shard-error,
+        # divergence and data-quality filtering -- an arm can read as "all
+        # unidentified" while a third of its fits died on the way in, and
+        # those deaths are not the design telling the truth about anything.
+        discarded = (
+            _errors_for(summary, model, arm, design)
+            + summary["excluded_for_divergences"].get(arm_key, 0)
+            + summary["excluded_for_degenerate_data"].get(arm_key, 0)
+        )
+        if not discarded and mine and all(_is_unidentified(cells[key]) for key in mine):
             continue
         failures.append(
             f"{model}/{arm}/{design}: {n_attempted} fits attempted, none usable "

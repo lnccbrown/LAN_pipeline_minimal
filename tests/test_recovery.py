@@ -1070,6 +1070,26 @@ class TestAnUnidentifiedCellSaysSo:
         assert passed, failures
         assert not any("inconclusive" in f for f in failures)
 
+    def test_discarded_attempts_are_not_hidden_behind_the_exemption(self):
+        # An arm whose surviving cells are all unidentified, but a chunk of
+        # whose fits never survived at all. Unidentifiability explains the
+        # cells it produced -- it does not explain the fits that died on the
+        # way in, and the exemption must not launder them. Another design
+        # keeps the sweep judgeable, which is exactly the case where the old
+        # exemption let the verdict pass.
+        dead_design = "L0_n250"
+        shards = self._fits(12, design=dead_design, **self.AT_PRIOR)
+        shards += [
+            errored_shard("approx_differentiable", design=dead_design, index=50 + i)
+            for i in range(8)
+        ]
+        shards += self._fits(20, design="L1_n500", label="v", **self.HEALTHY)
+
+        passed, failures = agg.verdict(agg.summarise(shards))
+
+        assert not passed
+        assert any(dead_design in f and "8 errored" in f for f in failures)
+
     def test_ordinary_non_convergence_still_fails(self):
         # Nothing at the prior: the sampler really is in trouble, and the cell
         # must keep saying so rather than being excused. Paired with a judged
