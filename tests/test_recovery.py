@@ -1047,7 +1047,9 @@ class TestAnUnidentifiedCellSaysSo:
             shard("approx_differentiable", index=i, label=label, **kw) for i in range(n)
         ]
 
-    # A fit whose posterior is its prior: no mixing, contraction at 1.
+    # A fit whose posterior never tightened past its prior: no mixing, and
+    # with 3 effective samples the sd estimate overshoots, so contraction
+    # lands above 1 -- what matters is only that it clears MAX_CONTRACTION.
     AT_PRIOR = dict(rhat=1.9, ess=3.0, contraction=1.36)
     # A fit that failed for some other reason -- still tight, still stuck.
     STUCK = dict(rhat=1.4, ess=50.0, contraction=0.30)

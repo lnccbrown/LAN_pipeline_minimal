@@ -560,11 +560,15 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
     because it only ever iterated over cells that survived the filters.
     """
     failures: list[str] = []
-    # Reported, never blocking -- see the ineligible branch below. Local, and
-    # recomputed by `unidentified_cells` for the report: `verdict` stays a pure
-    # function of the summary it is handed rather than writing back into it.
-    unidentified = unidentified_cells(summary)
     cells = summary["cells"]
+    # Reported, never blocking -- see the ineligible branch below. A count, not
+    # the formatted notes: `unidentified_cells` builds report prose, and the
+    # only thing `verdict` says about these cells is how many there were.
+    n_unidentified = sum(
+        1
+        for entry in cells.values()
+        if not entry["eligible"] and _is_unidentified(entry)
+    )
     references = _reference_index(cells)
 
     judged = 0
@@ -665,8 +669,8 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
         failures.append(
             "no network cells at all: there is nothing here to pass"
             + (
-                f" ({len(unidentified)} cells were unidentified by their design)"
-                if unidentified
+                f" ({n_unidentified} cells were unidentified by their design)"
+                if n_unidentified
                 else ""
             )
         )
@@ -745,6 +749,7 @@ def main(
             "they would have said is missing from this verdict rather than "
             "failing it"
         ] + failures
+    unidentified = unidentified_cells(summary)
     report = {
         "schema_version": 2,
         "n_shards": len(shards),
@@ -763,7 +768,7 @@ def main(
         },
         "passed": passed,
         "failures": failures,
-        "unidentified": unidentified_cells(summary),
+        "unidentified": unidentified,
         **summary,
     }
 
@@ -786,7 +791,7 @@ def main(
                 # run -- an unidentifiable design is not evidence against the
                 # network -- but a driver that never opens the report still has
                 # to see that a verdict rested on fewer cells than it looks.
-                "n_unidentified_cells": len(unidentified_cells(summary)),
+                "n_unidentified_cells": len(unidentified),
                 "failures": failures,
             }
         )
