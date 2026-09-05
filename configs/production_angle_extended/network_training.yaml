@@ -1,0 +1,51 @@
+# angle_extended production LAN training.
+#
+# Two candidates, the same contrast gamma_drift_angle ran:
+#   --network-id 0: [128, 128, 128, 128]
+#   --network-id 1: [128, 128, 128, 128, 128]
+#
+# Repeating it here is deliberate rather than lazy. On gamma_drift the 4th
+# layer earned its place (val_loss 0.008216 -> 0.007966); on gamma_drift_angle
+# the 5th did not (0.002588 -> 0.002814, 8.7% WORSE). Both of those asked
+# whether depth helps as PARAMETER COUNT grows. This model asks a different
+# question with the same instrument: at only 5 parameters but with far sharper
+# densities, is capacity bought by depth worth having? Sharpness and
+# dimensionality are different demands and the answer need not carry over.
+#
+# 5 params -> input dim 7 (5 + rt + choice), inferred from the data at runtime.
+# That is the smallest network this pipeline has trained, so if either arm is
+# going to be over-provisioned it is here -- which is precisely why the
+# contrast is cheap to run and worth reading.
+#
+# GPU_BATCH_SIZE must divide rows-per-file (N_PARAMETER_SETS x
+# N_SAMPLES_PER_PARAM = 10^7) exactly: 50000 -> 200 batches/file.
+
+NETWORK_TYPE: "lan"
+CPU_BATCH_SIZE: 50000       # equal to GPU so a CPU fallback is the same problem
+GPU_BATCH_SIZE: 50000
+GENERATOR_APPROACH: "lan"
+OPTIMIZER_: "adam"
+N_EPOCHS: 20
+TRAINING_DATA_FOLDER: ""    # overridden by the mandatory --training-data-folder
+MODEL: "angle_extended"
+# False deliberately, matching every other production run: DatasetTorch
+# advances files on batch index, so a shuffled index stream reads rows from
+# whichever file is loaded; rows are already bootstrap-resampled on file load.
+SHUFFLE: False
+LAYER_SIZES: [[128, 128, 128, 128, 1], [128, 128, 128, 128, 128, 1]]
+ACTIVATIONS: [['tanh', 'tanh', 'tanh', 'tanh'],
+              ['tanh', 'tanh', 'tanh', 'tanh', 'tanh']]
+WEIGHT_DECAY: 0.0
+TRAIN_VAL_SPLIT: 0.98
+N_TRAINING_FILES: 300
+# Must stay a quoted string: it is eval'd with numpy in scope, and a bare
+# numeric literal raises TypeError.
+LABELS_LOWER_BOUND: "np.log(1e-7)"
+LEARNING_RATE: 0.001
+LR_SCHEDULER: 'reduce_on_plateau'
+LR_SCHEDULER_PARAMS:
+  factor: 0.1
+  patience: 2
+  threshold: 0.001
+  min_lr: 0.00000001
+  verbose: True

@@ -1,0 +1,39 @@
+# angle_extended production data generation.
+#
+# `angle` with drift on (-6, 6) instead of (-3, 3); 5 params,
+# ['v', 'a', 'z', 't', 'theta']. Everything else is `angle`'s box.
+#
+# Volume matches production_gamma_drift_angle so the two runs stay comparable,
+# and because 5000 sets over 5 parameters is a denser sample than the same
+# count over gamma_drift_angle's 8 -- the widened axis eats some of that
+# advantage but not all of it. Training-file count is the dimension that
+# extends cleanly after the fact, so start at parity and let the gates object
+# rather than guessing high now.
+#
+# Two things measured on this box that whoever reads a gate result should know:
+#   * 55.3% of uniform draws produce one-sided data (one response essentially
+#     never occurs), against 32.3% for `angle`. Those regions are legitimately
+#     part of the model -- a user fitting strong-drift data needs them -- so
+#     they are trained on, not excluded. It does mean over half the corpus
+#     teaches near-deterministic choice behaviour.
+#   * RT dispersion collapses with drift: sd 0.250 at v=1 against 0.059 at
+#     v=6. The densities in the extension are far more peaked than anything
+#     the G4 Hellinger threshold was calibrated against, so treat a G4 result
+#     here as informative about the threshold as well as about the network.
+
+MODEL: 'angle_extended'
+GENERATOR_APPROACH: 'lan'
+
+PIPELINE:
+  N_PARAMETER_SETS: 5000
+  N_SUBRUNS: 1
+
+SIMULATOR:
+  N_SAMPLES: 200000
+  DELTA_T: 0.001
+
+TRAINING:
+  N_SAMPLES_PER_PARAM: 2000
+
+ESTIMATOR:
+  TYPE: 'kde'
