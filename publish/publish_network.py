@@ -219,10 +219,18 @@ def stage_artifacts(source: Path, run_uuid: str, destination: Path) -> Path:
     # failure — the gate has no recovery check in it — so without this the only
     # evidence travelling with the network is the one that could not have
     # caught the problem.
+    # Copy-or-delete, not copy-if-present: the staging directory survives
+    # between runs (PUBLISH_WRITES exists so a re-run does not refuse its own
+    # leftovers), so a sidecar staged last time and since removed from the
+    # source would otherwise stay behind and upload as if it described this
+    # network. For the recovery report that is the exact failure this publish
+    # step exists to prevent -- shipping evidence that belongs to another run.
     for name in SIDECAR_FILES:
         sidecar = source / name
         if sidecar.is_file():
             shutil.copy2(sidecar, destination / name)
+        else:
+            (destination / name).unlink(missing_ok=True)
 
     onnx = [p for p in destination.iterdir() if p.suffix == ".onnx"]
     if len(onnx) != 1:

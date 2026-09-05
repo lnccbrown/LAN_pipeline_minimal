@@ -201,6 +201,25 @@ class TestStaging:
 
         assert not (tmp_path / "staged" / "model_card.yaml").exists()
 
+    def test_a_sidecar_removed_from_source_is_removed_from_staging(self, tmp_path):
+        # The staging directory survives between runs. A recovery report staged
+        # last time and since deleted from the source would otherwise linger
+        # and upload as if it described this network -- shipping another run's
+        # evidence, which is the exact failure this publish step exists to
+        # prevent.
+        source = tmp_path / "src"
+        self.make_run(source, "a" * 32)
+        (source / "recovery_report.json").write_text('{"passed": true}')
+        staged = tmp_path / "staged"
+
+        stage_artifacts(source, "a" * 32, staged)
+        assert (staged / "recovery_report.json").exists()
+
+        (source / "recovery_report.json").unlink()
+        stage_artifacts(source, "a" * 32, staged)
+
+        assert not (staged / "recovery_report.json").exists()
+
     def test_a_successful_publish_does_not_poison_its_staging_directory(self, tmp_path):
         # lanfactory renders the card and README into the staging dir during
         # upload. Treating those as foreign leftovers made the identical
