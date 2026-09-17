@@ -61,8 +61,14 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
-lanfactory = { git = "https://github.com/lnccbrown/lanfactory", branch = "main" }
-ssm-simulators = { git = "https://github.com/lnccbrown/ssm-simulators", branch = "main" }
+# INTERIM: the MLflow schema-v2 branches, until these land in releases. Restore
+# to `branch = "main"` for lanfactory/ssm-simulators and drop hssm at that point.
+# Filesystem-independent, so this works unchanged on Oscar.
+# NOTE: lanfactory still needs the PR#140 pandas fix merged into this branch and
+# pushed; until then the trainers crash on pandas 3.x copy-on-write.
+lanfactory = { git = "https://github.com/lnccbrown/lanfactory", branch = "feat/mlflow-schema-v2" }
+ssm-simulators = { git = "https://github.com/lnccbrown/ssm-simulators", branch = "cpaniaguam/feat/mlflow-schema-v2" }
+hssm = { git = "https://github.com/lnccbrown/HSSM", branch = "feat/mlflow-infer-tracking" }
 # Linux only: there are no macOS CUDA wheels, so an unconditional pin would
 # make the lock unresolvable on a laptop. Sources apply to *declared*
 # dependencies, which is why torch is listed above even though lanfactory
