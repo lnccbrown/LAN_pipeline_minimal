@@ -1098,3 +1098,68 @@ class TestLadderAttribution:
         ]
         passed, failures = agg.verdict(agg.summarise(shards))
         assert passed, failures
+
+
+class TestTracking:
+    """`lan-recover --track`: reserved tags, the no-op path, and the metrics."""
+
+    def test_reserved_tags_rejected(self):
+        import typer
+
+        with pytest.raises(typer.BadParameter):
+            rp.parse_mlflow_tags(["phase=x"])
+        assert rp.parse_mlflow_tags(["a=1", "b=x=y"]) == {"a": "1", "b": "x=y"}
+
+    def test_untracked_is_a_nullcontext(self):
+        with rp._tracking_context(False, None, None, None, {}) as tracker:
+            assert tracker is None
+
+    def test_metrics_from_a_record(self):
+        class Tracker:
+            def __init__(self):
+                self.metrics = {}
+
+            def log_metric(self, key, value):
+                self.metrics[key] = value
+
+        record = {
+            "sampler": {"divergence_rate": 0.01, "wall_seconds": 12.5},
+            "parameters": {
+                "v": {
+                    "truth": 1.0,
+                    "mean": 1.2,
+                    "sd": 0.1,
+                    "hdi_lo": 1.0,
+                    "hdi_hi": 1.4,
+                    "covered": True,
+                    "z": 2.0,
+                },
+                "v[1]": {
+                    "truth": 0.0,
+                    "mean": 0.5,
+                    "sd": 0.25,
+                    "hdi_lo": 0.1,
+                    "hdi_hi": 0.9,
+                    "covered": False,
+                    "z": 2.0,
+                },
+            },
+        }
+        t = Tracker()
+        rp._log_recovery_metrics(t, record)
+        assert t.metrics["recovery_divergence_rate"] == 0.01
+        assert t.metrics["abs_error_v"] == pytest.approx(0.2)
+        assert t.metrics["hdi_width_v_1_"] == pytest.approx(0.8)
+        assert t.metrics["covered_v"] == 1.0 and t.metrics["covered_v_1_"] == 0.0
+        assert t.metrics["n_params"] == 2.0 and t.metrics["n_covered"] == 1.0
+
+    def test_failed_record_logs_nothing(self):
+        calls = []
+
+        class Tracker:
+            def log_metric(self, *a):
+                calls.append(a)
+
+        rp._log_recovery_metrics(Tracker(), {"error": "boom"})
+        rp._log_recovery_metrics(None, {"parameters": {}})
+        assert calls == []

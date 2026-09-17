@@ -9,7 +9,7 @@ receive the MLflow variables they need.
 | Variable | Used by | Default/requirement |
 | --- | --- | --- |
 | `MLFLOW_TRACKING_URI` | `lan-sbatch`, MLflow clients, `lan-publish` | `lan-sbatch` defaults to `sqlite:///mlflow.db`; set explicitly for publication and cluster work |
-| `MLFLOW_ARTIFACT_LOCATION` | Experiment creation and publication records | Optional MLflow-managed location; use an absolute shared path on a cluster |
+| `MLFLOW_ARTIFACT_LOCATION` | Experiment creation and publication records | Optional; a plain path is made absolute. Ignored with a warning when the tracking URI is an http(s) server, which owns artifact storage itself (`--serve-artifacts`) |
 | `INSPECT_ONNX` | marimo network inspector | Required; path to the candidate ONNX |
 | `INSPECT_MODEL` | marimo network inspector | `ddm` |
 
@@ -38,7 +38,7 @@ generated script exports:
 | --- | --- |
 | `MLFLOW_TRACKING_URI` | The configured URI; a relative SQLite URI is converted to an absolute path |
 | `MLFLOW_ARTIFACT_LOCATION` | The configured artifact root, when set |
-| `MLFLOW_EXPERIMENT_NAME` | `{model}-data-generation` or `{model}-training` |
+| `MLFLOW_EXPERIMENT_NAME` | `{model}-data-generation`, `{model}-training` or `{model}-inference` (overridable per experiment in `experiment.yaml`) |
 
 Generation also receives a run-name argument containing
 `$SLURM_ARRAY_TASK_ID`; a fanned-out submission adds the lane index so names do

@@ -16,6 +16,11 @@ You need:
 The repository installs ssm-simulators and LANfactory from the git revisions in
 `uv.lock`. Treat that lockfile as part of the workflow, not generated clutter.
 
+## 0. Run an experiment
+
+[Run a tracked experiment](run-an-experiment.md): create, generate, train,
+test recovery, find the records.
+
 ## 1. Establish a local baseline
 
 [Run the CI-backed local workflow](local-workflow.md). It generates a tiny DDM

@@ -11,9 +11,11 @@ nav:
   - Home: index.md
   - Learn:
       - Learning path: learn/index.md
+      - Run a tracked experiment: learn/run-an-experiment.md
       - Run the CI-backed local workflow: learn/local-workflow.md
   - How-to guides:
       - Choose an operator task: how-to/index.md
+      - Define and run an experiment: how-to/define-an-experiment.md
       - Configure cluster resources: how-to/configure-cluster.md
       - Generate and submit Slurm jobs: how-to/submit-slurm-jobs.md
       - Track runs with MLflow: how-to/track-with-mlflow.md

@@ -40,6 +40,19 @@ worker inventories from that experiment and compare them with the files in the
 training folder. Preserve the ID printed by `lan-sbatch generate` and pass it to
 the training command.
 
+## Why there is also a `lineage_id`
+
+`data_generation_experiment_id` answers "which collection of workers made this
+network's data" but is meaningless outside this MLflow store, and nothing
+downstream of the network carries it. `lineage_id` (MLflow schema v2) is a
+single identifier minted when a dataset is first generated and then carried
+*inside* the artifacts: ssm-simulators writes it into every training pickle,
+LANfactory into the network's config pickles and the HuggingFace manifest, and
+HSSM's `hssm.track` onto every fit made with that network. It is what lets a
+fit made a year later, on another machine, still name the data it rests on.
+Both identifiers are recorded on the training run; they answer different
+questions.
+
 ## Why artifacts link to `run_uuid`
 
 LANfactory stores multiple runs for a model in one flat directory. File names
@@ -60,6 +73,7 @@ is ineligible for publication.
 | Which Slurm submission landed? | Each submission JSON object's `job_id`, account, partition, and script path |
 | Which workers formed the data source? | Runs and file inventories in the generation experiment |
 | Which generation collection trained the network? | `data_generation_experiment_id` on the training run |
+| Which dataset does this run, network or fit belong to? | `tags.lineage_id`, identical across data generation, training and inference |
 | Which files belong to the training run? | The run's `run_uuid` and matching artifact names |
 | Which checks ran on the candidate? | `validation_report.json`, including each gate's skipped state |
 | What was uploaded? | The publication run and Hugging Face URL |

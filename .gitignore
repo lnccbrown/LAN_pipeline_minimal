@@ -187,3 +187,12 @@ configs/cluster/*.local.yaml
 
 # marimo scratch output
 __marimo__/
+
+# Experiment directories created by `lan-sbatch init`: the definition
+# (experiment.yaml + stage configs) is yours to commit; the outputs are not.
+experiments/*/state.json
+experiments/*/data/
+experiments/*/networks/
+experiments/*/recovery/
+experiments/*/runs/
+experiments/*/mlflow.db*

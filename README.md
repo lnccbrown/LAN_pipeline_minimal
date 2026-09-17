@@ -43,9 +43,11 @@ recreates `local_test_data/`, so do not store personal files there.
 ## Main entry points
 
 ```bash
+uv run lan-sbatch init --help
 uv run lan-sbatch generate --help
 uv run lan-sbatch jaxtrain --help
 uv run lan-sbatch torchtrain --help
+uv run lan-sbatch recover --help
 uv run lan-publish --help
 ```
 

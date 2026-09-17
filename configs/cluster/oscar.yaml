@@ -86,6 +86,15 @@ job_defaults:
     mem: 64G
     num_gpus: 1
     time: "12:00:00"
+  # Parameter recovery: one HSSM fit (numpyro NUTS, CPU) per array task.
+  # A few hundred trials and ~2 chains finish well inside two hours.
+  recover:
+    account: carney-mjfrank-condo2
+    partition: batch
+    cores: 4
+    mem: 16G
+    num_gpus: 0
+    time: "02:00:00"
 
 modules:
   - python

@@ -9,6 +9,9 @@ are templates for larger runs, not universal production settings.
 
 ## Prepare and submit work
 
+- [Define and run an experiment](define-an-experiment.md) to scaffold one
+  directory holding the configs and the lineage id every stage shares, then
+  submit generation, training and recovery from it.
 - [Configure your cluster resources](configure-cluster.md) to discover personal
   lanes without committing personal allocations.
 - [Generate and submit Slurm jobs](submit-slurm-jobs.md) to rehearse scripts,

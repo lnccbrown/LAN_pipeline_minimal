@@ -32,6 +32,12 @@ Issues = "https://github.com/lnccbrown/LAN_pipeline_minimal/issues"
 [project.scripts]
 lan-sbatch = "sbatch_scripts.gen_sbatch:app"
 lan-publish = "publish.publish_network:app"
+# The validation stage as console scripts, so generated SLURM scripts and the
+# local runner call them by name instead of by path. They need the `validate`
+# dependency group (`uv run --group validate lan-recover ...`).
+lan-validate = "validation.validate_network:app"
+lan-recover = "validation.recover_parameters:app"
+lan-aggregate = "validation.aggregate_recovery:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -68,6 +74,10 @@ torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
 # allowed to depend on both ends of the ecosystem. Kept out of the default deps
 # so submitting jobs does not drag in the inference stack.
 validate = [
+    # `lan-recover --track` records fits through hssm.track once an HSSM
+    # release carries lnccbrown/HSSM#1320; until then it falls back to an
+    # untracked fit with a warning. Bump to "hssm[tracking]>=<that release>"
+    # together with the lockfile at that point.
     "hssm>=0.4.0",
     "onnxruntime>=1.17",
     # A *stable* numba: with numpy 2.5 the resolver otherwise picks 0.63.0b1,

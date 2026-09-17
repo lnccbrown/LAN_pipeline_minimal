@@ -34,6 +34,29 @@ of your chosen MLflow backend.
     downloaded from the cluster, those records disappear on the next refresh.
     Point publication at the store whose history must survive.
 
+## Use a tracking server
+
+With a shared `mlflow server` (the lab's central store), set only the tracking
+URI; the server owns artifact storage and a client-side
+`MLFLOW_ARTIFACT_LOCATION` is ignored with a warning:
+
+```bash
+export MLFLOW_TRACKING_URI="http://<mlflow-host>:5000"
+```
+
+## Carry one lineage id through every stage
+
+Schema v2 of the ecosystem's MLflow run schema adds a `lineage_id` tag that the
+data, the network and every fit share. An experiment directory (`lan-sbatch
+init`) mints it once and every `--experiment` submission renders it; a plain
+`lan-sbatch generate` mints one on submission and reports it in the JSON line.
+Pass `--lineage-id` explicitly to add workers to an existing dataset. Training
+inherits the id from the training pickles even when the flag is omitted.
+
+`data_generation_experiment_id` (below) is still recorded: it names the
+*collection* of worker runs, while `lineage_id` names the dataset across
+stages. Query one lineage with `tags.lineage_id = '<id>'`.
+
 ## Understand generation identity
 
 For `generate`, the orchestrator creates or reuses `{model}-data-generation` but

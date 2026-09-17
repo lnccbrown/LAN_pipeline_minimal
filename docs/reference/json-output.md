@@ -6,8 +6,9 @@ operators. Each object occupies exactly one line.
 
 ## Slurm submission
 
-`lan-sbatch generate`, `lan-sbatch jaxtrain`, and `lan-sbatch torchtrain` emit
-one object per generated script (one per selected resource lane). When
+`lan-sbatch generate`, `lan-sbatch jaxtrain`, `lan-sbatch torchtrain` and
+`lan-sbatch recover` emit one object per generated script (one per selected
+resource lane; for `recover`, one per design × likelihood cell). When
 `--script-only` is used, `job_id` is null because no Slurm submission occurs:
 
 ```json
@@ -22,7 +23,8 @@ one object per generated script (one per selected resource lane). When
   "partition": "batch",
   "array_size": 10,
   "lane": 0,
-  "n_lanes": 1
+  "n_lanes": 1,
+  "lineage_id": "96d9bb5f055b4881bf166336eecd4b6d"
 }
 ```
 
@@ -38,6 +40,19 @@ one object per generated script (one per selected resource lane). When
 | `array_size` | integer | Tasks in this lane's array |
 | `lane` | integer | Zero-based lane index |
 | `n_lanes` | integer | Number of submissions produced by this invocation |
+| `lineage_id` | string or null | Lineage id rendered into the job (MLflow tag `lineage_id`); null only for `--script-only` without an experiment or flag |
+
+## Experiment scaffold
+
+`lan-sbatch init` prints one object:
+
+```json
+{"experiment_dir": "/repo/experiments/ddm-pilot",
+ "lineage_id": "96d9bb5f055b4881bf166336eecd4b6d",
+ "experiments": {"data_generation": "ddm-data-generation",
+                 "training": "ddm-training",
+                 "inference": "ddm-inference"}}
+```
 
 `--use-all-lanes` emits one line per lane. Consumers must read the stream rather
 than assume one object. If any `sbatch` call fails, already-submitted lanes are
@@ -48,6 +63,22 @@ writes and reports one object for every generated script, with
 job/run/experiment IDs null. An MLflow initialization error in a real invocation
 is logged and submission can continue with null MLflow fields, so automation
 that requires lineage must validate them.
+
+## Local run
+
+`lan-sbatch run --local` prints one object after the last stage:
+
+```json
+{"ok": true, "lineage_id": "6b29...", "experiment_dir": "/repo/experiments/quick",
+ "tracking_uri": "sqlite:////repo/experiments/quick/mlflow.db",
+ "state": "/repo/experiments/quick/state.json",
+ "phases": ["datagen", "infer", "train"], "n_runs": 4,
+ "validation_passed": true, "recovery_verdict": false}
+```
+
+On failure: `{"ok": false, "failed_stage": "<stage>", "lineage_id": "..."}` and
+a non-zero exit; the stage's own JSON line is in the log. `recovery_verdict`
+is the aggregate recovery pass/fail and is `null` when recovery did not run.
 
 ## Validation result
 

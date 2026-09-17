@@ -17,9 +17,11 @@ configs/
     └── oscar.local.yaml  # generated personal overlay; gitignored
 ```
 
-Start with `quick_test/` when checking a checkout. Copy and review an example
-before adapting it to a scientific run; the example scale is not a universal
-production recommendation.
+Start with `quick_test/` when checking a checkout. For a real run, do not copy
+files by hand: `uv run lan-sbatch init <name>` creates an `experiments/<name>/`
+directory with both stage configs (from `examples/`, or `quick_test/` with
+`--quick`), the model already filled in, and the lineage id every stage shares.
+The example scale is not a universal production recommendation; review it.
 
 Generate your personal cluster overlay rather than editing it:
 

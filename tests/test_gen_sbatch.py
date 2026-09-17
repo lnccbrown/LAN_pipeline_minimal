@@ -10,21 +10,21 @@ import logging
 import shlex
 from pathlib import Path
 
+import gen_sbatch
 import pytest
 import typer
-from typer.testing import CliRunner
-
-import gen_sbatch
+import yaml
 from gen_sbatch import (
     absolutize_tracking_uri,
     app,
-    load_cluster_config,
-    split_across_lanes,
     create_command,
+    load_cluster_config,
     quote_param_value,
     resolve_resources,
+    split_across_lanes,
     submit_sbatch,
 )
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -42,6 +42,8 @@ JSON_KEYS = {
     "array_size",
     "lane",
     "n_lanes",
+    # Added with MLflow schema v2: the id every stage of an experiment shares.
+    "lineage_id",
 }
 
 
@@ -977,7 +979,7 @@ class TestUvResolution:
 
     def test_runs_through_the_resolved_uv(self):
         # Not a hardcoded `python -m uv run`, which is what broke.
-        assert "$UV run {command}" in gen_sbatch.SBATCH_TEMPLATE
+        assert "$UV run {uv_run_flags}{command}" in gen_sbatch.SBATCH_TEMPLATE
 
 
 class TestNCpusPassthrough:
@@ -1028,3 +1030,356 @@ class TestNCpusPassthrough:
         assert result.exit_code == 0, result.output
         script = next((out / "runs").glob("*.sh")).read_text()
         assert "--n-cpus" not in script
+
+
+# --------------------------------------------------------------------------- #
+# MLflow schema v2: lineage id, experiment directories, recovery submission.
+# All rendering is exercised with --script-only, so no tracking store is
+# touched; the rendered command line is the contract under test.
+# --------------------------------------------------------------------------- #
+
+import experiment as xp  # noqa: E402
+
+
+def _rendered_command(result) -> str:
+    return last_json_line(result.output)["command"]
+
+
+def _script_text(result) -> str:
+    return Path(last_json_line(result.output)["sbatch_script"]).read_text()
+
+
+@pytest.fixture
+def experiment_dir(tmp_path):
+    return xp.scaffold_experiment("pilot", tmp_path, model="ddm", quick=True).dir
+
+
+class TestLineagePlumbing:
+    def test_lineage_id_rendered_quoted_for_every_job_kind(
+        self, model_config, tmp_path
+    ):
+        for kind, extra in (
+            ("generate", []),
+            ("jaxtrain", ["--training-data-folder", str(tmp_path)]),
+            ("torchtrain", ["--training-data-folder", str(tmp_path)]),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    kind,
+                    "--config-path",
+                    str(model_config),
+                    "--output-path",
+                    str(tmp_path / kind),
+                    "--lineage-id",
+                    "lin-123",
+                    "--script-only",
+                    *extra,
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            assert "--lineage-id lin-123" in _rendered_command(result)
+            assert last_json_line(result.output)["lineage_id"] == "lin-123"
+
+    def test_hostile_lineage_id_stays_literal(self, model_config, tmp_path):
+        hostile = "abc$(id)`whoami`;rm -rf /"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(tmp_path / "out"),
+                "--lineage-id",
+                hostile,
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        cmd = _rendered_command(result)
+        # shlex round-trips the exact value as one inert argument
+        argv = shlex.split(cmd)
+        assert argv[argv.index("--lineage-id") + 1] == hostile
+        assert '"$' not in cmd.split("--lineage-id")[1].split("--")[0]
+
+    def test_script_only_generate_without_lineage_renders_none(
+        self, model_config, tmp_path
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(tmp_path / "out"),
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "--lineage-id" not in _rendered_command(result)
+        assert last_json_line(result.output)["lineage_id"] is None
+
+    def test_real_generate_mints_a_lineage_id(
+        self, model_config, tmp_path, fake_sbatch_ok, isolated_mlflow
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        record = last_json_line(result.output)
+        assert len(record["lineage_id"]) == 32
+        assert f"--lineage-id {record['lineage_id']}" in record["command"]
+
+    def test_mlflow_tags_render_repeatably_and_reserved_are_refused(
+        self, model_config, tmp_path
+    ):
+        base = [
+            "generate",
+            "--config-path",
+            str(model_config),
+            "--output-path",
+            str(tmp_path / "out"),
+            "--script-only",
+        ]
+        ok = runner.invoke(
+            app, [*base, "--mlflow-tag", "batch=7", "--mlflow-tag", "who=me"]
+        )
+        assert ok.exit_code == 0, ok.output
+        cmd = _rendered_command(ok)
+        assert "--mlflow-tag batch=7" in cmd and "--mlflow-tag who=me" in cmd
+
+        bad = runner.invoke(app, [*base, "--mlflow-tag", "lineage_id=x"])
+        assert bad.exit_code == 2
+        assert "reserved" in bad.output
+
+
+class TestExperimentOption:
+    def test_generate_fills_everything_from_the_experiment(self, experiment_dir):
+        result = runner.invoke(
+            app, ["generate", "--experiment", str(experiment_dir), "--script-only"]
+        )
+        assert result.exit_code == 0, result.output
+        exp = xp.load_experiment(experiment_dir)
+        cmd = _rendered_command(result)
+        assert f"--config-path {exp.stage_config('generate')}" in cmd
+        assert f"--output {exp.stage_output('generate')}" in cmd
+        assert f"--lineage-id {exp.lineage_id}" in cmd
+        assert last_json_line(result.output)["output_path"] == str(
+            exp.stage_output("generate")
+        )
+
+    def test_training_omits_data_folder_and_uses_experiment_lineage(
+        self, experiment_dir
+    ):
+        # Without a known folder the trainer runs MLflow-first; the experiment
+        # id comes from state.json (written by a prior generate submission).
+        exp = xp.load_experiment(experiment_dir)
+        xp.write_state(exp, data_generation_experiment_id="42")
+        result = runner.invoke(
+            app, ["jaxtrain", "--experiment", str(experiment_dir), "--script-only"]
+        )
+        assert result.exit_code == 0, result.output
+        cmd = _rendered_command(result)
+        assert "--training-data-folder" not in cmd
+        assert "--data-generation-experiment-id 42" in cmd
+        assert f"--lineage-id {exp.lineage_id}" in cmd
+        assert (
+            "--mlflow-experiment-name ddm-training" not in cmd
+        )  # only set on real runs
+
+    def test_training_without_data_source_is_a_clean_error(self, experiment_dir):
+        result = runner.invoke(
+            app, ["jaxtrain", "--experiment", str(experiment_dir), "--script-only"]
+        )
+        assert result.exit_code == 2
+        assert "--training-data-folder" in result.output
+
+    def test_explicit_flags_override_the_experiment(self, experiment_dir, tmp_path):
+        other = tmp_path / "elsewhere"
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--experiment",
+                str(experiment_dir),
+                "--output-path",
+                str(other),
+                "--lineage-id",
+                "override",
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        cmd = _rendered_command(result)
+        assert f"--output {other.resolve()}" in cmd
+        assert "--lineage-id override" in cmd
+
+    def test_experiment_tags_merge_with_cli_tags(self, experiment_dir):
+        exp = xp.load_experiment(experiment_dir)
+        exp.mlflow.tags = {"project": "pilot"}
+        exp.save()
+        result = runner.invoke(
+            app,
+            [
+                "generate",
+                "--experiment",
+                str(experiment_dir),
+                "--mlflow-tag",
+                "who=me",
+                "--script-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        cmd = _rendered_command(result)
+        assert "--mlflow-tag project=pilot" in cmd and "--mlflow-tag who=me" in cmd
+
+    def test_bad_experiment_is_a_clean_error(self, tmp_path):
+        result = runner.invoke(
+            app, ["generate", "--experiment", str(tmp_path / "nope"), "--script-only"]
+        )
+        assert result.exit_code == 2
+        assert "lan-sbatch init" in result.output
+
+    def test_script_only_never_writes_a_lineage_id(self, experiment_dir):
+        exp = xp.load_experiment(experiment_dir)
+        exp.lineage_id = None
+        exp.save()
+        result = runner.invoke(
+            app, ["generate", "--experiment", str(experiment_dir), "--script-only"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "--lineage-id" not in _rendered_command(result)
+        assert yaml.safe_load(exp.path.read_text())["lineage_id"] is None
+
+    def test_missing_config_without_experiment_is_a_clean_error(self, tmp_path):
+        result = runner.invoke(app, ["generate", "--output-path", str(tmp_path)])
+        assert result.exit_code == 2
+        assert "--experiment" in result.output
+
+
+class TestInitCommand:
+    def test_init_emits_json_and_files(self, tmp_path):
+        result = runner.invoke(
+            app, ["init", "demo", "--dir", str(tmp_path), "--quick", "--model", "angle"]
+        )
+        assert result.exit_code == 0, result.output
+        record = last_json_line(result.output)
+        assert record["experiment_dir"] == str((tmp_path / "demo").resolve())
+        assert len(record["lineage_id"]) == 32
+        assert record["experiments"]["training"] == "angle-training"
+        assert (tmp_path / "demo" / "experiment.yaml").exists()
+
+    def test_init_refuses_to_clobber(self, tmp_path):
+        assert (
+            runner.invoke(
+                app, ["init", "d", "--dir", str(tmp_path), "--quick"]
+            ).exit_code
+            == 0
+        )
+        again = runner.invoke(app, ["init", "d", "--dir", str(tmp_path), "--quick"])
+        assert again.exit_code == 2
+        assert "--force" in again.output
+
+
+class TestArtifactLocationRule:
+    def test_http_server_owns_artifacts(self):
+        assert gen_sbatch._artifact_location_for("http://h:5000", "./x") is None
+        assert gen_sbatch._artifact_location_for("https://h", "s3://b/p") == "s3://b/p"
+
+    def test_local_store_absolutizes_plain_paths(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert gen_sbatch._artifact_location_for("sqlite:////db", "arts") == str(
+            (tmp_path / "arts").absolute()
+        )
+        assert gen_sbatch._artifact_location_for("sqlite:////db", "gs://b") == "gs://b"
+        assert gen_sbatch._artifact_location_for("sqlite:////db", None) is None
+
+
+class TestRecoverSubmission:
+    def _onnx(self, experiment_dir):
+        exp = xp.load_experiment(experiment_dir)
+        folder = exp.stage_output("train") / "lan" / "ddm"
+        folder.mkdir(parents=True)
+        onnx = folder / "abc_lan_ddm__model.onnx"
+        onnx.write_bytes(b"onnx")
+        return exp, onnx
+
+    def test_one_array_per_design_x_likelihood(self, experiment_dir, tmp_path):
+        exp, onnx = self._onnx(experiment_dir)
+        exp.stages.recover.designs = ["L0_n250", "L1_n250"]
+        exp.stages.recover.n_datasets = 3
+        exp.save()
+        result = runner.invoke(
+            app, ["recover", "--experiment", str(experiment_dir), "--script-only"]
+        )
+        assert result.exit_code == 0, result.output
+        lines = [
+            json.loads(ln) for ln in result.output.splitlines() if ln.startswith("{")
+        ]
+        # 2 designs x (approx_differentiable + analytical reference arm)
+        assert len(lines) == 4
+        for record in lines:
+            assert record["array_size"] == 3
+            assert record["lineage_id"] == exp.lineage_id
+            cmd = record["command"]
+            assert cmd.startswith("recover ")
+            assert '--dataset-index "$SLURM_ARRAY_TASK_ID"' in cmd
+            assert f"--lineage-id {exp.lineage_id}" in cmd
+            assert "--draws 200" in cmd and "--chains 2" in cmd
+        arms = {
+            shlex.split(r["command"])[
+                shlex.split(r["command"]).index("--likelihood") + 1
+            ]
+            for r in lines
+        }
+        assert arms == {"approx_differentiable", "analytical"}
+        network_cmds = [
+            r["command"] for r in lines if "approx_differentiable" in r["command"]
+        ]
+        assert all(f"--onnx-path {onnx.resolve()}" in c for c in network_cmds)
+        assert all(
+            "--onnx-path" not in r["command"]
+            for r in lines
+            if "analytical" in r["command"]
+        )
+
+    def test_script_runs_recover_under_the_validate_group(self, experiment_dir):
+        self._onnx(experiment_dir)
+        result = runner.invoke(
+            app, ["recover", "--experiment", str(experiment_dir), "--script-only"]
+        )
+        assert result.exit_code == 0, result.output
+        text = _script_text(result)
+        assert "$UV run --group validate recover " in text
+        assert "--gres=gpu:0" in text
+
+    def test_run_name_keeps_task_id_expandable(self, experiment_dir):
+        self._onnx(experiment_dir)
+        result = runner.invoke(
+            app, ["recover", "--experiment", str(experiment_dir), "--script-only"]
+        )
+        cmd = _rendered_command(result)
+        assert (
+            '"$SLURM_ARRAY_TASK_ID"'
+            in cmd.split("--mlflow-run-name")[1].split(" --")[0]
+        )
+
+    def test_network_arm_without_onnx_is_a_clean_error(self, experiment_dir):
+        result = runner.invoke(
+            app, ["recover", "--experiment", str(experiment_dir), "--script-only"]
+        )
+        assert result.exit_code == 2
+        assert "--onnx-path" in result.output
+
+    def test_fallback_resources_for_recover(self):
+        resolved = resolve_resources("recover", None, {})
+        assert resolved["num_gpus"] == 0 and resolved["cores"] == 4

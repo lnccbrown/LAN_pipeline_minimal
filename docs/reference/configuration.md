@@ -1,8 +1,9 @@
 # Configuration reference
 
-The repository carries three configuration classes. Generation and training
+The repository carries four configuration classes. Generation and training
 YAML are consumed by the upstream scientific packages. Cluster YAML is consumed
-by `lan-sbatch` to render Slurm resources.
+by `lan-sbatch` to render Slurm resources. An experiment directory ties one
+generation config, one training config and one lineage id together.
 
 ## Layout
 
@@ -18,6 +19,12 @@ configs/
   cluster/
     oscar.yaml
     oscar.local.yaml       # generated, gitignored, personal
+experiments/               # created by `lan-sbatch init`, one directory per experiment
+  <name>/
+    experiment.yaml
+    data_generation.yaml
+    network_training.yaml
+    state.json             # written by the stages, gitignored
 ```
 
 `quick_test/` is the executable smoke-test profile used by
@@ -103,6 +110,53 @@ lanes:
 
 `--use-all-lanes` sorts usable lanes by priority/capacity and divides the array
 approximately in proportion to `max_cores`.
+
+## Experiment YAML
+
+`lan-sbatch init` writes `experiment.yaml` (schema_version 1). Every key has a
+default; the file it writes is the full form.
+
+```yaml
+schema_version: 1
+name: ddm-pilot
+model: ddm                      # must equal MODEL in both stage configs
+lineage_id: 96d9bb5f...         # uuid4 hex minted by init; shared by every stage
+network:
+  type: lan                     # lan | cpn | opn | gonogo; must equal NETWORK_TYPE
+  trainer: jaxtrain             # jaxtrain | torchtrain
+  network_id: 0
+mlflow:
+  experiments:                  # "{model}" is interpolated
+    data_generation: "{model}-data-generation"
+    training: "{model}-training"
+    inference: "{model}-inference"
+  tracking_uri: null            # null -> $MLFLOW_TRACKING_URI
+  artifact_location: null       # null -> $MLFLOW_ARTIFACT_LOCATION; ignored for http servers
+  tags: {}                      # extra MLflow tags; reserved keys are rejected
+stages:
+  generate: {config: data_generation.yaml, output: data, n_jobs_in_array: 1, n_files: null}
+  train:    {config: network_training.yaml, output: networks, dl_workers: 1}
+  validate: {skip_density: false, skip_hssm: false}
+  recover:
+    designs: [L0_n250]          # names from validation/recovery_designs.py
+    likelihoods: [approx_differentiable]
+    add_reference_arm: true     # also fit `analytical` when the model has it
+    n_datasets: 1               # array size per design x likelihood cell
+    draws: 200
+    tune: 200
+    chains: 2
+    target_accept: 0.9
+    p_outlier: null
+    condition_param: null
+    out_dir: recovery
+```
+
+Paths are relative to the experiment directory. Loading validates the schema
+version, the `MODEL`/`NETWORK_TYPE` agreement with the stage configs, the
+network type and trainer, the design names, and that `mlflow.tags` sets none of
+`schema_version`, `phase`, `lineage_id`. `state.json` is the stages' scratch
+record (`data_generation_experiment_id`, `training_data_folder`, `onnx_path`,
+`mlflow_run_id_train`, ...); delete it to start the chain over.
 
 ## Personal overlay and precedence
 

@@ -33,8 +33,10 @@ Usage (one shard):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import platform
 import re
 import sys
@@ -48,6 +50,107 @@ import recovery_designs as rd  # noqa: E402
 
 logger = logging.getLogger("recover_parameters")
 app = typer.Typer(add_completion=False)
+
+# MLflow tags the ecosystem schema owns (HSSMSpine _docs/mlflow-schema.md);
+# `--mlflow-tag` may not set them. Same set as ssm-simulators' generate.
+RESERVED_MLFLOW_TAGS = frozenset({"schema_version", "phase", "lineage_id"})
+
+
+def parse_mlflow_tags(raw_tags: list[str] | None) -> dict[str, str]:
+    """Parse repeatable ``--mlflow-tag KEY=VALUE`` into a dict."""
+    tags: dict[str, str] = {}
+    for raw in raw_tags or []:
+        key, sep, value = raw.partition("=")
+        if not sep or not key:
+            raise typer.BadParameter(
+                f"--mlflow-tag expects KEY=VALUE, got {raw!r}",
+                param_hint="--mlflow-tag",
+            )
+        if key in RESERVED_MLFLOW_TAGS:
+            raise typer.BadParameter(
+                f"--mlflow-tag may not set the reserved schema tag {key!r}",
+                param_hint="--mlflow-tag",
+            )
+        tags[key] = value
+    return tags
+
+
+def _tracking_context(
+    track: bool,
+    experiment: str | None,
+    run_name: str | None,
+    lineage_id: str | None,
+    tags: dict[str, str],
+):
+    """`hssm.track(...)` when tracking is on and available, else a no-op.
+
+    Artifacts are off: the shard JSON is the artifact that matters and is
+    attached explicitly; HSSM's traces/model pickles would be large per fit.
+    """
+    if not track:
+        return contextlib.nullcontext(None)
+    try:
+        import hssm
+
+        track_fn = hssm.track
+    except (ImportError, AttributeError):
+        logger.warning(
+            "MLflow tracking requested but this HSSM has no hssm.track "
+            "(needs hssm[tracking] with lnccbrown/HSSM#1320); fitting untracked."
+        )
+        return contextlib.nullcontext(None)
+    return track_fn(
+        experiment=experiment,
+        run_name=run_name,
+        log_artifacts=False,
+        lineage_id=lineage_id,
+        tags=tags,
+    )
+
+
+def _log_recovery_metrics(tracker, record: dict) -> None:
+    """Attach recovery quality to the tracked run as MLflow metrics.
+
+    HSSM already logs convergence (ESS, divergences, wall time) for the fit;
+    this adds what recovery is about — did the truth come back — per parameter
+    and in aggregate, so a sweep is queryable without opening shards.
+    """
+    if tracker is None or "error" in record:
+        return
+    sampler = record.get("sampler", {})
+    for key in ("divergence_rate", "wall_seconds"):
+        if key in sampler:
+            tracker.log_metric(f"recovery_{key}", float(sampler[key]))
+    params = record.get("parameters", {})
+    covered = 0
+    for label, stats in params.items():
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", label)
+        truth, mean, sd = stats.get("truth"), stats.get("mean"), stats.get("sd")
+        if truth is not None and mean is not None:
+            tracker.log_metric(f"abs_error_{safe}", abs(float(mean) - float(truth)))
+        z = stats.get("z")
+        if z is not None and z == z and abs(z) != float("inf"):
+            tracker.log_metric(f"z_error_{safe}", float(z))
+        if sd is not None:
+            tracker.log_metric(f"posterior_sd_{safe}", float(sd))
+        if stats.get("hdi_lo") is not None and stats.get("hdi_hi") is not None:
+            tracker.log_metric(
+                f"hdi_width_{safe}", float(stats["hdi_hi"]) - float(stats["hdi_lo"])
+            )
+        if "covered" in stats:
+            tracker.log_metric(f"covered_{safe}", 1.0 if stats["covered"] else 0.0)
+            covered += int(bool(stats["covered"]))
+    if params:
+        tracker.log_metric("n_params", float(len(params)))
+        tracker.log_metric("n_covered", float(covered))
+    try:
+        import mlflow
+
+        if mlflow.active_run() is not None:
+            mlflow.log_dict(record, "recovery_shard.json")
+    except Exception as e:  # noqa: BLE001 - tracking never fails the fit
+        logger.warning(f"could not attach recovery shard to the MLflow run: {e}")
+
 
 # Requested explicitly: arviz >= 1.0 defaults to an 89% *equal-tailed*
 # interval, a different statistic that would silently change every coverage
@@ -356,34 +459,81 @@ def main(
     tune: int = typer.Option(1000),
     chains: int = typer.Option(2),
     target_accept: float = typer.Option(0.9),
+    track: bool | None = typer.Option(
+        None,
+        "--track/--no-track",
+        help="Record the fit to MLflow via hssm.track (schema v2, phase=infer). "
+        "Default: on when MLFLOW_TRACKING_URI is set.",
+    ),
+    mlflow_experiment_name: str | None = typer.Option(
+        None, help="MLflow experiment [default: MLFLOW_EXPERIMENT_NAME]"
+    ),
+    mlflow_run_name: str | None = typer.Option(None, help="MLflow run name"),
+    lineage_id: str | None = typer.Option(
+        None, help="Lineage id shared with the data and network under test"
+    ),
+    mlflow_run_id_train: str | None = typer.Option(
+        None,
+        help="Training run that produced the network (tag mlflow_run_id_train). "
+        "Needed for networks not yet published: hssm.track otherwise reads it "
+        "from the HuggingFace manifest.",
+    ),
+    mlflow_tag: list[str] | None = typer.Option(
+        None, "--mlflow-tag", help="Extra MLflow tag KEY=VALUE, repeatable."
+    ),
     log_level: str = typer.Option("WARNING"),
 ):
     """Fit one synthetic dataset and write a recovery shard."""
     logging.basicConfig(level=getattr(logging, log_level.upper(), logging.WARNING))
     if design not in rd.DESIGNS:
         raise typer.BadParameter(f"Unknown design {design!r}. Have: {list(rd.DESIGNS)}")
+    # Reject bad tags before any fitting or MLflow state.
+    tags = parse_mlflow_tags(mlflow_tag)
+    if track is None:
+        track = bool(os.getenv("MLFLOW_TRACKING_URI"))
     # `analytical` and `blackbox` both used to collapse onto the tag "net"
     # alongside every network, so two arms wrote the same filename and the
     # second silently replaced the first. The arm is the identity now, and it
     # reaches both the shard body and its name.
     arm = arm or _default_arm(likelihood, onnx_path)
 
+    run_tags = {
+        "inference_kind": "parameter_recovery",
+        "design": design,
+        "arm": arm,
+        "likelihood": likelihood,
+        "dataset_index": str(dataset_index),
+    }
+    if onnx_path is not None:
+        run_tags["onnx_stem"] = Path(onnx_path).stem
+    if mlflow_run_id_train:
+        run_tags["mlflow_run_id_train"] = mlflow_run_id_train
+    run_tags.update(tags)
+
     try:
-        record = run_one(
-            model_name=model,
-            design_name=design,
-            dataset_index=dataset_index,
-            likelihood=likelihood,
-            onnx_path=onnx_path,
-            draws=draws,
-            tune=tune,
-            chains=chains,
-            target_accept=target_accept,
-            bounds_from=bounds_from,
-            condition_param=condition_param,
-            p_outlier=p_outlier,
-            arm=arm,
-        )
+        with _tracking_context(
+            track,
+            mlflow_experiment_name or os.getenv("MLFLOW_EXPERIMENT_NAME"),
+            mlflow_run_name,
+            lineage_id,
+            run_tags,
+        ) as tracker:
+            record = run_one(
+                model_name=model,
+                design_name=design,
+                dataset_index=dataset_index,
+                likelihood=likelihood,
+                onnx_path=onnx_path,
+                draws=draws,
+                tune=tune,
+                chains=chains,
+                target_accept=target_accept,
+                bounds_from=bounds_from,
+                condition_param=condition_param,
+                p_outlier=p_outlier,
+                arm=arm,
+            )
+            _log_recovery_metrics(tracker, record)
     except Exception as e:  # noqa: BLE001 - a dead shard must not kill the array
         record = {
             "schema_version": 2,
