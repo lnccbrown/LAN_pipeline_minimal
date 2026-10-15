@@ -44,8 +44,8 @@ from pathlib import Path
 import typer
 
 sys.path.insert(0, str(Path(__file__).parent))
-import aggregate_recovery as agg  # noqa: E402
-import recovery_designs as rd  # noqa: E402
+import aggregate_recovery as agg
+import recovery_designs as rd
 
 logger = logging.getLogger("recover_parameters")
 app = typer.Typer(add_completion=False)

@@ -18,11 +18,11 @@ import gen_sbatch
 from gen_sbatch import (
     absolutize_tracking_uri,
     app,
-    load_cluster_config,
-    split_across_lanes,
     create_command,
+    load_cluster_config,
     quote_param_value,
     resolve_resources,
+    split_across_lanes,
     submit_sbatch,
 )
 
@@ -59,7 +59,7 @@ class TestQuoting:
         assert "--config-path '/tmp/my configs/config.yaml'" in cmd
 
     def test_shell_metacharacters_are_neutralized(self):
-        cmd = create_command("generate", **{"output": "/tmp/$(rm -rf x); echo"})
+        cmd = create_command("generate", output="/tmp/$(rm -rf x); echo")
         # single-quoted → the shell sees one literal argument, nothing executes
         assert "'/tmp/$(rm -rf x); echo'" in cmd
         assert shlex.split(cmd) == [

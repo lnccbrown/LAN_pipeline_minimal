@@ -52,7 +52,7 @@ from pathlib import Path
 import typer
 
 sys.path.insert(0, str(Path(__file__).parent))
-import recovery_designs as rd  # noqa: E402
+import recovery_designs as rd
 
 logger = logging.getLogger("aggregate_recovery")
 app = typer.Typer(add_completion=False)

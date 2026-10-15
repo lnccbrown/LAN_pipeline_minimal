@@ -1200,8 +1200,9 @@ class TestSilenceCannotPass:
         # The other end: a mistyped rung fails inside all 20 array tasks, and
         # tasks that die before writing leave nothing for the aggregator to
         # notice. Cheaper to refuse the submission.
-        import gen_sbatch
         from typer.testing import CliRunner
+
+        import gen_sbatch
 
         cases = (
             ("--design", "L1_n50"),

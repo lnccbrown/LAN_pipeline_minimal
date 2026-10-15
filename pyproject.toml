@@ -103,3 +103,15 @@ addopts = "-m 'not production'"
 markers = [
     "production: runs against the real franklab/HSSM artifacts (network + hssm)",
 ]
+
+[tool.ruff]
+# Where first-party modules live. The scripts are imported by bare name
+# (tests/conftest.py puts these on sys.path), so without this isort files
+# `import gen_sbatch` under third-party and shuffles the import blocks.
+src = [".", "sbatch_scripts", "validation", "publish", "scripts"]
+
+[tool.ruff.lint.per-file-ignores]
+# marimo emits a bare `return` for every cell without outputs and re-emits it
+# on save; stripping them would just come back the next time the notebook is
+# edited.
+"validation/inspect_network.py" = ["PLR1711"]

@@ -8,16 +8,17 @@ MLflow Integration:
 - For training: The orchestrator creates a parent run and passes --mlflow-run-id to continue logging
 """
 
-from datetime import datetime, timezone
-from pathlib import Path
 import json
 import logging
+import os
 import re
 import shlex
 import subprocess
+from datetime import UTC, datetime
+from pathlib import Path
+
 import typer
 import yaml
-import os
 
 try:
     import mlflow
@@ -179,7 +180,7 @@ def _validate_recover_identity(
     try:
         import recover_parameters as rp
         import recovery_designs as rd
-    except ImportError as e:  # noqa: BLE001 - see docstring
+    except ImportError as e:
         logging.getLogger("gen_sbatch").warning(
             f"cannot validate --design/--arm before submitting: {e}"
         )
@@ -828,7 +829,7 @@ def handle_job(
     runs_dir = target / "runs"
     validate_log_path(runs_dir)
     runs_dir.mkdir(exist_ok=True, parents=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
 
     # One submission per lane. A lane is an (account, partition) pair whose
     # SLURM budget is independent of the others', so splitting an array across
