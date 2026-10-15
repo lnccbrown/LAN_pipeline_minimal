@@ -115,7 +115,10 @@ def _summarise(idata, model: rd.ModelUnderTest, design, truth) -> dict:
     import arviz as az
     import numpy as np
 
-    posterior = idata["posterior"] if "posterior" in idata else idata.posterior
+    # Not `.get(key, idata.<attr>)`: that evaluates the attribute fallback
+    # eagerly, and the key lookup is there for the idata types where the
+    # attribute form is the one that fails.
+    posterior = idata["posterior"] if "posterior" in idata else idata.posterior  # noqa: SIM401
     out = {}
     for param, var in rd.posterior_names(model, design).items():
         if var not in posterior:
@@ -266,10 +269,11 @@ def run_one(
     )
     elapsed = time.time() - started
 
+    # See _summarise for why these are not `.get`.
     sample_stats = (
-        idata["sample_stats"] if "sample_stats" in idata else idata.sample_stats
+        idata["sample_stats"] if "sample_stats" in idata else idata.sample_stats  # noqa: SIM401
     )
-    posterior = idata["posterior"] if "posterior" in idata else idata.posterior
+    posterior = idata["posterior"] if "posterior" in idata else idata.posterior  # noqa: SIM401
     diverging = np.asarray(sample_stats["diverging"])
     return _finite(
         {

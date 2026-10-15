@@ -114,6 +114,7 @@ class TestQuoting:
             ["bash", "-c", f"printf '%s' {rendered}"],
             capture_output=True,
             text=True,
+            check=False,
             env={"SLURM_ARRAY_TASK_ID": "7", "PATH": "/usr/bin:/bin"},
         )
         assert out.returncode == 0, out.stderr
@@ -127,6 +128,7 @@ class TestQuoting:
             ["bash", "-c", f"printf '%s' {rendered}"],
             capture_output=True,
             text=True,
+            check=False,
             env={"USER": "someone", "PATH": "/usr/bin:/bin"},
         )
         assert out.stdout == "/data/$USER/out"

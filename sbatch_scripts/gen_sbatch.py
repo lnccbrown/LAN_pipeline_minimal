@@ -550,15 +550,15 @@ def get_parameters_setup(
     config_path: Path,
     output_path: Path,
     log_level: str,
-    training_data_folder: Path = None,
+    training_data_folder: Path | None = None,
     network_id: int = 0,
     dl_workers: int = 1,
     # MLflow parameters - different for generate vs training
-    mlflow_run_name: str = None,  # For data generation (ssm-simulators)
-    mlflow_experiment_name: str = None,  # For data generation (ssm-simulators)
-    mlflow_run_id: str = None,  # For training (LANfactory) - to resume a run
-    data_generation_experiment_id: str = None,  # For training lineage
-    recover_args: dict = None,  # For recovery: worker CLI flags, pre-hyphenated
+    mlflow_run_name: str | None = None,  # For data generation (ssm-simulators)
+    mlflow_experiment_name: str | None = None,  # For data generation (ssm-simulators)
+    mlflow_run_id: str | None = None,  # For training (LANfactory) - to resume a run
+    data_generation_experiment_id: str | None = None,  # For training lineage
+    recover_args: dict | None = None,  # For recovery: worker CLI flags, pre-hyphenated
 ):
     """
     Prepare CLI arguments for the command based on the command type.
@@ -623,15 +623,15 @@ def handle_job(
     cores: int | None = None,
     mem: str | None = None,
     time: str | None = None,
-    cluster_config: Path = None,
+    cluster_config: Path | None = None,
     n_jobs_in_array: int = 1,
-    n_files: int = None,
+    n_files: int | None = None,
     use_all_lanes: bool = False,
-    training_data_folder: Path = None,
+    training_data_folder: Path | None = None,
     network_id: int = 0,
     dl_workers: int = 1,
-    data_generation_experiment_id: str = None,
-    recover_args: dict = None,
+    data_generation_experiment_id: str | None = None,
+    recover_args: dict | None = None,
 ):
     # Case-insensitive, and validated: getattr(logging, "info") returns the
     # *function*, which basicConfig rejects with a TypeError traceback — and
@@ -809,7 +809,7 @@ def handle_job(
                         f"{shlex.quote(artifact_location)}"
                     )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - tracking is best-effort
             logger.error(f"Failed to initialize MLflow: {e}")
 
     if command_name == "recover":
