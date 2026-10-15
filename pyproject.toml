@@ -86,8 +86,8 @@ inspect = [
 dev = [
     "pytest>=8.3.1",
     # Capped at the minor: ruff's default rule set moves at minor releases
-    # (0.16 went from 59 to 413 rules, 0.17 dropped DTZ), so a bump is a
-    # deliberate `ruff check --fix` plus triage, not a lockfile refresh. The
+    # (0.16 went from 59 to 413 rules, 0.17 dropped most DTZ rules), so a bump
+    # is a deliberate `ruff check --fix` plus triage, not a lockfile refresh. The
     # typer.Option default-argument idiom (B008) is whitelisted under
     # [tool.ruff.lint.flake8-bugbear].
     "ruff>=0.17,<0.18",
