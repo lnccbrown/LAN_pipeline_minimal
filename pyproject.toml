@@ -9,10 +9,13 @@ requires-python = ">=3.12, <3.13"
 dependencies = [
     # Floors match the features this pipeline drives: lanfactory 0.8+ ships the
     # hf/ upload module and (post-0.8.0 main) MLflow run identity + jax->ONNX
-    # export; ssm-simulators 0.13.2+ ships datagen run identity. Both resolve
-    # from git main below, so the lockfile pins exact commits.
+    # export; ssm-simulators 0.15.0 keeps datagen on the simulator semantics
+    # the rest of the ecosystem is moving to (omissions masked on rts since
+    # 0.14.0, ndt_edge_shift in the model configs since 0.15.0; see
+    # lnccbrown/HSSMSpine#118). Both resolve from git main below, so the
+    # lockfile pins exact commits.
     "lanfactory>=0.8",
-    "ssm-simulators>=0.13.2",
+    "ssm-simulators>=0.15.0",
     "mlflow>=3.6.0",
     # Declared so the CUDA-build pin in [tool.uv.sources] binds to it — uv
     # sources only apply to *direct* dependencies. lanfactory pulls torch in

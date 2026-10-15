@@ -473,17 +473,17 @@ def shared_draw(model: ModelUnderTest, seed: int) -> dict[str, float]:
 def _simulate(model: ModelUnderTest, theta: np.ndarray, seed: int):
     """Trial-wise simulation with both RNG streams pinned. Returns (rt, response).
 
-    `random_state` alone does NOT make every ssms model reproducible. Any
-    parameter applied through `simulator_param_mappings` — ddm_sdv's `sv` is
-    `norm.rvs(loc=0, scale=sv)` — draws from scipy's *global* RandomState, a
-    stream `random_state` never touches. Measured: back-to-back calls with the
-    same random_state differ for ddm_sdv, agree for plain ddm, and agree for
-    ddm_sdv at sv=0. Seeding the global RNG closes the gap for every model.
+    Before ssm-simulators 0.14, `random_state` alone did NOT make every model
+    reproducible: parameters applied through `simulator_param_mappings` —
+    ddm_sdv's `sv` — drew from scipy's *global* RandomState. 0.14 binds those
+    draws to a child stream of `random_state` (lnccbrown/ssm-simulators#348),
+    and on 0.15 ddm, ddm_sdv, full_ddm and angle are identical across global
+    states. The global seeding stays as a cheap guard for any mapping that
+    still draws globally.
 
     This matters more than reproducibility for its own sake: the reference and
     network arms must see byte-identical data, or the paired comparison that
     makes recovery interpretable is gone.
-    Upstream: ssm-simulators should thread random_state into the mappings.
     Saved and restored: the seeding is needed for the duration of the call and
     nothing longer. Left in place it silently makes the CALLER's later
     np.random draws deterministic — a sweep looping over models, or a test
