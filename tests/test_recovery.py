@@ -540,18 +540,18 @@ class TestAnyParameterCanVary:
                 assert isinstance(truth[other], float), other
 
     @staticmethod
-    def _moment_correlation(model, design, param, seed):
+    def _moment_correlation(model, design, param, seed, moments=(np.mean, np.std)):
         """|r| between a parameter's per-condition truth and an RT moment.
 
         Which moment moves is the parameter's own business, and assuming it is
         always the mean would be the drift-centric habit this test exists to
-        break -- so take whichever of mean and spread tracks it better.
+        break -- so take whichever of the given moments tracks it best.
         """
         data, truth = rd.build_dataset(model, design, seed=seed)
         groups = [data.loc[data["condition"] == c, "rt"] for c in range(4)]
         return max(
             abs(np.corrcoef(truth[param], [f(g) for g in groups])[0, 1])
-            for f in (np.mean, np.std)
+            for f in moments
         )
 
     @pytest.mark.parametrize("param", ["a", "t"])
@@ -559,19 +559,26 @@ class TestAnyParameterCanVary:
         # The check that matters: it is not enough for the formula to name the
         # parameter, the simulated conditions have to actually differ.
         #
-        # Measured over seeds 1-8 at 500 trials per condition, `a` and `t`
-        # track the mean on every seed (min r = 0.995 and 0.982), so the bar is
-        # the worst seed, not a lucky one.
+        # `t` shifts the whole distribution, so its signature is the leading
+        # edge: under a wide boundary the decision-time noise can swamp the
+        # shift in the mean (seed 8, a = 2.26: mean r = 0.875 on ssm-simulators
+        # 0.15) while the 10% quantile still tracks it. With the leading edge
+        # among the moments, seeds 1-40 at 500 trials per condition give
+        # min r = 0.984 for `a` and 0.994 for `t`, so the bar is the worst
+        # seed, not a lucky one.
         model = varying(DDM_SDV, param)
         design = rd.DESIGNS["L1_n2000"]
+        moments = (np.mean, np.std, lambda rt: np.quantile(rt, 0.1))
         moved = [
-            self._moment_correlation(model, design, param, seed) for seed in range(1, 9)
+            self._moment_correlation(model, design, param, seed, moments)
+            for seed in range(1, 9)
         ]
         assert min(moved) > 0.95, f"{param} left the RT distribution unchanged"
 
     def test_sv_moves_the_data_but_only_on_average(self):
         # sv gets its own bar because the honest measurement is much weaker:
-        # over the same eight seeds it ranges 0.42 to 0.995 (mean 0.73).
+        # over the same eight seeds it ranges 0.02 to 0.93 (mean 0.64, on
+        # ssm-simulators 0.15).
         # Inter-trial drift variability is a dispersion effect and a faint one
         # at this sample size, which is a large part of why sv is the hard
         # parameter to recover -- so a single-seed bar here would be testing the
