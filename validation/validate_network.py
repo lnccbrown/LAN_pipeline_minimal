@@ -14,7 +14,8 @@ which property broke:
     G2 parity     — ONNX output equals the trainer's own jax forward pass,
                     when the *_train_state.jax sibling is present.
     G3 hssm-load  — hssm.HSSM accepts it as a likelihood and produces a finite
-                    initial logp on simulated data.
+                    initial logp on simulated data (drawn from the same inset
+                    box as G4, redrawn until every rt is positive).
     G4 density    — the network's implied density integrates to ~1 and matches
                     simulation (Hellinger) at several in-bounds parameter
                     draws. This is the only gate that catches a network that
@@ -64,6 +65,16 @@ DEFAULT_MASS_RANGE = (0.9, 1.1)
 # above that worst case while still catching a network several times noisier
 # than sampling error.
 DEFAULT_HELLINGER_RATIO_MAX = 3.0
+
+# G3 redraws its parameter draw when the simulated data contain a response time
+# HSSM refuses (rt <= 0, which an untruncated non-decision-time kernel such as
+# ddm_normal_st's produces whenever st is large next to t). Budget and seed
+# stride are recovery_designs.usable_seed's MAX_TRUTH_REDRAWS and REDRAW_STRIDE,
+# duplicated rather than imported because publish imports this module as
+# ``validation.validate_network`` while recovery_designs is imported by bare
+# name. The tests assert the two stay equal.
+HSSM_LOAD_MAX_REDRAWS = 8
+HSSM_LOAD_REDRAW_STRIDE = 7_000_003
 
 # LANs take [*params, rt, response]; cpn/opn take the parameters only.
 EXTRA_INPUTS_BY_NETWORK_TYPE = {"lan": 2, "cpn": 0, "opn": 0, "gonogo": 0}
@@ -231,36 +242,107 @@ def gate_parity(
     )
 
 
+def hssm_load_data(
+    model_name: str, n_trials: int = 100, seed: int = 0, shrink: float = 0.1
+) -> dict:
+    """Simulate G3's dataset from the first parameter draw HSSM can accept.
+
+    theta comes from the training bounds shrunk by ``shrink`` on each side, the
+    same inset box G4 draws from: the edge of the box is where the network is
+    least accurate and, for models whose st may exceed t, where the simulator
+    returns response times at or below zero. HSSM rejects such data outright,
+    so a draw there fails G3 for a reason that says nothing about the network.
+
+    A draw whose data still contain an rt <= 0 (or a non-finite rt) is
+    redrawn, the way recovery_designs.usable_seed redraws a degenerate truth:
+    attempt 0 uses ``seed`` unchanged and each later attempt steps it by
+    HSSM_LOAD_REDRAW_STRIDE, so the dataset is a pure function of
+    (model, seed). Trials are never dropped; every rejected draw is returned
+    so the report shows it.
+
+    Returns ``{"data": DataFrame | None, "theta", "seed", "attempts",
+    "rejected"}``; ``data`` is None when the budget ran out.
+    """
+    import pandas as pd
+    import ssms
+
+    model_config = ssms.config.model_config[model_name]
+    lower, upper = (np.asarray(b, dtype=float) for b in model_config["param_bounds"])
+    span = upper - lower
+    lower_in, upper_in = lower + shrink * span, upper - shrink * span
+
+    rejected = []
+    for attempt in range(HSSM_LOAD_MAX_REDRAWS + 1):
+        resolved = seed + attempt * HSSM_LOAD_REDRAW_STRIDE
+        rng = np.random.default_rng(resolved)
+        theta = lower_in + (upper_in - lower_in) * rng.uniform(size=lower.shape)
+        sim = ssms.basic_simulators.simulator.simulator(
+            model=model_name, theta=theta, n_samples=n_trials, random_state=resolved
+        )
+        rts = np.asarray(sim["rts"], dtype=float).reshape(-1)
+        n_bad = int(np.sum(~(np.isfinite(rts) & (rts > 0))))
+        if n_bad == 0:
+            data = pd.DataFrame(
+                {"rt": rts, "response": np.asarray(sim["choices"]).reshape(-1)}
+            )
+            return {
+                "data": data,
+                "theta": [float(x) for x in theta],
+                "seed": resolved,
+                "attempts": attempt + 1,
+                "rejected": rejected,
+            }
+        rejected.append(
+            {
+                "seed": resolved,
+                "theta": [float(x) for x in theta],
+                "n_nonpositive_rt": n_bad,
+            }
+        )
+    return {
+        "data": None,
+        "theta": None,
+        "seed": None,
+        "attempts": HSSM_LOAD_MAX_REDRAWS + 1,
+        "rejected": rejected,
+    }
+
+
 def gate_hssm_load(
-    onnx_path: Path, model_name: str, n_trials: int = 100, seed: int = 0
+    onnx_path: Path,
+    model_name: str,
+    n_trials: int = 100,
+    seed: int = 0,
+    shrink: float = 0.1,
 ) -> dict:
     """G3: HSSM accepts the network and produces a finite initial logp.
 
     This is the integration the whole pipeline exists to serve; everything
-    upstream can be correct and still fail here.
+    upstream can be correct and still fail here. The data come from
+    `hssm_load_data`: an inset-box draw whose response times are all positive,
+    redrawn when they are not, with every redraw recorded in the result.
     """
+    draw = {"attempts": 0, "rejected": []}
     try:
         import hssm
         import ssms
 
-        rng = np.random.default_rng(seed)
         model_config = ssms.config.model_config[model_name]
-        lower, upper = (
-            np.asarray(b, dtype=float) for b in model_config["param_bounds"]
-        )
-        theta = lower + (upper - lower) * rng.uniform(size=lower.shape)
-
-        sim = ssms.basic_simulators.simulator.simulator(
-            model=model_name, theta=theta, n_samples=n_trials, random_state=seed
-        )
-        import pandas as pd
-
-        data = pd.DataFrame(
-            {
-                "rt": np.asarray(sim["rts"]).reshape(-1),
-                "response": np.asarray(sim["choices"]).reshape(-1),
-            }
-        )
+        draw = hssm_load_data(model_name, n_trials=n_trials, seed=seed, shrink=shrink)
+        if draw["data"] is None:
+            return _result(
+                "hssm_load",
+                False,
+                n_trials=n_trials,
+                attempts=draw["attempts"],
+                rejected_draws=draw["rejected"],
+                error=(
+                    f"no usable dataset in {draw['attempts']} draws from the "
+                    f"{shrink:.0%}-inset box: every draw simulated an rt <= 0 or a non-finite rt, which "
+                    "HSSM rejects. This is a fact about the box, not the network."
+                ),
+            )
+        data = draw["data"]
 
         kwargs = {}
         from hssm.modelconfig import list_models
@@ -290,9 +372,24 @@ def gate_hssm_load(
         pymc_model = model.pymc_model
         logp = float(pymc_model.compile_logp()(pymc_model.initial_point()))
     except Exception as e:  # noqa: BLE001
-        return _result("hssm_load", False, error=f"{type(e).__name__}: {e}")
+        return _result(
+            "hssm_load",
+            False,
+            attempts=draw["attempts"],
+            rejected_draws=draw["rejected"],
+            error=f"{type(e).__name__}: {e}",
+        )
 
-    return _result("hssm_load", np.isfinite(logp), initial_logp=logp, n_trials=n_trials)
+    return _result(
+        "hssm_load",
+        np.isfinite(logp),
+        initial_logp=logp,
+        n_trials=n_trials,
+        theta=draw["theta"],
+        seed=draw["seed"],
+        attempts=draw["attempts"],
+        rejected_draws=draw["rejected"],
+    )
 
 
 def hellinger(p: np.ndarray, q: np.ndarray) -> float:
