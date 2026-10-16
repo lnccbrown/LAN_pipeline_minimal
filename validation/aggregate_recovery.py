@@ -52,7 +52,7 @@ from pathlib import Path
 import typer
 
 sys.path.insert(0, str(Path(__file__).parent))
-import recovery_designs as rd  # noqa: E402
+import recovery_designs as rd
 
 logger = logging.getLogger("aggregate_recovery")
 app = typer.Typer(add_completion=False)
@@ -309,8 +309,8 @@ def _converged(record: dict) -> bool:
     """Whether one fit's parameter estimate is trustworthy enough to score."""
     rhat = record.get("rhat")
     return (
-        rhat == rhat  # NaN fails this: single-chain fits go out
-        and rhat is not None
+        rhat is not None
+        and not math.isnan(rhat)  # single-chain fits report NaN: they go out
         and rhat <= MAX_RHAT
         and record.get("ess_bulk", 0.0) >= MIN_ESS
     )
@@ -514,9 +514,12 @@ def _rung_recovers(cells: dict, model: str, arm: str, rung: str, label: str) -> 
     by_variant: dict[str, list[dict]] = defaultdict(list)
     for key, entry in cells.items():
         k_model, k_arm, k_design, k_label = _split_key(key)
-        if (k_model, k_arm) == (model, arm) and _rung_of(k_design) == rung:
-            if _base_param(k_label) == base:
-                by_variant[k_design].append(entry)
+        if (
+            (k_model, k_arm) == (model, arm)
+            and _rung_of(k_design) == rung
+            and _base_param(k_label) == base
+        ):
+            by_variant[k_design].append(entry)
     return any(
         all(
             e["eligible"]
@@ -699,17 +702,22 @@ def _explain_coverage(cells, key, entry, reference, low) -> list[str]:
             # message then claimed there was no exact arm for a model that has
             # one.
             return [
-                f"{where}: coverage {entry['coverage']:.2f} below the {low:.2f} floor, "
-                f"and the exact-likelihood arm has only {reference['n_converged']} "
-                "converged fits -- inconclusive, fix the reference arm first"
+                (
+                    f"{where}: coverage {entry['coverage']:.2f} below the {low:.2f} "
+                    "floor, and the exact-likelihood arm has only "
+                    f"{reference['n_converged']} converged fits -- inconclusive, "
+                    "fix the reference arm first"
+                )
             ]
         # Against its OWN floor, not the network's: the two arms can have
         # different numbers of converged fits, and the floor depends on n.
         if reference["coverage"] < reference["coverage_band"][0]:
             return []  # the exact arm misses it too: not the network
         return [
-            f"{where}: coverage {entry['coverage']:.2f} below the {low:.2f} floor "
-            f"while the exact likelihood reaches {reference['coverage']:.2f}"
+            (
+                f"{where}: coverage {entry['coverage']:.2f} below the {low:.2f} floor "
+                f"while the exact likelihood reaches {reference['coverage']:.2f}"
+            )
         ]
 
     # No no-network reference for this cell. Ask the ladder instead: if a
@@ -718,9 +726,11 @@ def _explain_coverage(cells, key, entry, reference, low) -> list[str]:
         if _rung_recovers(cells, model, arm, rung, label):
             return []
     return [
-        f"{where}: coverage {entry['coverage']:.2f} below the {low:.2f} floor, flat "
-        "across the ladder and with no exact likelihood to compare against -- likely "
-        "the network, but unconfirmed"
+        (
+            f"{where}: coverage {entry['coverage']:.2f} below the {low:.2f} floor, "
+            "flat across the ladder and with no exact likelihood to compare "
+            "against -- likely the network, but unconfirmed"
+        )
     ]
 
 
@@ -755,10 +765,12 @@ def main(
     if expect_fits and len(shards) < expect_fits:
         passed = False
         failures = [
-            f"{len(shards)} shards on disk but {expect_fits} were expected: "
-            f"{expect_fits - len(shards)} fits left no shard at all, so whatever "
-            "they would have said is missing from this verdict rather than "
-            "failing it"
+            (
+                f"{len(shards)} shards on disk but {expect_fits} were expected: "
+                f"{expect_fits - len(shards)} fits left no shard at all, so "
+                "whatever they would have said is missing from this verdict "
+                "rather than failing it"
+            )
         ] + failures
     unidentified = unidentified_cells(summary)
     report = {

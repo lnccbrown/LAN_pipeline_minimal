@@ -29,12 +29,12 @@ def report(**gates):
     }
 
 
-ALL_RAN = dict(
-    structure=(True, False),
-    parity=(True, False),
-    hssm_load=(True, False),
-    density=(True, False),
-)
+ALL_RAN = {
+    "structure": (True, False),
+    "parity": (True, False),
+    "hssm_load": (True, False),
+    "density": (True, False),
+}
 
 
 class TestGateVerdict:

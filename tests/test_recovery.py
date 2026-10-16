@@ -19,6 +19,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -745,7 +746,7 @@ class TestDegenerateRedraw:
         assert attempts == rd.MAX_TRUTH_REDRAWS + 1
         assert resolved == 3 + rd.MAX_TRUTH_REDRAWS * rd.REDRAW_STRIDE
         # Still returns a usable dataset rather than blowing up the task.
-        data, truth = rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n500"], seed=3)
+        _data, truth = rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n500"], seed=3)
         assert set(truth) == set(DDM_SDV.params)
 
 
@@ -763,7 +764,7 @@ class TestChoiceCountIsNotAssumedBinary:
     # ssms models that carry no `choices` key at all, with what `nchoices`
     # says. The old `len(config.get("choices", [-1, 1]))` declared every one of
     # them binary.
-    NO_CHOICES_KEY = {
+    NO_CHOICES_KEY: ClassVar[dict[str, int]] = {
         "lba_angle_3": 3,
         "lca_3": 3,
         "dev_rlwm_lba_pw_v1": 3,
@@ -1050,10 +1051,18 @@ class TestAnUnidentifiedCellSaysSo:
     # A fit whose posterior never tightened past its prior: no mixing, and
     # with 3 effective samples the sd estimate overshoots, so contraction
     # lands above 1 -- what matters is only that it clears MAX_CONTRACTION.
-    AT_PRIOR = dict(rhat=1.9, ess=3.0, contraction=1.36)
+    AT_PRIOR: ClassVar[dict[str, float]] = {
+        "rhat": 1.9,
+        "ess": 3.0,
+        "contraction": 1.36,
+    }
     # A fit that failed for some other reason -- still tight, still stuck.
-    STUCK = dict(rhat=1.4, ess=50.0, contraction=0.30)
-    HEALTHY = dict(rhat=1.0, ess=1000.0, contraction=0.05)
+    STUCK: ClassVar[dict[str, float]] = {"rhat": 1.4, "ess": 50.0, "contraction": 0.30}
+    HEALTHY: ClassVar[dict[str, float]] = {
+        "rhat": 1.0,
+        "ess": 1000.0,
+        "contraction": 0.05,
+    }
 
     def test_a_design_limited_cell_is_reported_not_failed(self):
         # One parameter the design cannot identify, alongside one it can. The
@@ -1200,8 +1209,9 @@ class TestSilenceCannotPass:
         # The other end: a mistyped rung fails inside all 20 array tasks, and
         # tasks that die before writing leave nothing for the aggregator to
         # notice. Cheaper to refuse the submission.
-        import gen_sbatch
         from typer.testing import CliRunner
+
+        import gen_sbatch
 
         cases = (
             ("--design", "L1_n50"),
@@ -1395,7 +1405,7 @@ class TestDeadShardsKeepTheirDesignIdentity:
         assert adopted[("ddm_sdv", "approx_differentiable", "L1_n500")] == "L1_n500@v"
         assert adopted[("ddm_sdv", "analytical", "L1_n500")] == "L1_n500@sv"
 
-    NAMING_CASES = [
+    NAMING_CASES: ClassVar[list[tuple[str, str | None, str]]] = [
         ("L0_n500", None, "L0_n500"),
         ("L1_n500", None, "L1_n500@v"),
         ("L1_n500", "sv", "L1_n500@sv"),
@@ -1933,12 +1943,12 @@ class TestSilenceIsNotAPass:
 
     def test_a_sweep_where_every_fit_diverged_does_not_pass(self):
         shards = arm_shards("approx_differentiable", divergence_rate=0.9)
-        passed, failures = agg.verdict(agg.summarise(shards))
+        passed, _failures = agg.verdict(agg.summarise(shards))
         assert not passed
 
     def test_a_sweep_where_nothing_converged_does_not_pass(self):
         shards = arm_shards("approx_differentiable", rhat=1.5)
-        passed, failures = agg.verdict(agg.summarise(shards))
+        passed, _failures = agg.verdict(agg.summarise(shards))
         assert not passed
 
     def test_the_errored_count_is_for_this_cell_not_every_cell_sharing_an_arm(self):
@@ -2042,7 +2052,7 @@ class TestLadderAttribution:
         shards += self._arm("L1_n2000", 20, label="v[0]")
         for i in (1, 2, 3):
             shards += self._arm("L1_n2000", 8, label=f"v[{i}]")
-        passed, failures = agg.verdict(agg.summarise(shards))
+        passed, _failures = agg.verdict(agg.summarise(shards))
         assert not passed
 
     def test_two_l1_variants_do_not_pool_into_one_cell(self):
