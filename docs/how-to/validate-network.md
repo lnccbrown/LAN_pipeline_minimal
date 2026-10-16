@@ -30,8 +30,17 @@ when a gate fails.
 | --- | --- |
 | G1 `structure` | ONNX loads; all input dimensions are concrete; there is one input, one scalar output, and the input width matches the model |
 | G2 `parity` | The exported ONNX matches the JAX trainer state when the required siblings exist |
-| G3 `hssm_load` | HSSM accepts the likelihood and obtains a finite initial log probability |
+| G3 `hssm_load` | HSSM accepts the likelihood and obtains a finite initial log probability on 100 simulated trials |
 | G4 `density` | Integrated mass is near one and Hellinger error is acceptable relative to a measured simulator sampling floor |
+
+G3 and G4 draw parameters from the training box shrunk by 10% on each side.
+HSSM rejects any response time at or below zero, and models whose box allows
+`st` larger than `t` (`ddm_st`, and `ddm_normal_st` with its untruncated
+non-decision-time kernel) simulate such trials near the edge. G3 therefore
+redraws its parameters, up to eight times, until every simulated response time
+is positive. It never drops trials. The report records the draw it used
+(`theta`, `seed`, `attempts`) and every rejected draw (`rejected_draws`), and
+the gate fails with `no usable dataset` if the budget runs out.
 
 G2 legitimately skips for Torch artifacts and for a bare ONNX without the JAX
 state/config pair. G1, G3, and G4 are required for publication. A skipped gate
