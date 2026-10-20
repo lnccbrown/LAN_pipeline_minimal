@@ -329,6 +329,45 @@ class TestHssmLoadGate:
         # HSSM is never handed data it would reject.
         assert fake_hssm == []
 
+    def test_an_hssm_failure_reports_the_draw_it_was_handed(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        sim = fake_simulator(
+            lambda i, theta, n: np.full(n, -0.05) if i == 0 else np.full(n, 0.5)
+        )
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+
+        def broken_hssm(**kwargs):
+            raise RuntimeError("compile failed")
+
+        monkeypatch.setattr(sys.modules["hssm"], "HSSM", broken_hssm)
+        result = gate_hssm_load(tmp_path / "m.onnx", "ddm", seed=3)
+        assert not result["passed"]
+        assert result["error"] == "RuntimeError: compile failed"
+        # The failing integration check names the accepted draw, not just
+        # the rejected one before it.
+        assert result["attempts"] == 2
+        assert result["seed"] == 3 + vn.HSSM_LOAD_REDRAW_STRIDE
+        assert result["theta"] == pytest.approx(sim.calls[1]["theta"].tolist())
+        assert [d["seed"] for d in result["rejected_draws"]] == [3]
+
+    def test_a_failure_before_any_draw_still_reports_cleanly(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        def broken_simulator(**kwargs):
+            raise RuntimeError("simulator unavailable")
+
+        monkeypatch.setattr(
+            "ssms.basic_simulators.simulator.simulator", broken_simulator
+        )
+        result = gate_hssm_load(tmp_path / "m.onnx", "ddm")
+        assert not result["passed"]
+        assert result["error"] == "RuntimeError: simulator unavailable"
+        assert result["theta"] is None and result["seed"] is None
+        assert result["attempts"] == 0
+        assert result["rejected_draws"] == []
+        assert fake_hssm == []
+
     def test_ddm_normal_st_seed_zero_is_usable(self, monkeypatch):
         """The draw that failed ddm_normal_st in practice, on the real simulator.
 

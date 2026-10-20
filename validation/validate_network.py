@@ -372,9 +372,13 @@ def gate_hssm_load(
         pymc_model = model.pymc_model
         logp = float(pymc_model.compile_logp()(pymc_model.initial_point()))
     except Exception as e:  # noqa: BLE001
+        # theta/seed are None when the failure came before a usable draw.
         return _result(
             "hssm_load",
             False,
+            n_trials=n_trials,
+            theta=draw.get("theta"),
+            seed=draw.get("seed"),
             attempts=draw["attempts"],
             rejected_draws=draw["rejected"],
             error=f"{type(e).__name__}: {e}",
