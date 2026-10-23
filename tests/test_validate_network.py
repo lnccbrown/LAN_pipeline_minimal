@@ -329,6 +329,26 @@ class TestHssmLoadGate:
         # HSSM is never handed data it would reject.
         assert fake_hssm == []
 
+    # 🔴 #4 -- validate_network.py:333 (review finding on PR #64)
+    @pytest.mark.xfail(
+        strict=True, reason="PR #64 review: exhausted G3 budget still blocks publish"
+    )
+    def test_an_exhausted_budget_skips_rather_than_fails(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        # The gate's own message calls this "a fact about the box, not the
+        # network", so it must not block publish the way a real HSSM failure
+        # does. Skipped gates report passed=True, as parity's does.
+        sim = fake_simulator(lambda i, theta, n: np.full(n, -0.05))
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        result = gate_hssm_load(tmp_path / "m.onnx", "ddm")
+        assert result["passed"], result
+        assert result.get("skipped") is True, result
+        assert "box" in result["reason"]
+        # The evidence is still in the report.
+        assert len(result["rejected_draws"]) == vn.HSSM_LOAD_MAX_REDRAWS + 1
+        assert fake_hssm == []
+
     def test_an_hssm_failure_reports_the_draw_it_was_handed(
         self, tmp_path, monkeypatch, fake_hssm
     ):
