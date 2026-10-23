@@ -2285,3 +2285,105 @@ class TestLadderAttribution:
         ]
         passed, failures = agg.verdict(agg.summarise(shards))
         assert passed, failures
+
+
+class TestRtCheckGapsFromReview:
+    """Failing tests for the high-severity review finding on PR #64.
+
+    Each one pins the behaviour a fix has to deliver. They are expected to fail
+    on the PR as written; strict, so a fix that makes one pass also has to
+    remove its marker.
+    """
+
+    pytestmark = pytest.mark.xfail(
+        strict=True, reason="PR #64 review: rt <= 0 gaps not fixed yet"
+    )
+
+    @staticmethod
+    def _fake_hssm(monkeypatch):
+        """hssm with the real HSSM's data check and a sampler that returns nothing.
+
+        Records every frame handed to HSSM, so a test can tell whether data
+        with rt <= 0 got there.
+        """
+        import types
+
+        seen = []
+
+        class HSSM:
+            def __init__(self, data, **kwargs):
+                seen.append(data.copy())
+                if (data["rt"] <= 0).any():
+                    raise ValueError("Data contains negative response times.")
+
+            def sample(self, **kwargs):
+                return {
+                    "sample_stats": {"diverging": np.zeros((1, 10), dtype=bool)},
+                    "posterior": {},
+                }
+
+        module = types.ModuleType("hssm")
+        module.HSSM = HSSM
+        module.set_floatX = lambda *a, **k: None
+        module.__version__ = "fake"
+        monkeypatch.setitem(sys.modules, "hssm", module)
+        monkeypatch.setattr(rd, "load_model", lambda *a, **k: DDM_SDV)
+        monkeypatch.setattr(rp, "_summarise", lambda *a, **k: {})
+        monkeypatch.setattr(rp, "_posterior_corr", lambda *a, **k: {})
+        return seen
+
+    @staticmethod
+    def _poison(monkeypatch, *, when):
+        real = rd._simulate
+
+        def fake(model, theta, seed):
+            rt, response = real(model, theta, seed)
+            if when(theta, seed):
+                rt = rt.copy()
+                rt[0] = -0.05
+            return rt, response
+
+        monkeypatch.setattr(rd, "_simulate", fake)
+
+    @staticmethod
+    def _run(design_name):
+        return rp.run_one(
+            model_name="ddm_sdv",
+            design_name=design_name,
+            dataset_index=0,
+            likelihood="analytical",
+            onnx_path=None,
+            draws=10,
+            tune=10,
+            chains=1,
+            target_accept=0.9,
+            bounds_from="analytical",
+            condition_param=None,
+            p_outlier=None,
+            arm="analytical",
+        )
+
+    @staticmethod
+    def _assert_excluded_not_crashed(record, seen):
+        # HSSM is never handed data it would refuse...
+        assert all((frame["rt"] > 0).all() for frame in seen), "rt <= 0 reached HSSM"
+        # ...the bad data are recorded on the shard...
+        assert record["data"]["n_rt_nonpositive"] > 0
+        # ...and the aggregator excludes the fit instead of counting an error.
+        summary = agg.summarise([record])
+        assert summary["errors"] == []
+        excluded = sum(
+            sum(counts.values())
+            for name, counts in summary.items()
+            if name.startswith("excluded_for_")
+        )
+        assert excluded == 1
+
+    def test_an_exhausted_rt_budget_is_excluded_not_crashed(self, monkeypatch):
+        # Every attempt holds an rt <= 0, so usable_seed runs out and returns
+        # the last attempt anyway. The comment there promises the failure
+        # "stays visible in the report instead of killing the array task".
+        seen = self._fake_hssm(monkeypatch)
+        self._poison(monkeypatch, when=lambda theta, seed: True)
+        record = self._run("L0_n500")
+        self._assert_excluded_not_crashed(record, seen)
