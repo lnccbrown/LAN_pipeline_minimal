@@ -602,9 +602,13 @@ def usable_seed(model: ModelUnderTest, seed: int) -> tuple[int, int]:
             _probe_clears(model, probe, resolved) for probe in PROBE_DESIGNS
         ) and _rts_clear(model, resolved):
             return resolved, attempt + 1
-    # Exhausted. Hand back the last attempt rather than raising: the shard's
-    # own data check records the share and the aggregator excludes the fit, so
-    # the failure stays visible in the report instead of killing the array task.
+    # Exhausted. Hand back the last attempt rather than raising, so the
+    # failure stays visible in the report instead of killing the array task.
+    # That attempt can fail either check. A low choice share is recorded by
+    # the shard's data check and excluded by the aggregator after the fit; an
+    # rt <= 0 would make HSSM raise, so run_one skips the fit, records
+    # `n_rt_nonpositive`, and the aggregator excludes the shard under
+    # `excluded_for_nonpositive_rt`.
     return resolved, MAX_TRUTH_REDRAWS + 1
 
 
@@ -648,8 +652,9 @@ def _rts_clear(model: ModelUnderTest, seed: int) -> bool:
     condition parameter as well would have redrawn 3 of 20 indices, all on
     datasets the default sweep never fits; this check redraws none of them
     for the sweep's variants (L0, `@v`, `@a`, `@st`). An optional rung
-    therefore shares the default ladder's truth but is not vouched for, and an
-    rt <= 0 there still reaches HSSM. Like the L1 probe, the check reads the
+    therefore shares the default ladder's truth but is not vouched for: an
+    rt <= 0 there is caught by run_one, which skips the fit and leaves the
+    shard for the aggregator to exclude. Like the L1 probe, the check reads the
     model's own condition parameter, so L0 and `L1@a` stay paired across
     variants only while neither redraws — a limit the choice-share probe
     already has, not a new one.

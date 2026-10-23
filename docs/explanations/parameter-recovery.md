@@ -75,6 +75,12 @@ probe to catch. Offending trials are never dropped: that would change the
 rung's trial count. The optional 2000-trial rungs share the index's truth but
 are not checked.
 
+If the budget runs out, or an optional rung holds such a trial, the shard is
+not fitted: HSSM would refuse the data and kill the array task. The shard
+records `n_rt_nonpositive` and the aggregator counts it under
+`excluded_for_nonpositive_rt`, next to `excluded_for_degenerate_data`, rather
+than under `errors`.
+
 ## 3. Walk a ladder of design complexity
 
 Weak identifiability is usually a property of the design, and the standard

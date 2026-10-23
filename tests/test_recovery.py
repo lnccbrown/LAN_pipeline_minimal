@@ -2288,16 +2288,12 @@ class TestLadderAttribution:
 
 
 class TestRtCheckGapsFromReview:
-    """Failing tests for the high-severity review finding on PR #64.
+    """The high-severity review finding on PR #64: rt <= 0 must not crash a fit.
 
-    Each one pins the behaviour a fix has to deliver. They are expected to fail
-    on the PR as written; strict, so a fix that makes one pass also has to
-    remove its marker.
+    When usable_seed exhausts its budget, the dataset it hands back can still
+    hold an rt <= 0. The shard has to record that and be excluded, not reach
+    HSSM and kill the array task.
     """
-
-    pytestmark = pytest.mark.xfail(
-        strict=True, reason="PR #64 review: rt <= 0 gaps not fixed yet"
-    )
 
     @staticmethod
     def _fake_hssm(monkeypatch):
