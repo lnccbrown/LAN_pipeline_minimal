@@ -757,6 +757,137 @@ class TestDegenerateRedraw:
         assert set(truth) == set(DDM_SDV.params)
 
 
+class TestNonPositiveRtRedraw:
+    """A dataset HSSM refuses is a wasted fit, and the redraw must not split the ladder.
+
+    HSSM raises on any rt <= 0. ddm_normal_st's untruncated Normal(t, st)
+    non-decision time emits such trials (10 of 240 default-sweep datasets at
+    seeds 0-19), so the seed resolution rejects them -- exactly, over every
+    default rung, and without looking at the requested design.
+    """
+
+    @staticmethod
+    def _poison(monkeypatch, *, when):
+        """Make `_simulate` return one rt <= 0 whenever `when(theta, seed)` holds."""
+        real = rd._simulate
+        seen = []
+
+        def fake(model, theta, seed):
+            seen.append(seed)
+            rt, response = real(model, theta, seed)
+            if when(theta, seed):
+                rt = rt.copy()
+                rt[0] = -0.05
+            return rt, response
+
+        monkeypatch.setattr(rd, "_simulate", fake)
+        return seen
+
+    def test_a_draw_with_a_nonpositive_rt_is_redrawn(self, monkeypatch):
+        seen = self._poison(monkeypatch, when=lambda theta, seed: seed == 3)
+        resolved, attempts = rd.usable_seed(DDM_SDV, 3)
+        assert (resolved, attempts) == (3 + rd.REDRAW_STRIDE, 2)
+        assert list(dict.fromkeys(seen)) == [3, 3 + rd.REDRAW_STRIDE]
+        data, _ = rd.build_dataset(DDM_SDV, rd.DESIGNS["L0_n500"], seed=3)
+        assert (data["rt"] > 0).all()
+
+    def test_a_non_finite_rt_is_rejected_too(self, monkeypatch):
+        real = rd._simulate
+
+        def fake(model, theta, seed):
+            rt, response = real(model, theta, seed)
+            if seed == 3:
+                rt = rt.copy()
+                rt[-1] = np.nan
+            return rt, response
+
+        monkeypatch.setattr(rd, "_simulate", fake)
+        assert rd.usable_seed(DDM_SDV, 3) == (3 + rd.REDRAW_STRIDE, 2)
+
+    def test_a_bad_rt_in_one_rung_moves_every_rung_of_the_index(self, monkeypatch):
+        # Poison only the 250-trial datasets at the first attempt. Neither
+        # probe has 250 trials, so only the exact check can see it -- and the
+        # rungs that were clean must move with the one that was not, or L0 and
+        # L1 would hold different shared truths at this index.
+        self._poison(
+            monkeypatch, when=lambda theta, seed: seed == 3 and len(theta) == 250
+        )
+        expected = rd.shared_draw(DDM_SDV, 3 + rd.REDRAW_STRIDE)
+        for name in rd.DEFAULT_LADDER:
+            _, truth = rd.build_dataset(DDM_SDV, rd.DESIGNS[name], seed=3)
+            for param, value in expected.items():
+                if not isinstance(truth[param], list):
+                    assert truth[param] == value, (name, param)
+
+    def test_every_default_rung_is_checked_exactly(self, monkeypatch):
+        # One bad trial in any single default rung is enough: the check
+        # simulates each rung's own dataset rather than probing a rate.
+        for name in rd.DEFAULT_LADDER:
+            design = rd.DESIGNS[name]
+            with monkeypatch.context() as m:
+                real = rd._simulate
+
+                def fake(model, theta, seed, design=design, real=real):
+                    rt, response = real(model, theta, seed)
+                    cond_values = {tuple(row) for row in np.asarray(theta)}
+                    if (
+                        seed == 3
+                        and len(theta) == design.n_trials
+                        and len(cond_values) == design.n_conditions
+                    ):
+                        rt = rt.copy()
+                        rt[0] = 0.0
+                    return rt, response
+
+                m.setattr(rd, "_simulate", fake)
+                assert rd.usable_seed(DDM_SDV, 3)[0] == 3 + rd.REDRAW_STRIDE, name
+
+    def test_optional_rungs_are_not_vouched_for(self, monkeypatch):
+        # Deliberate: every extra dataset checked rejects more truths whose
+        # fitted data are clean. A bad rt only in a 2000-trial dataset leaves
+        # the resolution alone.
+        self._poison(
+            monkeypatch, when=lambda theta, seed: seed == 3 and len(theta) == 2000
+        )
+        assert rd.usable_seed(DDM_SDV, 3) == (3, 1)
+
+    def test_exhausting_the_budget_returns_the_last_draw(self, monkeypatch):
+        self._poison(monkeypatch, when=lambda theta, seed: True)
+        resolved, attempts = rd.usable_seed(DDM_SDV, 3)
+        assert attempts == rd.MAX_TRUTH_REDRAWS + 1
+        assert resolved == 3 + rd.MAX_TRUTH_REDRAWS * rd.REDRAW_STRIDE
+
+    def test_ddm_normal_st_seed_zero_is_redrawn_for_every_rung(self):
+        # The measured case, on the real simulator: at seed 0 the L0_n1000
+        # dataset holds two rts <= 0. Resolution moves the whole index, and
+        # every default rung of the moved index is clean. Bounds are written
+        # out (HSSM#1345's box with st widened to 0.35) rather than loaded,
+        # so the premise does not depend on which HSSM is installed.
+        from ssms.config import model_config
+
+        if "ddm_normal_st" not in model_config:
+            pytest.skip("this ssms does not simulate ddm_normal_st")
+        model = rd.ModelUnderTest(
+            name="ddm_normal_st",
+            params=("v", "a", "z", "t", "st"),
+            bounds={
+                "v": (-3.0, 3.0),
+                "a": (0.3, 2.5),
+                "z": (0.3, 0.7),
+                "t": (0.25, 2.25),
+                "st": (0.001, 0.35),
+            },
+            condition_param="v",
+        )
+        plain, _ = rd._simulate_once(model, rd.DESIGNS["L0_n1000"], 0)
+        assert (plain["rt"] <= 0).any(), "premise gone: seed 0 is clean now"
+        resolved, attempts = rd.usable_seed(model, 0)
+        assert attempts > 1 and resolved != 0
+        for name in rd.DEFAULT_LADDER:
+            data, _ = rd.build_dataset(model, rd.DESIGNS[name], 0)
+            assert (data["rt"] > 0).all(), name
+
+
 class TestChoiceCountIsNotAssumedBinary:
     """`n_choices` decides whether the degeneracy guard works at all.
 
@@ -2154,3 +2285,101 @@ class TestLadderAttribution:
         ]
         passed, failures = agg.verdict(agg.summarise(shards))
         assert passed, failures
+
+
+class TestRtCheckGapsFromReview:
+    """The high-severity review finding on PR #64: rt <= 0 must not crash a fit.
+
+    When usable_seed exhausts its budget, the dataset it hands back can still
+    hold an rt <= 0. The shard has to record that and be excluded, not reach
+    HSSM and kill the array task.
+    """
+
+    @staticmethod
+    def _fake_hssm(monkeypatch):
+        """hssm with the real HSSM's data check and a sampler that returns nothing.
+
+        Records every frame handed to HSSM, so a test can tell whether data
+        with rt <= 0 got there.
+        """
+        import types
+
+        seen = []
+
+        class HSSM:
+            def __init__(self, data, **kwargs):
+                seen.append(data.copy())
+                if (data["rt"] <= 0).any():
+                    raise ValueError("Data contains negative response times.")
+
+            def sample(self, **kwargs):
+                return {
+                    "sample_stats": {"diverging": np.zeros((1, 10), dtype=bool)},
+                    "posterior": {},
+                }
+
+        module = types.ModuleType("hssm")
+        module.HSSM = HSSM
+        module.set_floatX = lambda *a, **k: None
+        module.__version__ = "fake"
+        monkeypatch.setitem(sys.modules, "hssm", module)
+        monkeypatch.setattr(rd, "load_model", lambda *a, **k: DDM_SDV)
+        monkeypatch.setattr(rp, "_summarise", lambda *a, **k: {})
+        monkeypatch.setattr(rp, "_posterior_corr", lambda *a, **k: {})
+        return seen
+
+    @staticmethod
+    def _poison(monkeypatch, *, when):
+        real = rd._simulate
+
+        def fake(model, theta, seed):
+            rt, response = real(model, theta, seed)
+            if when(theta, seed):
+                rt = rt.copy()
+                rt[0] = -0.05
+            return rt, response
+
+        monkeypatch.setattr(rd, "_simulate", fake)
+
+    @staticmethod
+    def _run(design_name):
+        return rp.run_one(
+            model_name="ddm_sdv",
+            design_name=design_name,
+            dataset_index=0,
+            likelihood="analytical",
+            onnx_path=None,
+            draws=10,
+            tune=10,
+            chains=1,
+            target_accept=0.9,
+            bounds_from="analytical",
+            condition_param=None,
+            p_outlier=None,
+            arm="analytical",
+        )
+
+    @staticmethod
+    def _assert_excluded_not_crashed(record, seen):
+        # HSSM is never handed data it would refuse...
+        assert all((frame["rt"] > 0).all() for frame in seen), "rt <= 0 reached HSSM"
+        # ...the bad data are recorded on the shard...
+        assert record["data"]["n_rt_nonpositive"] > 0
+        # ...and the aggregator excludes the fit instead of counting an error.
+        summary = agg.summarise([record])
+        assert summary["errors"] == []
+        excluded = sum(
+            sum(counts.values())
+            for name, counts in summary.items()
+            if name.startswith("excluded_for_")
+        )
+        assert excluded == 1
+
+    def test_an_exhausted_rt_budget_is_excluded_not_crashed(self, monkeypatch):
+        # Every attempt holds an rt <= 0, so usable_seed runs out and returns
+        # the last attempt anyway. The comment there promises the failure
+        # "stays visible in the report instead of killing the array task".
+        seen = self._fake_hssm(monkeypatch)
+        self._poison(monkeypatch, when=lambda theta, seed: True)
+        record = self._run("L0_n500")
+        self._assert_excluded_not_crashed(record, seen)

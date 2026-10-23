@@ -52,6 +52,13 @@ class TestGateVerdict:
         assert not ok
         assert "density" in reason and "not actually checked" in reason
 
+    def test_a_skipped_hssm_load_is_not_a_pass(self):
+        # G3 skips when no inset-box draw gives data HSSM accepts. The network
+        # was never loaded, so it must not publish.
+        ok, reason = gate_verdict(report(**{**ALL_RAN, "hssm_load": (True, True)}))
+        assert not ok
+        assert "hssm_load" in reason and "not actually checked" in reason
+
     def test_parity_may_skip_because_torch_runs_have_no_jax_state(self):
         ok, reason = gate_verdict(report(**{**ALL_RAN, "parity": (True, True)}))
         assert ok, reason

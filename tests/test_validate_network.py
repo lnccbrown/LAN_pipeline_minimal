@@ -6,15 +6,22 @@ network. The end-to-end test against the real production ddm.onnx is opt-in
 inference stack, which does not belong in the default suite.
 """
 
+import sys
+import types
+
 import numpy as np
 import onnx
+import pandas as pd
 import pytest
 from onnx import TensorProto, helper
 
+import validate_network as vn
 from validate_network import (
+    gate_hssm_load,
     gate_parity,
     gate_structure,
     hellinger,
+    hssm_load_data,
     validate_network,
 )
 
@@ -189,6 +196,238 @@ class TestWiring:
             "hssm_load",
             "density",
         ]
+
+
+def fake_simulator(rts_for_call):
+    """An ssms simulator stand-in. ``rts_for_call(i, theta, n)`` gives the rts
+    of the i-th call; choices alternate. Records each call's theta."""
+    calls = []
+
+    def simulator(model, theta, n_samples, random_state, **kwargs):
+        theta = np.asarray(theta, dtype=float)
+        calls.append({"theta": theta, "random_state": random_state})
+        rts = np.asarray(rts_for_call(len(calls) - 1, theta, n_samples), dtype=float)
+        choices = np.where(np.arange(n_samples) % 2 == 0, 1, -1)
+        return {"rts": rts.reshape(-1, 1), "choices": choices.reshape(-1, 1)}
+
+    simulator.calls = calls
+    return simulator
+
+
+@pytest.fixture
+def fake_hssm(monkeypatch):
+    """A stand-in for the hssm package with HSSM's data check and nothing else.
+
+    hssm.HSSM raises on any rt <= 0 before it touches the likelihood, so that
+    check is the whole of what G3's data handling has to satisfy. Records the
+    frames it was handed.
+    """
+    seen = []
+
+    class FakePymcModel:
+        def initial_point(self):
+            return {}
+
+        def compile_logp(self):
+            return lambda point: -123.0
+
+    class HSSM:
+        def __init__(self, data, model, loglik, loglik_kind, **kwargs):
+            seen.append(data.copy())
+            if (data["rt"] <= 0).any():
+                raise ValueError("Data contains negative response times.")
+            self.pymc_model = FakePymcModel()
+
+    module = types.ModuleType("hssm")
+    module.HSSM = HSSM
+    modelconfig = types.ModuleType("hssm.modelconfig")
+    modelconfig.list_models = lambda: ["ddm"]
+    module.modelconfig = modelconfig
+    monkeypatch.setitem(sys.modules, "hssm", module)
+    monkeypatch.setitem(sys.modules, "hssm.modelconfig", modelconfig)
+    return seen
+
+
+def ddm_box():
+    import ssms
+
+    lower, upper = (
+        np.asarray(b, dtype=float)
+        for b in ssms.config.model_config["ddm"]["param_bounds"]
+    )
+    return lower, upper
+
+
+class TestHssmLoadGate:
+    """G3 must not fail a working network because its data were unusable.
+
+    hssm.HSSM refuses data with rt <= 0. An untruncated non-decision-time
+    kernel (ddm_normal_st) produces such trials whenever st is large next to t,
+    and the full ssms box allows exactly that; the gate used to draw there.
+    """
+
+    def test_redraw_constants_match_recovery(self):
+        import recovery_designs as rd
+
+        assert vn.HSSM_LOAD_MAX_REDRAWS == rd.MAX_TRUTH_REDRAWS
+        assert vn.HSSM_LOAD_REDRAW_STRIDE == rd.REDRAW_STRIDE
+
+    def test_theta_is_drawn_from_the_inset_box(self, monkeypatch):
+        sim = fake_simulator(lambda i, theta, n: np.full(n, 0.5))
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        lower, upper = ddm_box()
+        span = upper - lower
+        for seed in range(25):
+            hssm_load_data("ddm", n_trials=10, seed=seed)
+        for call in sim.calls:
+            assert np.all(call["theta"] >= lower + 0.1 * span - 1e-12)
+            assert np.all(call["theta"] <= upper - 0.1 * span + 1e-12)
+
+    def test_a_draw_with_nonpositive_rts_is_redrawn_and_recorded(self, monkeypatch):
+        sim = fake_simulator(
+            lambda i, theta, n: np.linspace(-0.2, 1.0, n) if i == 0 else np.full(n, 0.5)
+        )
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        draw = hssm_load_data("ddm", n_trials=100, seed=0)
+        assert draw["attempts"] == 2
+        assert (draw["data"]["rt"] > 0).all()
+        assert len(draw["rejected"]) == 1
+        assert draw["rejected"][0]["seed"] == 0
+        assert draw["rejected"][0]["n_nonpositive_rt"] > 0
+        # Attempt 0 keeps the seed unchanged; the redraw steps by the stride.
+        assert [c["random_state"] for c in sim.calls] == [
+            0,
+            vn.HSSM_LOAD_REDRAW_STRIDE,
+        ]
+        assert draw["seed"] == vn.HSSM_LOAD_REDRAW_STRIDE
+
+    def test_gate_passes_a_network_whose_first_draw_was_unusable(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        # The regression: before the fix the negative-rt frame went straight
+        # to hssm.HSSM and the gate failed with "negative response times".
+        sim = fake_simulator(
+            lambda i, theta, n: np.full(n, -0.05) if i == 0 else np.full(n, 0.5)
+        )
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        result = gate_hssm_load(tmp_path / "m.onnx", "ddm")
+        assert result["passed"], result
+        assert result["attempts"] == 2
+        assert len(result["rejected_draws"]) == 1
+        assert len(fake_hssm) == 1 and (fake_hssm[0]["rt"] > 0).all()
+
+    def test_an_exhausted_budget_skips_rather_than_fails(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        # The gate's own message calls this "a fact about the box, not the
+        # network", so it must not report a network failure. It skips, the
+        # way parity does, and skipped gates report passed=True.
+        sim = fake_simulator(lambda i, theta, n: np.full(n, -0.05))
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        result = gate_hssm_load(tmp_path / "m.onnx", "ddm")
+        assert result["passed"], result
+        assert result.get("skipped") is True, result
+        assert "box" in result["reason"]
+        assert "error" not in result
+        # The evidence is still in the report.
+        assert result["attempts"] == vn.HSSM_LOAD_MAX_REDRAWS + 1
+        assert len(result["rejected_draws"]) == vn.HSSM_LOAD_MAX_REDRAWS + 1
+        assert fake_hssm == []
+
+    def test_an_exhausted_budget_still_blocks_publish(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        # Skipping is not passing: G3 is a required gate, so a network HSSM
+        # never loaded cannot be published on the strength of a skipped G3.
+        from publish.publish_network import gate_verdict
+
+        sim = fake_simulator(lambda i, theta, n: np.full(n, -0.05))
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        others = [
+            {"gate": name, "passed": True}
+            for name in ("structure", "parity", "density")
+        ]
+        report = {"gates": [*others, gate_hssm_load(tmp_path / "m.onnx", "ddm")]}
+        assert all(g["passed"] for g in report["gates"])
+
+        ok, reason = gate_verdict(report)
+        assert not ok
+        assert "hssm_load" in reason and "not actually checked" in reason
+
+    def test_an_hssm_failure_reports_the_draw_it_was_handed(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        sim = fake_simulator(
+            lambda i, theta, n: np.full(n, -0.05) if i == 0 else np.full(n, 0.5)
+        )
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+
+        def broken_hssm(**kwargs):
+            raise RuntimeError("compile failed")
+
+        monkeypatch.setattr(sys.modules["hssm"], "HSSM", broken_hssm)
+        result = gate_hssm_load(tmp_path / "m.onnx", "ddm", seed=3)
+        assert not result["passed"]
+        assert result["error"] == "RuntimeError: compile failed"
+        # The failing integration check names the accepted draw, not just
+        # the rejected one before it.
+        assert result["attempts"] == 2
+        assert result["seed"] == 3 + vn.HSSM_LOAD_REDRAW_STRIDE
+        assert result["theta"] == pytest.approx(sim.calls[1]["theta"].tolist())
+        assert [d["seed"] for d in result["rejected_draws"]] == [3]
+
+    def test_a_failure_before_any_draw_still_reports_cleanly(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        def broken_simulator(**kwargs):
+            raise RuntimeError("simulator unavailable")
+
+        monkeypatch.setattr(
+            "ssms.basic_simulators.simulator.simulator", broken_simulator
+        )
+        result = gate_hssm_load(tmp_path / "m.onnx", "ddm")
+        assert not result["passed"]
+        assert result["error"] == "RuntimeError: simulator unavailable"
+        assert result["theta"] is None and result["seed"] is None
+        assert result["attempts"] == 0
+        assert result["rejected_draws"] == []
+        assert fake_hssm == []
+
+    def test_ddm_normal_st_seed_zero_is_usable(self, monkeypatch):
+        """The draw that failed ddm_normal_st in practice, on the real simulator.
+
+        The networks were trained on an st box widened to 0.35 (ssms ships
+        0.25 at the pinned version), so the test installs that box. Its
+        full-box seed-0 draw (t = 0.283, st = 0.285) simulates an rt below
+        zero through the untruncated Normal kernel; the gate's own draw at the
+        same seed must not.
+        """
+        import copy
+
+        import ssms
+
+        if "ddm_normal_st" not in ssms.config.model_config:
+            pytest.skip("ssms has no ddm_normal_st")
+        config = copy.deepcopy(ssms.config.model_config["ddm_normal_st"])
+        config["param_bounds"] = [
+            [-3.0, 0.3, 0.3, 0.25, 0.001],
+            [3.0, 2.5, 0.7, 2.25, 0.35],
+        ]
+        monkeypatch.setitem(ssms.config.model_config, "ddm_normal_st", config)
+
+        lower, upper = (np.asarray(b, dtype=float) for b in config["param_bounds"])
+        theta = lower + (upper - lower) * np.random.default_rng(0).uniform(
+            size=lower.shape
+        )
+        old = ssms.basic_simulators.simulator.simulator(
+            model="ddm_normal_st", theta=theta, n_samples=100, random_state=0
+        )
+        assert (np.asarray(old["rts"]) <= 0).any(), "full-box draw no longer fails"
+
+        draw = hssm_load_data("ddm_normal_st", n_trials=100, seed=0)
+        assert draw["data"] is not None, draw["rejected"]
+        assert isinstance(draw["data"], pd.DataFrame)
+        assert (draw["data"]["rt"] > 0).all()
 
 
 @pytest.mark.production
