@@ -330,16 +330,22 @@ def gate_hssm_load(
         model_config = ssms.config.model_config[model_name]
         draw = hssm_load_data(model_name, n_trials=n_trials, seed=seed, shrink=shrink)
         if draw["data"] is None:
+            # Skipped, not failed: no network was loaded, so there is no
+            # verdict on it. Like a skipped parity gate this reports
+            # passed=True, and like any skipped gate it still blocks publish,
+            # which requires hssm_load to have run.
             return _result(
                 "hssm_load",
-                False,
+                True,
+                skipped=True,
                 n_trials=n_trials,
                 attempts=draw["attempts"],
                 rejected_draws=draw["rejected"],
-                error=(
+                reason=(
                     f"no usable dataset in {draw['attempts']} draws from the "
-                    f"{shrink:.0%}-inset box: every draw simulated an rt <= 0 or a non-finite rt, which "
-                    "HSSM rejects. This is a fact about the box, not the network."
+                    f"{shrink:.0%}-inset box: every draw simulated an rt <= 0 or "
+                    "a non-finite rt, which HSSM rejects. This is a fact about "
+                    "the box, not the network; the network was never loaded."
                 ),
             )
         data = draw["data"]

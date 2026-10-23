@@ -40,7 +40,12 @@ non-decision-time kernel) simulate such trials near the edge. G3 therefore
 redraws its parameters, up to eight times, until every simulated response time
 is positive. It never drops trials. The report records the draw it used
 (`theta`, `seed`, `attempts`) and every rejected draw (`rejected_draws`), and
-the gate fails with `no usable dataset` if the budget runs out.
+if the budget runs out the gate skips with a `reason` that starts
+`no usable dataset` and names the box. A skip, not a failure, because the
+network was never loaded and so nothing was learned about it. The rejected
+draws stay in the report, and because G3 is required, the publisher refuses a
+report whose G3 skipped: an exhausted G3 blocks publication just as a failed
+one does.
 
 G2 legitimately skips for Torch artifacts and for a bare ONNX without the JAX
 state/config pair. G1, G3, and G4 are required for publication. A skipped gate

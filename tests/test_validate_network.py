@@ -316,37 +316,43 @@ class TestHssmLoadGate:
         assert len(result["rejected_draws"]) == 1
         assert len(fake_hssm) == 1 and (fake_hssm[0]["rt"] > 0).all()
 
-    def test_an_exhausted_budget_fails_with_a_named_reason(
-        self, tmp_path, monkeypatch, fake_hssm
-    ):
-        sim = fake_simulator(lambda i, theta, n: np.full(n, -0.05))
-        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
-        result = gate_hssm_load(tmp_path / "m.onnx", "ddm")
-        assert not result["passed"]
-        assert "no usable dataset" in result["error"]
-        assert result["attempts"] == vn.HSSM_LOAD_MAX_REDRAWS + 1
-        assert len(result["rejected_draws"]) == vn.HSSM_LOAD_MAX_REDRAWS + 1
-        # HSSM is never handed data it would reject.
-        assert fake_hssm == []
-
-    @pytest.mark.xfail(
-        strict=True, reason="PR #64 review: exhausted G3 budget still blocks publish"
-    )
     def test_an_exhausted_budget_skips_rather_than_fails(
         self, tmp_path, monkeypatch, fake_hssm
     ):
         # The gate's own message calls this "a fact about the box, not the
-        # network", so it must not block publish the way a real HSSM failure
-        # does. Skipped gates report passed=True, as parity's does.
+        # network", so it must not report a network failure. It skips, the
+        # way parity does, and skipped gates report passed=True.
         sim = fake_simulator(lambda i, theta, n: np.full(n, -0.05))
         monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
         result = gate_hssm_load(tmp_path / "m.onnx", "ddm")
         assert result["passed"], result
         assert result.get("skipped") is True, result
         assert "box" in result["reason"]
+        assert "error" not in result
         # The evidence is still in the report.
+        assert result["attempts"] == vn.HSSM_LOAD_MAX_REDRAWS + 1
         assert len(result["rejected_draws"]) == vn.HSSM_LOAD_MAX_REDRAWS + 1
         assert fake_hssm == []
+
+    def test_an_exhausted_budget_still_blocks_publish(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        # Skipping is not passing: G3 is a required gate, so a network HSSM
+        # never loaded cannot be published on the strength of a skipped G3.
+        from publish.publish_network import gate_verdict
+
+        sim = fake_simulator(lambda i, theta, n: np.full(n, -0.05))
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        others = [
+            {"gate": name, "passed": True}
+            for name in ("structure", "parity", "density")
+        ]
+        report = {"gates": [*others, gate_hssm_load(tmp_path / "m.onnx", "ddm")]}
+        assert all(g["passed"] for g in report["gates"])
+
+        ok, reason = gate_verdict(report)
+        assert not ok
+        assert "hssm_load" in reason and "not actually checked" in reason
 
     def test_an_hssm_failure_reports_the_draw_it_was_handed(
         self, tmp_path, monkeypatch, fake_hssm
