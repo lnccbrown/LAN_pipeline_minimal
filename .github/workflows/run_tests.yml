@@ -33,10 +33,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The uv cache holds the ssm-simulators build, which links against the
+      # runner's GSL soname (libgsl.so.27 on 24.04, .28 on 26.04). setup-uv's
+      # key omits the runner image, so without this a new ubuntu-latest image
+      # restores a build whose GSL is gone and every cssm import fails.
+      - name: Key the uv cache on the runner image
+        run: echo "UV_CACHE_SUFFIX=$ImageOS" >> "$GITHUB_ENV"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
           version: "latest"
+          cache-suffix: ${{ env.UV_CACHE_SUFFIX }}
 
       # Builds ssm-simulators + lanfactory from the git commits pinned in
       # uv.lock (sourced from their main branches, see pyproject

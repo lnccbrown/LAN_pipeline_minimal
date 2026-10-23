@@ -56,9 +56,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      # See run_tests.yml: the cached ssm-simulators build is tied to the
+      # runner image's GSL soname.
+      - name: Key the uv cache on the runner image
+        run: echo "UV_CACHE_SUFFIX=$ImageOS" >> "$GITHUB_ENV"
+
       - uses: astral-sh/setup-uv@v6
         with:
           version: "latest"
+          cache-suffix: ${{ env.UV_CACHE_SUFFIX }}
 
       # The whole point: re-resolve instead of --frozen, so the git-pinned
       # upstreams advance to their current main.
