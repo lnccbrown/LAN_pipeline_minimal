@@ -52,13 +52,10 @@ jobs:
       - name: Install GSL (for the ssm-simulators build)
         run: sudo apt-get update && sudo apt-get install -y libgsl-dev
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
+          python-version: "3.12"
 
       # The whole point: re-resolve instead of --frozen, so the git-pinned
       # upstreams advance to their current main.
