@@ -2379,7 +2379,6 @@ class TestRtCheckGapsFromReview:
         )
         assert excluded == 1
 
-    # 🔴 #1 -- recovery_designs.py:608
     def test_an_exhausted_rt_budget_is_excluded_not_crashed(self, monkeypatch):
         # Every attempt holds an rt <= 0, so usable_seed runs out and returns
         # the last attempt anyway. The comment there promises the failure

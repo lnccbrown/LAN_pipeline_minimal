@@ -329,7 +329,6 @@ class TestHssmLoadGate:
         # HSSM is never handed data it would reject.
         assert fake_hssm == []
 
-    # 🔴 #4 -- validate_network.py:333 (review finding on PR #64)
     @pytest.mark.xfail(
         strict=True, reason="PR #64 review: exhausted G3 budget still blocks publish"
     )
