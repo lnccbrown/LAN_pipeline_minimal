@@ -77,6 +77,9 @@ def _sanity(data, model: rd.ModelUnderTest) -> dict:
         "rt_min": float(rt.min()),
         "rt_max": float(rt.max()),
         "n_rt_nonpositive": int((rt <= 0).sum()),
+        # NaN and +inf slip past `rt <= 0`; `_rts_clear` rejects them too, and
+        # so must run_one when that check was exhausted or never ran.
+        "n_rt_nonfinite": int((~np.isfinite(rt)).sum()),
         # Exact, not a fudge: a censored trial comes back at max_t + t, and no
         # trial that terminated on its own can reach the budget.
         "n_rt_at_ceiling": int((rt >= rd.SIMULATOR_MAX_T).sum()),
@@ -252,15 +255,19 @@ def run_one(
         },
     }
 
-    # HSSM refuses any rt <= 0 and the refusal kills the array task. That
-    # happens when usable_seed ran out of redraws without a clean attempt, or
-    # on an optional rung `_rts_clear` does not vouch for. Either way it is a
-    # fact about the draw, not the likelihood, so the fit is skipped and the
-    # aggregator excludes it under `excluded_for_nonpositive_rt`.
-    if record["data"]["n_rt_nonpositive"]:
+    # HSSM refuses any rt <= 0 and the refusal kills the array task; a NaN or
+    # +inf rt is no better. Either happens when usable_seed ran out of redraws
+    # without a clean attempt, or on an optional rung `_rts_clear` does not
+    # vouch for. Either way it is a fact about the draw, not the likelihood, so
+    # the fit is skipped and the aggregator excludes it under
+    # `excluded_for_nonpositive_rt` or `excluded_for_nonfinite_rt`.
+    n_nonpositive = record["data"]["n_rt_nonpositive"]
+    n_nonfinite = record["data"]["n_rt_nonfinite"]
+    if n_nonpositive or n_nonfinite:
         logger.warning(
-            f"{record['data']['n_rt_nonpositive']} rt <= 0 in the dataset at "
-            f"seed {seed}; not fitting, the aggregator will exclude this shard"
+            f"{n_nonpositive} rt <= 0 and {n_nonfinite} non-finite rt in the "
+            f"dataset at seed {seed}; not fitting, the aggregator will exclude "
+            "this shard"
         )
         return _finite({**record, "parameters": {}, "posterior_corr": {}})
 

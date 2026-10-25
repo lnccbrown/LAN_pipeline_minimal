@@ -2311,6 +2311,8 @@ class TestRtCheckGapsFromReview:
                 seen.append(data.copy())
                 if (data["rt"] <= 0).any():
                     raise ValueError("Data contains negative response times.")
+                if not np.isfinite(data["rt"]).all():
+                    raise ValueError("Data contains non-finite response times.")
 
             def sample(self, **kwargs):
                 return {
@@ -2329,14 +2331,14 @@ class TestRtCheckGapsFromReview:
         return seen
 
     @staticmethod
-    def _poison(monkeypatch, *, when):
+    def _poison(monkeypatch, *, when, value=-0.05):
         real = rd._simulate
 
         def fake(model, theta, seed):
             rt, response = real(model, theta, seed)
             if when(theta, seed):
                 rt = rt.copy()
-                rt[0] = -0.05
+                rt[0] = value
             return rt, response
 
         monkeypatch.setattr(rd, "_simulate", fake)
@@ -2383,3 +2385,38 @@ class TestRtCheckGapsFromReview:
         self._poison(monkeypatch, when=lambda theta, seed: True)
         record = self._run("L0_n500")
         self._assert_excluded_not_crashed(record, seen)
+
+    @staticmethod
+    def _assert_nonfinite_excluded(record, seen):
+        # Copilot on PR #64: NaN and +inf pass `rt <= 0`, so they need their
+        # own count, their own pre-fit skip, and their own exclusion.
+        assert all(np.isfinite(frame["rt"]).all() for frame in seen), (
+            "non-finite rt reached HSSM"
+        )
+        assert record["data"]["n_rt_nonpositive"] == 0
+        assert record["data"]["n_rt_nonfinite"] == 1
+        assert record["parameters"] == {}
+        summary = agg.summarise([record])
+        assert summary["errors"] == []
+        assert sum(summary["excluded_for_nonfinite_rt"].values()) == 1
+        assert summary["excluded_for_nonpositive_rt"] == {}
+        assert summary["cells"] == {}
+
+    @pytest.mark.parametrize("value", [np.nan, np.inf], ids=["nan", "posinf"])
+    def test_an_exhausted_budget_of_nonfinite_rts_is_excluded(self, monkeypatch, value):
+        seen = self._fake_hssm(monkeypatch)
+        self._poison(monkeypatch, when=lambda theta, seed: True, value=value)
+        record = self._run("L0_n500")
+        self._assert_nonfinite_excluded(record, seen)
+
+    def test_a_nonfinite_rt_on_an_optional_rung_never_reaches_hssm(self, monkeypatch):
+        # Only the 2000-trial dataset is poisoned. _rts_clear never simulates
+        # it, so it vouches for the seed and run_one is the only guard.
+        seen = self._fake_hssm(monkeypatch)
+        self._poison(
+            monkeypatch, when=lambda theta, seed: len(theta) == 2000, value=np.nan
+        )
+        record = self._run("L0_n2000")
+        resolved, _ = rd.usable_seed(DDM_SDV, record["seed"])
+        assert rd._rts_clear(DDM_SDV, resolved)
+        self._assert_nonfinite_excluded(record, seen)

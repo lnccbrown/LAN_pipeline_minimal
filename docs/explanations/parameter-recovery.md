@@ -76,9 +76,11 @@ rung's trial count. The optional 2000-trial rungs share the index's truth but
 are not checked.
 
 If the budget runs out, or an optional rung holds such a trial, the shard is
-not fitted: HSSM would refuse the data and kill the array task. The shard
-records `n_rt_nonpositive` and the aggregator counts it under
-`excluded_for_nonpositive_rt`, next to `excluded_for_degenerate_data`, rather
+not fitted: HSSM would refuse an rt <= 0 and kill the array task, and a NaN or
+infinite rt is no more usable. The shard records `n_rt_nonpositive` and
+`n_rt_nonfinite`, and the aggregator counts it under
+`excluded_for_nonpositive_rt` or `excluded_for_nonfinite_rt` (an rt of -inf
+counts once, under the first), next to `excluded_for_degenerate_data`, rather
 than under `errors`.
 
 ## 3. Walk a ladder of design complexity
