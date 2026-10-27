@@ -333,6 +333,8 @@ def summarise(shards: list[dict]) -> dict:
     errors: list[dict] = []
     diverged: dict[tuple[str, str, str], int] = defaultdict(int)
     degenerate: dict[tuple[str, str, str], int] = defaultdict(int)
+    nonpositive_rt: dict[tuple[str, str, str], int] = defaultdict(int)
+    nonfinite_rt: dict[tuple[str, str, str], int] = defaultdict(int)
     attempted: dict[tuple[str, str, str], int] = defaultdict(int)
     likelihood_of: dict[tuple[str, str, str], str] = {}
     adopted = adopted_design_ids(shards)
@@ -355,6 +357,19 @@ def summarise(shards: list[dict]) -> dict:
                     "error": shard.get("error", "shard has no parameters block"),
                 }
             )
+            continue
+        # Checked first because nothing after it happened: run_one does not
+        # hand HSSM a dataset with an rt <= 0 (HSSM would refuse it and kill
+        # the task), so such a shard has no sampler block and no parameters.
+        # Like a degenerate draw, it is a fact about the data, not the
+        # likelihood.
+        if shard.get("data", {}).get("n_rt_nonpositive", 0) > 0:
+            nonpositive_rt[key2] += 1
+            continue
+        # NaN and +inf escape `rt <= 0` but are skipped by run_one all the
+        # same. Counted after it, so an rt of -inf is excluded once, not twice.
+        if shard.get("data", {}).get("n_rt_nonfinite", 0) > 0:
+            nonfinite_rt[key2] += 1
             continue
         if shard.get("sampler", {}).get("divergence_rate", 0.0) > MAX_DIVERGENCE_RATE:
             diverged[key2] += 1
@@ -435,6 +450,12 @@ def summarise(shards: list[dict]) -> dict:
         "excluded_for_divergences": {_join_key(*k): v for k, v in diverged.items()},
         "excluded_for_degenerate_data": {
             _join_key(*k): v for k, v in degenerate.items()
+        },
+        "excluded_for_nonpositive_rt": {
+            _join_key(*k): v for k, v in nonpositive_rt.items()
+        },
+        "excluded_for_nonfinite_rt": {
+            _join_key(*k): v for k, v in nonfinite_rt.items()
         },
         "attempted": {_join_key(*k): v for k, v in attempted.items()},
         "likelihood_by_arm": {_join_key(*k): v for k, v in likelihood_of.items()},
@@ -667,6 +688,8 @@ def verdict(summary: dict) -> tuple[bool, list[str]]:
             _errors_for(summary, model, arm, design)
             + summary["excluded_for_divergences"].get(arm_key, 0)
             + summary["excluded_for_degenerate_data"].get(arm_key, 0)
+            + summary.get("excluded_for_nonpositive_rt", {}).get(arm_key, 0)
+            + summary.get("excluded_for_nonfinite_rt", {}).get(arm_key, 0)
         )
         if not discarded and mine and all(_is_unidentified(cells[key]) for key in mine):
             continue
