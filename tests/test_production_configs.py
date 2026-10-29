@@ -178,7 +178,7 @@ class TestDerivedConfigs:
         # for a cpn (one row per choice code).
         from ssms.config import model_config
 
-        path, training = derived_config
+        _, training = derived_config
         n_choices = len(model_config[training["MODEL"]]["choices"])
         rows = DERIVED_THETA_PER_FILE * (
             n_choices if training["NETWORK_TYPE"] == "cpn" else 1

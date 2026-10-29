@@ -6,6 +6,7 @@ publish are pure functions and belong here.
 """
 
 import json
+from typing import ClassVar
 
 import click
 import pytest
@@ -44,12 +45,12 @@ ALL_RAN = {
     "mass_survey": (True, False),
 }
 
-AUX_ALL_RAN = dict(
-    structure=(True, False),
-    parity=(True, True),
-    hssm_missing_load=(True, False),
-    accuracy=(True, False),
-)
+AUX_ALL_RAN = {
+    "structure": (True, False),
+    "parity": (True, True),
+    "hssm_missing_load": (True, False),
+    "accuracy": (True, False),
+}
 
 # What LANfactory logs on a training run started from a derive-aux corpus.
 PROVENANCE = {
@@ -425,7 +426,7 @@ class TestAuxModelCard:
     ):
         # The guard catches whatever the loader raises -- the breadth is the
         # point, since any of these would surface halfway into a Hub commit.
-        import lanfactory.hf.model_card as model_card
+        from lanfactory.hf import model_card
 
         def reject(folder):
             raise error
@@ -1178,9 +1179,9 @@ class TestAuxiliaryPublish:
     @pytest.fixture
     def stubs(self, monkeypatch):
         """Stub the validator and the uploader; returns their recorded calls."""
-        import lanfactory.hf.upload as upload
-        import validation.validate_network as validator
+        from lanfactory.hf import upload
 
+        import validation.validate_network as validator
         from publish import publish_network
 
         calls = {"validate": [], "upload": []}
@@ -1213,7 +1214,7 @@ class TestAuxiliaryPublish:
         return calls
 
     UUID = "e" * 32
-    TAGS = {
+    TAGS: ClassVar[dict[str, str]] = {
         "run_uuid": UUID,
         "derive_total_mass_mean": "0.998",
         "derive_total_mass_min": "0.990",

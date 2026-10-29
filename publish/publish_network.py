@@ -667,16 +667,21 @@ def write_aux_model_card(
     }
     if all(masses.values()):
         tail_record = [
-            "the derived corpus's per-file total mass before renormalisation is "
-            "recorded on the training and publish runs as "
-            "derive_total_mass_{mean,min,max} = "
-            f"{_card_number(masses['mean'])} / {_card_number(masses['min'])} / "
-            f"{_card_number(masses['max'])}."
+            (
+                "the derived corpus's per-file total mass before renormalisation "
+                "is recorded on the training and publish runs as "
+                "derive_total_mass_{mean,min,max} = "
+                f"{_card_number(masses['mean'])} / {_card_number(masses['min'])} / "
+                f"{_card_number(masses['max'])}."
+            )
         ]
     else:
         tail_record = [
-            "the training run carries no derive_total_mass_{mean,min,max} tags, "
-            "so the derived corpus's per-file total mass is not recorded here."
+            (
+                "the training run carries no derive_total_mass_{mean,min,max} "
+                "tags, so the derived corpus's per-file total mass is not "
+                "recorded here."
+            )
         ]
     fallback = tags.get("derive_fallback_frac")
     if fallback is not None:
@@ -708,24 +713,34 @@ def write_aux_model_card(
             "mass leaking below the onset is not recorded here."
         )
 
+    run_uuid = (
+        provenance["source_lan_run_uuid"]
+        or "unknown (a legacy artifact without a training run)"
+    )
     description = "\n\n".join(
         [
             what,
             contract
-            + " Output: one log-probability (every value ≤ 0; the log-sigmoid is "
-            "baked into the graph). HSSM applies the lapse mixture outside the "
-            "network.",
-            f"Derivation: {provenance['derivation_method']} — from the `{model}` "
-            f"LAN with sha256 {provenance['source_lan_sha256']}, training "
-            f"run_uuid {provenance['source_lan_run_uuid'] or 'unknown (a legacy artifact without a training run)'}, Hub commit "
-            f"{provenance['source_lan_hf_commit']}; integrated on a {grid}-point "
-            f"grid up to max_t = {max_t} s.",
-            f"Validation (accuracy gate): mean |network − truth| "
-            f"{_card_number(accuracy.get('mean_abs_error'))}, max "
-            f"{_card_number(accuracy.get('max_abs_error'))} over "
-            f"{accuracy.get('n_param_draws', 'n/a')} parameter draws, against a "
-            f"Monte-Carlo truth with standard error ≤ {_card_number(truth_se)} "
-            f"(n_sim = {accuracy.get('n_sim', 'n/a')} per draw).",
+            + (
+                " Output: one log-probability (every value ≤ 0; the log-sigmoid "
+                "is baked into the graph). HSSM applies the lapse mixture "
+                "outside the network."
+            ),
+            (
+                f"Derivation: {provenance['derivation_method']} — from the "
+                f"`{model}` LAN with sha256 {provenance['source_lan_sha256']}, "
+                f"training run_uuid {run_uuid}, Hub commit "
+                f"{provenance['source_lan_hf_commit']}; integrated on a "
+                f"{grid}-point grid up to max_t = {max_t} s."
+            ),
+            (
+                f"Validation (accuracy gate): mean |network − truth| "
+                f"{_card_number(accuracy.get('mean_abs_error'))}, max "
+                f"{_card_number(accuracy.get('max_abs_error'))} over "
+                f"{accuracy.get('n_param_draws', 'n/a')} parameter draws, against a "
+                f"Monte-Carlo truth with standard error ≤ {_card_number(truth_se)} "
+                f"(n_sim = {accuracy.get('n_sim', 'n/a')} per draw)."
+            ),
             "Tail policy: labels were renormalised by the source LAN's own total "
             "on the integration grid, so the LAN's mass past max_t is folded "
             "back in by that total rather than dropped; " + " ".join(tail_record),
@@ -758,7 +773,7 @@ def write_aux_model_card(
         return path
     try:
         generate_readme(load_model_card_yaml(Path(staging_dir)), model)
-    except Exception as e:  # noqa: BLE001 - whatever it is, upload would hit it
+    except Exception as e:  # whatever it is, upload would hit it
         path.unlink(missing_ok=True)
         raise PublishError(f"The generated model card would fail upload: {e}") from e
     return path
