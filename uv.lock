@@ -978,7 +978,7 @@ wheels = [
 
 [[package]]
 name = "hssm"
-version = "0.4.0"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "absl-py" },
@@ -988,13 +988,15 @@ dependencies = [
     { name = "hddm-wfpt" },
     { name = "huggingface-hub" },
     { name = "jaxonnxruntime" },
+    { name = "numpy" },
     { name = "numpyro" },
     { name = "onnx" },
+    { name = "scipy" },
     { name = "ssm-simulators" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/97/05/5ae6412d869437aab875cc1b42a06f9e8be0557e061e0e0fca0e0200d1d3/hssm-0.4.0.tar.gz", hash = "sha256:d8ff7d4bfe91691a6666d09bc480ff7bd4c4fa786ff5eb4bb00c4e6d3d23667d", size = 296695, upload-time = "2026-07-15T17:42:55.807Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0b/52/b02a5b5b9f681828faca1a9d6544befddc444625c2102593dda2aa4acd86/hssm-0.5.0.tar.gz", hash = "sha256:e3dda827d7e6c61ab524e3cadfbd6b4cf67f7c58c7d8043d51e3849467ea1278", size = 322475, upload-time = "2026-09-08T03:52:59.335Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/5b/4ba0b8311ad3fe9309d4d714344076be7318e59c3bbc83b3de65095079d1/hssm-0.4.0-py3-none-any.whl", hash = "sha256:de560429625b20b862f7d39bbdc6daea9987de8ad73be5a36586414249a72d4b", size = 338666, upload-time = "2026-07-15T17:42:54.638Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/8d/641a514b0e506fa9d6055378fd80612f7e6f8cbadf6df49bd1be456d88ae/hssm-0.5.0-py3-none-any.whl", hash = "sha256:0f8dd0dd37a29ce44f05220b05e08a5257a0e251b19415daed5e92c69b900330", size = 365551, upload-time = "2026-09-08T03:52:57.897Z" },
 ]
 
 [[package]]
@@ -1305,7 +1307,7 @@ inspect = [
     { name = "onnxruntime", specifier = ">=1.17" },
 ]
 validate = [
-    { name = "hssm", specifier = ">=0.4.0" },
+    { name = "hssm", specifier = ">=0.5.0" },
     { name = "numba", specifier = ">=0.66" },
     { name = "onnxruntime", specifier = ">=1.17" },
 ]

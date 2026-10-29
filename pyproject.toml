@@ -76,7 +76,7 @@ torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
 # allowed to depend on both ends of the ecosystem. Kept out of the default deps
 # so submitting jobs does not drag in the inference stack.
 validate = [
-    "hssm>=0.4.0",
+    "hssm>=0.5.0",
     "onnxruntime>=1.17",
     # A *stable* numba: with numpy 2.5 the resolver otherwise picks 0.63.0b1,
     # whose np.row_stack reference (removed in numpy 2.0) breaks the pytensor

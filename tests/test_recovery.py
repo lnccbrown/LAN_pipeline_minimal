@@ -32,9 +32,9 @@ import recovery_designs as rd
 # only the default dependency group. The values mirror what the PINNED HSSM
 # declares for each model's `approx_differentiable` likelihood, and duplicated
 # literals rot: TestFixtureDrift below is what keeps them honest wherever HSSM
-# is importable. `sv` is the live example — HSSM lnccbrown/HSSM#1230 widens it
-# to (0.0, 2.5) to match the network's training box, and when that lands and
-# the pipeline bumps its pin, the drift test is what will say so.
+# is importable. `sv` is the worked example: HSSM 0.5.0 (lnccbrown/HSSM#1230)
+# widened it from (0.0, 1.0) to the network's (0.0, 2.5) training box, and the
+# drift test is what said so when the pipeline bumped its pin.
 DDM_SDV = rd.ModelUnderTest(
     name="ddm_sdv",
     params=("v", "a", "z", "t", "sv"),
@@ -43,7 +43,7 @@ DDM_SDV = rd.ModelUnderTest(
         "a": (0.3, 2.5),
         "z": (0.1, 0.9),
         "t": (0.0, 2.0),
-        "sv": (0.0, 1.0),
+        "sv": (0.0, 2.5),
     },
     condition_param="v",
     likelihood_kinds=("analytical", "approx_differentiable", "blackbox"),
@@ -424,13 +424,14 @@ class TestLoadModel:
 
 # Models ssms simulates but HSSM ships no config for — the state every model
 # is in while its network trains, before the config PR that network justifies.
-# A spread of shapes, not one instance: 7-10 params, with and without a
-# collapsing bound, one whose drift-like parameters are not what varies in an
-# experiment. When HSSM learns one of these names, the registry guard in the
-# first test flags it for promotion to the hand-built fixtures above.
+# A spread of shapes, not one instance: 6-10 params, 2 and 4 choices, with and
+# without a collapsing bound, one whose drift-like parameters are not what
+# varies in an experiment. When HSSM learns one of these names, the registry
+# guard in the first test flags it: swap in a model HSSM still lacks (HSSM
+# 0.5.0 learned gamma_drift and gamma_drift_angle, which used to stand here).
 UNREGISTERED = [
-    "gamma_drift",  # 7 params, DMC-style gamma drift bump
-    "gamma_drift_angle",  # 8 params, + collapsing bound
+    "ornstein_angle",  # 6 params, leaky drift + collapsing bound
+    "ddm_par2_weibull_no_bias",  # 7 params, 4 choices, + Weibull bound
     "shrink_spot_simple",  # 8 params, shrinking-spotlight flanker
     "conflict_stimflex",  # 10 params, target/distractor streams
 ]
