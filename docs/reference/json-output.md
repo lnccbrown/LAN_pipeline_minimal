@@ -126,8 +126,8 @@ A warn-level result adds `warning`; a failure adds `error` and keeps the
 survey. A skip carries only `skipped` and `reason`.
 
 In the auxiliary gates, `hssm_missing_load` records `initial_logp_by_p_outlier`
-(keys `"0.0"` and `"0.05"`), `n_trials`, `n_missing`, and the `lan` it was
-assembled with; `accuracy` records `mean_abs_error`, `max_abs_error`, the two
+(keys `"0.0"` and `"0.05"`), `n_trials`, `n_missing`, G3's redraw record
+(`attempts`, `rejected_draws`), and the `lan` it was assembled with; `accuracy` records `mean_abs_error`, `max_abs_error`, the two
 thresholds it was judged against, `n_param_draws`, `n_core_draws`,
 `n_edge_draws`, the `shrink` that separates the strata, `n_sim`, and one
 `draws` entry per parameter draw with `theta`, its `stratum` (`core`: from
