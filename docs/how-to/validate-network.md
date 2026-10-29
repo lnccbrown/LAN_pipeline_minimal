@@ -80,9 +80,13 @@ so a deviation can be located, together with the `seconds` it took.
 
 | Verdict | Rule | Effect |
 | --- | --- | --- |
-| fail | `total.p99_abs_dev > 0.10` or `total.frac_gt_0.10 > 0.02` | The gate fails and the report fails |
+| fail | `total.mean` is not finite, `total.p99_abs_dev > 0.10`, or `total.frac_gt_0.10 > 0.02` | The gate fails and the report fails |
 | warn | `total.p99_abs_dev > 0.05` or `total.frac_gt_0.05 > 0.01` | The gate passes with a `warning` detail |
-| pass | neither | — |
+| pass | none of these | — |
+
+A non-finite mean fails on its own: the survey counts a NaN total as an
+infinite deviation, but if under 1 % of the box is NaN, the p99 and the 0.10
+fraction can both stay clean.
 
 The published `ddm` LAN, which is in production and demonstrably usable, lands
 in *warn*: the warn line sits under its p99 and the fail line above it.

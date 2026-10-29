@@ -831,6 +831,8 @@ def gate_mass_survey(
     grid carries 15-25 % quadrature error at a < 0.5, which would be blamed
     on the network) — and judges the tails of |total − 1|:
 
+        FAIL  total.mean not finite  (a NaN or infinite total anywhere: a NaN
+              share under 1 % would otherwise pass both tail checks)
         FAIL  total.p99_abs_dev > p99_max  or  total.frac_gt_0.10 > frac_gt_0_10_max
         WARN  total.p99_abs_dev > MASS_SURVEY_WARN_P99
               or total.frac_gt_0.05 > MASS_SURVEY_WARN_FRAC_GT_0_05
@@ -871,6 +873,7 @@ def gate_mass_survey(
             ndt_edge_shift=model_config.get("ndt_edge_shift"),
         )
         total = result["total"]
+        mean = float(total["mean"])
         p99 = float(total["p99_abs_dev"])
         frac_gt_0_10 = float(total["frac_gt_0.10"])
         frac_gt_0_05 = float(total["frac_gt_0.05"])
@@ -890,6 +893,8 @@ def gate_mass_survey(
         "survey": result,
     }
     failures = []
+    if not np.isfinite(mean):
+        failures.append(f"total.mean {mean} is not finite")
     if p99 > p99_max:
         failures.append(f"total.p99_abs_dev {p99:.4f} > {p99_max}")
     if frac_gt_0_10 > frac_gt_0_10_max:

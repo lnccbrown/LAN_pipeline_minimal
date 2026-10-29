@@ -852,10 +852,12 @@ class TestAuxTruth:
             vn.aux_truth("ddm", "gonogo", np.zeros(4), deadline=1.0)
 
 
-def canned_survey(p99=0.02, frac_gt_0_05=0.0, frac_gt_0_10=0.0, seconds=41.5):
+def canned_survey(
+    p99=0.02, frac_gt_0_05=0.0, frac_gt_0_10=0.0, seconds=41.5, mean=1.001
+):
     """A survey dict in the shape LANfactory L1's ``survey`` returns."""
     total = {
-        "mean": 1.001,
+        "mean": mean,
         "p50_abs_dev": 0.0037,
         "p90_abs_dev": 0.015,
         "p99_abs_dev": p99,
@@ -1108,6 +1110,18 @@ class TestMassSurveyGate:
         assert gate["passed"]
         assert gate["verdict"] == "pass"
         assert "warning" not in gate and "error" not in gate
+
+    @pytest.mark.parametrize("mean", [float("nan"), float("inf")])
+    def test_a_non_finite_total_fails_under_both_tail_lines(
+        self, tmp_path, fake_derive, mean
+    ):
+        # L1 counts a NaN total as an infinite deviation, but under 1 % of the
+        # box that leaves p99 and frac_gt_0.10 clean; only the mean shows it.
+        fake_derive.survey_result = canned_survey(mean=mean)
+        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
+        assert not gate["passed"]
+        assert gate["verdict"] == "fail"
+        assert "not finite" in gate["error"]
 
     def test_thresholds_are_parameters_not_constants(self, tmp_path, fake_derive):
         fake_derive.survey_result = canned_survey(p99=0.12, frac_gt_0_10=0.03)
