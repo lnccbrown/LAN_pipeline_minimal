@@ -64,9 +64,10 @@ On the cpn truth: ssms does NOT censor a base model at max_t. A trial that has
 not terminated by max_t comes back at rt ≈ max_t + t with its sign-implied
 choice, while a derived CPN integrates the first-passage density only up to
 max_t (20 s). aux_truth therefore reports both ``truth`` (every trial) and
-``truth_rt_lt_max_t`` (trials that finished inside the window); the gate judges
-``truth``, and the two only differ for parameter draws where a visible share of
-trials outlasts 20 s.
+``truth_rt_lt_max_t`` (the share of ALL trials that gave the choice AND
+finished inside the window: a joint probability, not one conditional on
+finishing); the gate judges ``truth``, and the two only differ for parameter
+draws where a visible share of trials outlasts 20 s.
 
 Trust: G2 unpickles the ``*_network_config.pickle`` sitting next to the ONNX,
 because that is the only format lanfactory writes it in, and unpickling runs
@@ -1060,8 +1061,9 @@ def aux_truth(
     """Monte-Carlo truth for one auxiliary-network input row.
 
     cpn: P(choice | θ) from the base model at max_t = AUX_MAX_T. Reported
-    twice — ``truth`` counts every trial, ``truth_rt_lt_max_t`` only those
-    that finished inside the window, because ssms does not censor the base
+    twice — ``truth`` counts every trial, ``truth_rt_lt_max_t`` is the joint
+    P(choice, rt < max_t | θ) over all trials (not conditional on rt <
+    max_t), because ssms does not censor the base
     model at max_t while a derived CPN integrates only up to it (see the
     module docstring). opn: P(rt > deadline | θ) as the omission rate of the
     ``_deadline`` variant, read from ``rts`` — ssms marks an omission there

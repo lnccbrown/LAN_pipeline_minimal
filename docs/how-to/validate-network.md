@@ -202,7 +202,9 @@ changed threshold in the report; do not loosen it to pass one candidate.
     not terminated by then comes back at `rt ≈ max_t + t` with its
     sign-implied choice, while a derived cpn integrates only up to 20 s. A4
     judges the all-trials proportion and records the windowed one as
-    `truth_rt_lt_max_t` on every draw, so the two can be compared where a
+    `truth_rt_lt_max_t` on every draw: the share of all trials that gave the
+    choice and finished inside the window (a joint probability, not
+    conditional on finishing), so the two can be compared where a
     visible share of trials outlasts the window.
 
 ## Inspect the result visually
