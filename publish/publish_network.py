@@ -77,8 +77,9 @@ PRODUCTION_REPOS = frozenset({"franklab/HSSM"})
 # excuse: if one of them did not run, the network is unproven.
 #
 # Keyed on network type because an auxiliary network is not a density: a
-# params-only cpn/opn graph can never clear hssm_load or density, and holding
-# it to them made every auxiliary report a refusal. A type with no entry here
+# cpn/opn graph takes [θ..., choice] or [θ..., deadline] and no rt, so it can
+# never clear hssm_load or density, and holding it to them made every
+# auxiliary report a refusal. A type with no entry here
 # has nothing to be cleared by, so it is refused.
 REQUIRED_GATES_BY_NETWORK_TYPE = {
     "lan": ("structure", "hssm_load", "density"),

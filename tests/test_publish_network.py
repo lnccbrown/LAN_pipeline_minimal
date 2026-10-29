@@ -187,7 +187,7 @@ class TestGateVerdict:
         ok, reason = gate_verdict(report(network_type, **AUX_ALL_RAN))
         assert ok, reason
 
-        # The LAN gates prove nothing about a params-only graph.
+        # The LAN gates prove nothing about a graph with no rt input.
         ok, reason = gate_verdict(report(network_type, **ALL_RAN))
         assert not ok
         assert "hssm_missing_load" in reason and "accuracy" in reason
