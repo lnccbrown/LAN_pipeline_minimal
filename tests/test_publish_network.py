@@ -44,8 +44,9 @@ class TestGateVerdict:
         assert ok, reason
 
     def test_the_mass_survey_is_advisory_so_its_skip_does_not_block(self):
-        # Under the locked LANfactory the survey always skips itself; it is
-        # deliberately absent from REQUIRED_GATES until the lock moves.
+        # The survey is advisory, so it is deliberately absent from
+        # REQUIRED_GATES: it skips where LANfactory predates lanfactory.derive,
+        # or on --skip-mass-survey, and neither may block a publish.
         skipped_survey = {**ALL_RAN, "mass_survey": (True, True)}
         ok, reason = gate_verdict(report(**skipped_survey))
         assert ok, reason

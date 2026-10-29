@@ -1557,8 +1557,9 @@ class TestHssmLoadGate:
     def test_ddm_normal_st_seed_zero_is_usable(self, monkeypatch):
         """The draw that failed ddm_normal_st in practice, on the real simulator.
 
-        The networks were trained on an st box widened to 0.35 (ssms ships
-        0.25 at the pinned version), so the test installs that box. Its
+        The networks were trained on an st box widened to 0.35 (ssms main
+        ships it since ssm-simulators#390; the 0.15.0 release ships 0.25), so
+        the test installs that box explicitly. Its
         full-box seed-0 draw (t = 0.283, st = 0.285) simulates an rt below
         zero through the untruncated Normal kernel; the gate's own draw at the
         same seed must not.
