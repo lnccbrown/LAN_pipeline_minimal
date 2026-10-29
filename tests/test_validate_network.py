@@ -896,8 +896,9 @@ def fake_derive(monkeypatch):
     """A stub ``lanfactory.derive`` in sys.modules.
 
     A stub, not a real LAN, so the mass-survey gate's verdicts and the
-    accuracy gate's total_mass attribution are cheap and exact to drive. ``survey`` returns whatever ``survey_result`` holds and
-    records its arguments; ``choice_mass`` returns ``total_mass`` for every θ.
+    accuracy gate's total_mass attribution are cheap and exact to drive.
+    ``survey`` returns whatever ``survey_result`` holds and records its
+    arguments; ``choice_mass`` returns ``total_mass`` for every θ.
     """
     state = FakeDerive()
 
@@ -906,12 +907,6 @@ def fake_derive(monkeypatch):
 
         def __init__(self, path):
             self.path = str(path)
-
-    class OnsetGrid:
-        """L1's OnsetGrid is a frozen dataclass of grid sizes: no onset index."""
-
-    class IntegrationGrid:
-        pass
 
     class Mass:
         def __init__(self, total):
@@ -932,23 +927,21 @@ def fake_derive(monkeypatch):
             raise state.survey_error
         return state.survey_result
 
-    def choice_mass(predictor, theta, choices, *, grid, onset=None):
-        # L1: an OnsetGrid needs onset=theta[:, t_idx]; an IntegrationGrid
-        # takes none. Either mismatch is a ValueError there.
+    def choice_mass(predictor, theta, choices, onset, grid=None):
+        # L1: onset is required (0 for a model without one), must be finite
+        # and must broadcast to (n_theta,); the grid defaults to OnsetGrid().
         theta = np.asarray(theta)
         assert theta.ndim == 2, theta.shape
-        if isinstance(grid, OnsetGrid) != (onset is not None):
-            raise ValueError("an OnsetGrid needs onset=theta[:, t_idx]")
-        onset = None if onset is None else np.asarray(onset).tolist()
-        state.calls.append(("mass", theta[0].tolist(), choices, grid, onset))
+        onset = np.broadcast_to(np.asarray(onset, dtype=float), (len(theta),))
+        if not np.all(np.isfinite(onset)):
+            raise ValueError("onset must be finite")
+        state.calls.append(("mass", theta[0].tolist(), choices, onset.tolist()))
         return Mass(state.total_mass)
 
     derive = types.ModuleType("lanfactory.derive")
     derive.load_onnx_predictor = load_onnx_predictor
     derive.survey = survey
     derive.choice_mass = choice_mass
-    derive.OnsetGrid = OnsetGrid
-    derive.IntegrationGrid = IntegrationGrid
     lanfactory = types.ModuleType("lanfactory")
     lanfactory.derive = derive
     monkeypatch.setitem(sys.modules, "lanfactory", lanfactory)
@@ -1290,16 +1283,12 @@ class TestAccuracyStrata:
         assert fake_derive.calls[0] == ("load", str(lan))
         masses = [c for c in fake_derive.calls if c[0] == "mass"]
         assert [m[1] for m in masses] == [d["theta"] for d in result["draws"]]
-        # ddm's t is its fourth parameter: the grid is L1's OnsetGrid and the
-        # onset handed to choice_mass is that draw's t, as onset=theta[:, 3].
-        derive = sys.modules["lanfactory.derive"]
-        assert all(isinstance(m[3], derive.OnsetGrid) for m in masses)
-        assert [m[4] for m in masses] == [[d["theta"][3]] for d in result["draws"]]
+        # ddm's t is its fourth parameter: the onset handed to choice_mass is
+        # that draw's t, as onset=theta[:, 3].
+        assert [m[3] for m in masses] == [[d["theta"][3]] for d in result["draws"]]
         assert all(list(m[2]) == [-1, 1] for m in masses)
 
-    def test_a_model_without_t_integrates_on_the_plain_grid(
-        self, tmp_path, fake_derive
-    ):
+    def test_a_model_without_t_integrates_from_onset_zero(self, tmp_path, fake_derive):
         config = {
             "params": ["v", "a", "z"],
             "param_bounds": [[-3.0, 0.3, 0.1], [3.0, 2.5, 0.9]],
@@ -1307,11 +1296,8 @@ class TestAccuracyStrata:
         }
         total = vn._lan_total_mass(make_onnx(tmp_path / "lan.onnx", (1, 5)), config)
         assert total(np.array([0.5, 1.0, 0.5])) == 0.97
-        derive = sys.modules["lanfactory.derive"]
-        (_, theta, _, grid, onset) = next(
-            c for c in fake_derive.calls if c[0] == "mass"
-        )
-        assert isinstance(grid, derive.IntegrationGrid) and onset is None
+        (_, theta, _, onset) = next(c for c in fake_derive.calls if c[0] == "mass")
+        assert onset == [0.0]
         assert theta == [0.5, 1.0, 0.5]
 
     def test_total_mass_needs_a_lan_to_evaluate(

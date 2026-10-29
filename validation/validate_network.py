@@ -285,10 +285,9 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
 
     None when there is no LAN path to evaluate or ``lanfactory.derive`` is
     not importable (the environment's LANfactory predates it). The mass is
-    ``choice_mass`` on LANfactory's onset-refined ``OnsetGrid``, which takes
-    the onset per θ as ``onset=theta[:, t_idx]`` when the model has a ``t``
-    parameter, and on the plain ``IntegrationGrid`` otherwise, so a failing
-    accuracy draw can be attributed: a cpn/opn derived from a LAN that is
+    ``choice_mass`` on LANfactory's onset-refined grid, built around the
+    onset ``theta[:, t_idx]`` when the model has a ``t`` parameter and around
+    0 otherwise, so a failing accuracy draw can be attributed: a cpn/opn derived from a LAN that is
     mis-normalised at that θ inherits the error, and the number says so.
     Advisory only — any failure here is logged and yields None, never a
     failed gate.
@@ -296,19 +295,13 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
     if lan_onnx is None:
         return None
     try:
-        from lanfactory.derive import (
-            IntegrationGrid,
-            OnsetGrid,
-            choice_mass,
-            load_onnx_predictor,
-        )
+        from lanfactory.derive import choice_mass, load_onnx_predictor
     except ImportError:
         return None
     try:
         predictor = load_onnx_predictor(lan_onnx)
         params = list(model_config["params"])
         t_idx = params.index("t") if "t" in params else None
-        grid = OnsetGrid() if t_idx is not None else IntegrationGrid()
         choices = list(model_config["choices"])
     except Exception as e:  # noqa: BLE001 - attribution must not break the gate
         logger.warning(f"LAN total_mass unavailable for the accuracy draws: {e}")
@@ -316,10 +309,9 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
 
     def total(theta: np.ndarray) -> float | None:
         row = np.atleast_2d(np.asarray(theta, dtype=float))
-        onset = row[:, t_idx] if t_idx is not None else None
+        onset = row[:, t_idx] if t_idx is not None else 0.0
         try:
-            mass = choice_mass(predictor, row, choices, grid=grid, onset=onset)
-            return float(mass.total[0])
+            return float(choice_mass(predictor, row, choices, onset).total[0])
         except Exception as e:  # noqa: BLE001
             logger.warning(f"LAN total_mass failed at theta={theta.tolist()}: {e}")
             return None
