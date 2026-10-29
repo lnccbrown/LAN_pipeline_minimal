@@ -241,7 +241,7 @@ class TestWiring:
         assert report["passed"]
 
 
-AUX_SKIPS = dict(skip_hssm=True, skip_accuracy=True)
+AUX_SKIPS = {"skip_hssm": True, "skip_accuracy": True}
 
 
 class TestAuxiliaryWidths:
@@ -597,7 +597,7 @@ class TestHssmMissingLoadGate:
         self, tmp_path, monkeypatch, fake_hssm
     ):
         monkeypatch.setattr(vn, "_simulate", fixed_simulate)
-        sys.modules["hssm.modelconfig"].list_models = lambda: []
+        sys.modules["hssm.modelconfig"].list_models = list
         lan = make_onnx(tmp_path / "ddm.onnx", (1, 6))
         gate = vn.gate_hssm_missing_load(
             make_onnx(tmp_path / "opn.onnx", (1, 5)), "ddm", "opn", lan_onnx=lan
@@ -613,7 +613,7 @@ class TestHssmMissingLoadGate:
         self, tmp_path, monkeypatch, fake_hssm
     ):
         monkeypatch.setattr(vn, "_simulate", fixed_simulate)
-        sys.modules["hssm.modelconfig"].list_models = lambda: []
+        sys.modules["hssm.modelconfig"].list_models = list
         gate = vn.gate_hssm_missing_load(
             make_onnx(tmp_path / "opn.onnx", (1, 5)), "ddm", "opn"
         )
@@ -1319,7 +1319,9 @@ class TestAccuracyStrata:
         total = vn._lan_total_mass(make_onnx(tmp_path / "lan.onnx", (1, 5)), config)
         assert total(np.array([0.5, 1.0, 0.5])) == 0.97
         derive = sys.modules["lanfactory.derive"]
-        (_, theta, _, grid, onset) = [c for c in fake_derive.calls if c[0] == "mass"][0]
+        (_, theta, _, grid, onset) = next(
+            c for c in fake_derive.calls if c[0] == "mass"
+        )
         assert isinstance(grid, derive.IntegrationGrid) and onset is None
         assert theta == [0.5, 1.0, 0.5]
 
