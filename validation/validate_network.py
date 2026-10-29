@@ -36,7 +36,7 @@ A LAN gets a fifth, advisory gate after G4:
                     (1.9 % of the box beyond 0.05, up to +0.22); it would fail
                     that network with probability 0.06 %. The survey needs
                     ``lanfactory.derive`` and skips itself, with a stated
-                    reason, while the lock pins a LANfactory without it.
+                    reason, in an environment whose LANfactory lacks it.
 
 Auxiliary networks (cpn / opn / gonogo) are not densities, so G3 and G4 do not
 apply to them. They get their own pair after G1 and G2:
@@ -126,11 +126,11 @@ DEFAULT_MASS_SURVEY_FRAC_GT_0_10_MAX = 0.02
 MASS_SURVEY_WARN_P99 = 0.05
 MASS_SURVEY_WARN_FRAC_GT_0_05 = 0.01
 MASS_SURVEY_N_THETA = 20_000
-# The survey lives in LANfactory's derive package, which the locked LANfactory
-# (git main) does not have yet. The gate skips itself with this reason and
-# activates on its own once the lock moves, like the cpn A3 gate does for HSSM.
+# The survey lives in LANfactory's derive package, which the lock pins. An
+# environment synced to an older LANfactory skips the gate with this reason
+# rather than failing a network it could not survey.
 LANFACTORY_DERIVE_SKIP_REASON = (
-    "lanfactory.derive not available; refresh the lock after LANfactory L1 merges"
+    "lanfactory.derive not available; this environment's LANfactory predates it"
 )
 
 # G3 redraws its parameter draw when the simulated data contain a response time
@@ -284,7 +284,7 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
     """A ``theta -> total mass`` function for the base LAN, or None.
 
     None when there is no LAN path to evaluate or ``lanfactory.derive`` is
-    not importable (the locked LANfactory predates it). The mass is
+    not importable (the environment's LANfactory predates it). The mass is
     ``choice_mass`` on LANfactory's onset-refined ``OnsetGrid``, which takes
     the onset per θ as ``onset=theta[:, t_idx]`` when the model has a ``t``
     parameter, and on the plain ``IntegrationGrid`` otherwise, so a failing

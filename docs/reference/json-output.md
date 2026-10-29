@@ -71,8 +71,8 @@ Gate states are `passed`, `failed`, or `skipped`. The process exits non-zero
 when aggregate `passed` is false. For promotion, do not rely on that aggregate:
 the publisher additionally requires structure, HSSM load, and density to be
 present and not skipped. `mass_survey` is advisory: it is `skipped` with the
-reason `lanfactory.derive not available; refresh the lock after LANfactory L1
-merges` while the locked LANfactory has no `derive` package, and a skip there
+reason `lanfactory.derive not available; this environment's LANfactory predates
+it` when the installed LANfactory has no `derive` package, and a skip there
 never blocks a publish. Once it runs, a `failed` mass survey refuses a publish
 like any other failed gate, and a warn-level result is `passed` with a
 `warning` detail in the report.

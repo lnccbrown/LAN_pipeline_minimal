@@ -230,13 +230,13 @@ class TestWiring:
         ]
         # The one top-level key the auxiliary gates added; null for a LAN.
         assert report["aux_category"] is None
-        # Without lanfactory.derive (forced here, so the shape is pinned the
-        # same way after the lock moves) the survey skips itself with the
-        # reason that says what has to move.
+        # Without lanfactory.derive (forced here, so the shape does not
+        # depend on the environment) the survey skips itself with the
+        # reason that says what is missing.
         survey = report["gates"][-1]
         assert survey["skipped"] and survey["passed"]
         assert survey["reason"] == (
-            "lanfactory.derive not available; refresh the lock after LANfactory L1 merges"
+            "lanfactory.derive not available; this environment's LANfactory predates it"
         )
         assert report["passed"]
 
@@ -895,9 +895,8 @@ class FakeDerive:
 def fake_derive(monkeypatch):
     """A stub ``lanfactory.derive`` in sys.modules.
 
-    The locked LANfactory has no derive package, so this is the only way to
-    drive the mass-survey gate's verdicts and the accuracy gate's total_mass
-    attribution. ``survey`` returns whatever ``survey_result`` holds and
+    A stub, not a real LAN, so the mass-survey gate's verdicts and the
+    accuracy gate's total_mass attribution are cheap and exact to drive. ``survey`` returns whatever ``survey_result`` holds and
     records its arguments; ``choice_mass`` returns ``total_mass`` for every θ.
     """
     state = FakeDerive()
@@ -968,14 +967,6 @@ def no_derive(monkeypatch):
     monkeypatch.setitem(sys.modules, "lanfactory.derive", None)
 
 
-def lanfactory_derive_installed() -> bool:
-    try:
-        import lanfactory.derive  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
 DDM_CONFIG = {
     "params": ["v", "a", "z", "t"],
     "param_bounds": [[-3.0, 0.3, 0.1, 0.0], [3.0, 2.5, 0.9, 2.0]],
@@ -997,21 +988,19 @@ class TestMassSurveyGate:
         assert gate["skipped"] and gate["passed"]
         assert gate["reason"] == vn.LANFACTORY_DERIVE_SKIP_REASON
         assert gate["reason"] == (
-            "lanfactory.derive not available; refresh the lock after LANfactory L1 merges"
+            "lanfactory.derive not available; this environment's LANfactory predates it"
         )
         assert "survey" not in gate
 
-    @pytest.mark.skipif(
-        lanfactory_derive_installed(),
-        reason="the lock now holds a LANfactory with derive: the canary has fired",
-    )
-    def test_canary_the_locked_lanfactory_still_lacks_derive(self, tmp_path):
-        # The ONE environment-dependent test, by design: when the lock moves
-        # this skips, which is the signal to freeze the thresholds (see the
-        # PROVISIONAL comment) and to consider making the gate required.
-        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
-        assert gate["skipped"]
-        assert gate["reason"] == vn.LANFACTORY_DERIVE_SKIP_REASON
+    def test_the_locked_lanfactory_has_what_the_gates_import(self):
+        # The ONE environment-dependent test, by design: the lock must pin a
+        # LANfactory whose derive package has the names the gates import, or
+        # the survey and the accuracy draws' LAN mass skip unnoticed.
+        from lanfactory.derive import (  # noqa: F401
+            choice_mass,
+            load_onnx_predictor,
+            survey,
+        )
 
     def test_hands_the_model_space_and_onset_param_to_the_survey(
         self, tmp_path, fake_derive

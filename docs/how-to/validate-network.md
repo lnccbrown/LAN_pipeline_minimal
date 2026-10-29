@@ -50,7 +50,8 @@ one does.
 
 G2 legitimately skips for Torch artifacts and for a bare ONNX without the JAX
 state/config pair. G1, G3, and G4 are required for publication; G5 is
-advisory and skips itself under the locked LANfactory. A skipped gate
+advisory and skips itself in an environment whose LANfactory predates
+`lanfactory.derive`. A skipped gate
 may carry `passed: true` in the detailed report to mean it did not itself fail;
 inspect the compact `gates` states rather than treating that as evidence the
 check ran.
@@ -94,15 +95,13 @@ to be frozen after the four modern LANs (`ddm_sdv`, `gamma_drift`,
 them without a code change; record a changed threshold in the report, and do
 not loosen one to pass a candidate.
 
-!!! note "G5 skips itself until the lock moves"
+!!! note "G5 needs `lanfactory.derive`"
 
-    The survey lives in LANfactory's `derive` package, which the locked
-    LANfactory (git `main`) does not have yet. Until the lock is refreshed
-    after that work merges, G5 is reported as `skipped` with the reason
-    `lanfactory.derive not available; refresh the lock after LANfactory L1
-    merges`, and activates by itself once `lanfactory.derive` imports. The
-    publisher does not require G5, so the skip never blocks a publish; a
-    failing G5, once it runs, refuses one like any other failed gate.
+    The survey lives in LANfactory's `derive` package, which the lock pins. An
+    environment synced to an older LANfactory reports G5 as `skipped` with the
+    reason `lanfactory.derive not available; this environment's LANfactory
+    predates it`. The publisher does not require G5, so the skip never blocks
+    a publish; a failing G5 refuses one like any other failed gate.
     `--skip-mass-survey` shortens a diagnostic run the way `--skip-density`
     does.
 
