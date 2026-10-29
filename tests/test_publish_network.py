@@ -548,6 +548,34 @@ class TestProductionGuard:
             )
 
 
+class TestRunPublishRefusals:
+    def test_a_type_the_validator_has_no_gates_for_is_refused_before_staging(
+        self, tmp_path, monkeypatch
+    ):
+        # lanfactory.hf still names gonogo; the validator dropped it. Without
+        # the check run_publish staged the run and died in a ValueError.
+        from types import SimpleNamespace
+
+        from publish import publish_network
+
+        run = SimpleNamespace(
+            info=SimpleNamespace(run_id="r"),
+            data=SimpleNamespace(
+                params={"model": "ddm", "network_type": "gonogo"},
+                tags={"run_uuid": "a" * 32},
+            ),
+        )
+        monkeypatch.setattr(publish_network, "resolve_training_run", lambda **kw: run)
+        with pytest.raises(PublishError, match="'gonogo' is not one of"):
+            publish_network.run_publish(
+                hf_repo="example/HSSM_staging",
+                run_id="r",
+                artifact_dir=tmp_path,
+                staging_dir=tmp_path / "staged",
+            )
+        assert not (tmp_path / "staged").exists()
+
+
 class TestProductionConfirmation:
     """--allow-production is necessary but not sufficient.
 

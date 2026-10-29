@@ -61,7 +61,7 @@ uv run lan-publish --help
 | `--hf-repo TEXT` | required | Non-production Hugging Face target; there is deliberately no default |
 | `--run-id TEXT` | selection A | Exact MLflow training run |
 | `--model TEXT` | selection B | Model for newest-completed-run selection |
-| `--network-type TEXT` | selection B | `lan`, `cpn`, `opn`, or `gonogo` |
+| `--network-type TEXT` | selection B | `lan`, `cpn`, or `opn` |
 | `--artifact-dir PATH` | run output path | Local folder holding the training artifacts |
 | `--staging-dir PATH` | temporary directory | Persistent isolated upload assembly directory |
 | `--skip-density` | false | Skip G4 for a shorter rehearsal; the result cannot publish |

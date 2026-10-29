@@ -491,7 +491,7 @@ def main(
     ),
     run_id: str = typer.Option(None, help="MLflow training run id to publish."),
     model: str = typer.Option(None, help="Model name, if not using --run-id."),
-    network_type: str = typer.Option(None, help="lan | cpn | opn | gonogo."),
+    network_type: str = typer.Option(None, help="lan | cpn | opn."),
     artifact_dir: Path = typer.Option(
         None,
         help="Folder holding the trained artifacts. Defaults to the training "
@@ -615,7 +615,6 @@ def run_publish(
 
     import tempfile
 
-    from lanfactory.hf import VALID_NETWORK_TYPES
     from lanfactory.hf.upload import (
         DEFAULT_INCLUDE_PATTERNS,
         RootArtifactExistsError,
@@ -623,7 +622,7 @@ def run_publish(
         upload_model,
     )
 
-    from validation.validate_network import validate_network
+    from validation.validate_network import GATES_BY_NETWORK_TYPE, validate_network
 
     run = resolve_training_run(run_id=run_id, model=model, network_type=network_type)
     run_uuid = run.data.tags["run_uuid"]
@@ -640,9 +639,13 @@ def run_publish(
             f"Run {run.info.run_id} records no model param and none was given. "
             "Pass --model."
         )
-    if network_type not in VALID_NETWORK_TYPES:
+    # The validator's types, not lanfactory.hf's: that list still names gonogo,
+    # which the validator dropped, so checking it would stage a gonogo and
+    # then die on the validator's ValueError instead of refusing it here.
+    if network_type not in GATES_BY_NETWORK_TYPE:
         raise PublishError(
-            f"network_type {network_type!r} is not one of {list(VALID_NETWORK_TYPES)}."
+            f"network_type {network_type!r} is not one of "
+            f"{list(GATES_BY_NETWORK_TYPE)}."
         )
     logger.info(
         f"Publishing {model}/{network_type} from run {run.info.run_id} "
