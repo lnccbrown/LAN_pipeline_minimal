@@ -206,17 +206,13 @@ class TestGateVerdict:
         assert not ok
         assert gate in reason and "not actually checked" in reason
 
-    def test_a_gonogo_report_is_refused_for_lack_of_a_consumer(self):
-        # Even one where every gate ran: nothing in HSSM loads a gonogo, and
-        # a root filename on the Hub cannot be taken back.
-        ok, reason = gate_verdict(report("gonogo", **AUX_ALL_RAN))
+    @pytest.mark.parametrize("network_type", ["mlp", "gonogo"])
+    def test_an_unknown_network_type_is_refused(self, network_type):
+        # Even one where every gate ran: a type with no gate set has nothing
+        # to be cleared by (gonogo was dropped: HSSM has no consumer).
+        ok, reason = gate_verdict(report(network_type, **AUX_ALL_RAN))
         assert not ok
-        assert "no HSSM consumer" in reason and "gonogo" in reason
-
-    def test_an_unknown_network_type_is_refused(self):
-        ok, reason = gate_verdict(report("mlp", **AUX_ALL_RAN))
-        assert not ok
-        assert "mlp" in reason
+        assert network_type in reason
 
 
 class TestAuxProvenance:
@@ -267,12 +263,6 @@ class TestAuxProvenance:
     def test_a_none_valued_optional_key_is_left_out(self):
         params = {**PROVENANCE, "source_lan_run_id": "None"}
         assert "source_lan_run_id" not in aux_provenance(params, "cpn")
-
-    def test_a_gonogo_has_no_provenance_to_read(self):
-        # run_publish refuses a gonogo before it gets here; the function must
-        # not be the thing that refuses it, or the message would be "relabel
-        # your provenance" for a network that can never ship.
-        assert aux_provenance({}, "gonogo") == {}
 
     def test_trained_from_simulation_is_recognised_but_not_publishable(self):
         # The contract allows the value, but no writer emits it and the card
@@ -1230,7 +1220,7 @@ class TestAuxiliaryPublish:
         type, bare identity for a LAN."""
         if network_type == "lan":
             return {"model": model, "network_type": "lan", **provenance}
-        category = {"cpn": "choice", "opn": "omission", "gonogo": "nogo"}[network_type]
+        category = {"cpn": "choice", "opn": "omission"}[network_type]
         return {
             "model": model,
             "network_type": network_type,
@@ -1371,22 +1361,20 @@ class TestAuxiliaryPublish:
         assert validate["skip_accuracy"] is True
 
     @pytest.mark.parametrize("with_provenance", [False, True], ids=["bare", "labelled"])
-    def test_a_gonogo_run_is_refused_for_lack_of_a_consumer(
+    def test_a_type_without_a_gate_set_is_refused_before_anything_is_read(
         self, tmp_path, store, stubs, with_provenance
     ):
         # Before provenance, staging or validation, and the same refusal
-        # whether or not the run carries derive-aux keys: a gonogo built from
-        # simulation (the common case) must not be told to relabel a network
-        # that can never ship.
-        params = (
-            self.params("gonogo")
-            if with_provenance
-            else {"model": "ddm_sdv", "network_type": "gonogo"}
-        )
+        # whether or not the run carries derive-aux keys: a gonogo (which
+        # lanfactory.hf still names) built from simulation, the common case,
+        # must not be told to relabel a network that can never ship.
+        params = {"model": "ddm_sdv", "network_type": "gonogo"}
+        if with_provenance:
+            params |= {**PROVENANCE, "aux_category": "nogo"}
         run_id = store(params, self.TAGS)
         source = self.artifacts(tmp_path, "gonogo")
 
-        with pytest.raises(PublishError, match="no HSSM consumer") as excinfo:
+        with pytest.raises(PublishError, match="is not one of") as excinfo:
             self.publish(run_id, source, tmp_path)
 
         assert "gonogo" in str(excinfo.value)

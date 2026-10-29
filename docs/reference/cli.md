@@ -61,7 +61,7 @@ uv run lan-publish --help
 | `--hf-repo TEXT` | required | Non-production Hugging Face target; there is deliberately no default |
 | `--run-id TEXT` | selection A | Exact MLflow training run |
 | `--model TEXT` | selection B | Model for newest-completed-run selection |
-| `--network-type TEXT` | selection B | `lan`, `cpn`, or `opn`; a `gonogo` run is refused |
+| `--network-type TEXT` | selection B | `lan`, `cpn`, or `opn`; any other type is refused |
 | `--artifact-dir PATH` | run output path | Local folder holding the training artifacts |
 | `--staging-dir PATH` | temporary directory | Persistent isolated upload assembly directory |
 | `--lan-onnx PATH` | resolved by name | cpn/opn: local base LAN for `hssm_missing_load`; required for models outside HSSM's registry |

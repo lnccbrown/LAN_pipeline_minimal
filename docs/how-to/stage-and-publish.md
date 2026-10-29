@@ -167,9 +167,10 @@ so instead of inventing one; `derive_sim_past_max_t_max` is quoted only when
 present, and `data_origin` is forwarded but not quoted.
 
 Two refusals are absolute, and both fire before provenance is read or anything
-is staged. A `gonogo` network is never published: nothing in HSSM consumes
-one, and a root filename on the Hub is permanent -- a gonogo run without
-provenance gets this refusal, not an instruction to relabel it. A `_deadline`
+is staged. Only `lan`, `cpn` and `opn` publish: any other network type (a
+`gonogo`, say, which nothing in HSSM consumes) is refused, because a root
+filename on the Hub is permanent, and a run without provenance gets this
+refusal, not an instruction to relabel it. A `_deadline`
 model name is refused: the deadline variant is derived internally wherever a
 simulation needs it, and HSSM never asks for `ddm_sdv_deadline_opn.onnx`.
 Publish under the base model.

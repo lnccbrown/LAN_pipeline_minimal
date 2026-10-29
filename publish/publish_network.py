@@ -33,9 +33,10 @@ the required gates are the auxiliary set (``REQUIRED_GATES_BY_NETWORK_TYPE``),
 the training run must carry the provenance of the LAN it was derived from
 (``aux_provenance``), and a model card is generated from that provenance and
 the gate report when the operator staged none (``write_aux_model_card``).
-A gonogo network is never published — nothing in HSSM consumes one — and a
-``_deadline`` model name is refused, since HSSM builds the root filename from
-the base model. Both refusals fire before anything is staged or validated.
+A network type without a gate set (anything but lan / cpn / opn) and a
+``_deadline`` model name are refused, the latter since HSSM builds the root
+filename from the base model. Both refusals fire before anything is staged or
+validated.
 
 One caveat worth knowing: the record is written wherever MLFLOW_TRACKING_URI
 points. If that is a *mirror* pulled down from the cluster, these writes live
@@ -77,8 +78,8 @@ PRODUCTION_REPOS = frozenset({"franklab/HSSM"})
 #
 # Keyed on network type because an auxiliary network is not a density: a
 # params-only cpn/opn graph can never clear hssm_load or density, and holding
-# it to them made every auxiliary report a refusal. gonogo is deliberately
-# absent — see gate_verdict.
+# it to them made every auxiliary report a refusal. A type with no entry here
+# has nothing to be cleared by, so it is refused.
 REQUIRED_GATES_BY_NETWORK_TYPE = {
     "lan": ("structure", "hssm_load", "density"),
     "cpn": ("structure", "hssm_missing_load", "accuracy"),
@@ -86,11 +87,6 @@ REQUIRED_GATES_BY_NETWORK_TYPE = {
 }
 # The LAN alias, kept for existing imports.
 REQUIRED_GATES = REQUIRED_GATES_BY_NETWORK_TYPE["lan"]
-
-GONOGO_REFUSAL = (
-    "no HSSM consumer; refusing to publish a gonogo network — root filenames "
-    "on the Hub are permanent"
-)
 
 # Provenance an auxiliary network carries from the LAN it was derived from.
 # The names are a contract shared with LANfactory (which logs them as params
@@ -141,10 +137,6 @@ AUX_FORWARDED_TAGS = (
 # What each auxiliary type's output is the probability of, in the provenance
 # vocabulary. A cpn labelled "omission" was derived for something other than
 # what its root filename promises, so the label is checked, not just copied.
-# gonogo is deliberately absent: it is refused for having no consumer before
-# its provenance is ever read, so a gonogo run without provenance gets the
-# refusal that applies to it, not an instruction to relabel a network that
-# can never ship.
 AUX_CATEGORY_BY_NETWORK_TYPE = {"cpn": "choice", "opn": "omission"}
 
 
@@ -415,8 +407,6 @@ def gate_verdict(report: dict) -> tuple[bool, str]:
     network_type = report.get("network_type")
     if network_type is None:
         return False, "report has no network_type; re-run the validator (P1 or later)"
-    if network_type == "gonogo":
-        return False, GONOGO_REFUSAL
     required = REQUIRED_GATES_BY_NETWORK_TYPE.get(network_type)
     if required is None:
         return False, f"no publishable gate set for network_type {network_type!r}"
@@ -941,8 +931,7 @@ def main(
     model: str = typer.Option(None, help="Model name, if not using --run-id."),
     network_type: str = typer.Option(
         None,
-        help="lan | cpn | opn. A gonogo network is refused before anything is "
-        "staged: HSSM cannot load it.",
+        help="lan | cpn | opn. Any other type is refused before anything is staged.",
     ),
     artifact_dir: Path = typer.Option(
         None,
@@ -1082,7 +1071,6 @@ def run_publish(
 
     import tempfile
 
-    from lanfactory.hf import VALID_NETWORK_TYPES
     from lanfactory.hf.upload import (
         DEFAULT_INCLUDE_PATTERNS,
         RootArtifactExistsError,
@@ -1107,17 +1095,15 @@ def run_publish(
             f"Run {run.info.run_id} records no model param and none was given. "
             "Pass --model."
         )
-    if network_type not in VALID_NETWORK_TYPES:
+    # Before provenance, staging or validation: a type with no gate set (a
+    # gonogo, say, which lanfactory.hf still names) can never ship whatever its
+    # run carries, so it must not be told to relabel its provenance.
+    # gate_verdict refuses it again for a hand-fed report.
+    if network_type not in REQUIRED_GATES_BY_NETWORK_TYPE:
         raise PublishError(
-            f"network_type {network_type!r} is not one of {list(VALID_NETWORK_TYPES)}."
+            f"network_type {network_type!r} is not one of "
+            f"{list(REQUIRED_GATES_BY_NETWORK_TYPE)}."
         )
-    # First, before provenance, staging or validation: a gonogo has no
-    # consumer whatever its run carries, so the refusal it gets must be this
-    # one — not "relabel your provenance", which would send the operator to
-    # fix a network that can never ship. gate_verdict refuses it again for a
-    # hand-fed report.
-    if network_type == "gonogo":
-        raise PublishError(GONOGO_REFUSAL)
     # The root filename is always {base_model}{suffix}.onnx: HSSM builds it
     # from the model name it was given plus the type's suffix, and nothing
     # ever asks for ddm_deadline_opn.onnx. A network published under that

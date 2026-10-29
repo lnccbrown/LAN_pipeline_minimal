@@ -98,8 +98,9 @@ missing-data path ignores `response`; that skip records the `hssm_version` it
 saw.
 
 For a cpn or opn the publisher requires `structure`, `hssm_missing_load`, and
-`accuracy` to be present and not skipped. It refuses a gonogo report whatever
-its gates say, and a report with no top-level `network_type`.
+`accuracy` to be present and not skipped. It refuses a report of any other
+`network_type` whatever its gates say, and a report with no top-level
+`network_type`.
 
 The detailed report has `schema_version: 1`, artifact/model/network identity
 (`onnx`, `model`, `network_type`, and `aux_category` — what the output is the
@@ -279,13 +280,12 @@ The `gate` field (and `error`, when the verdict refused) is one of:
 | `gate failed — <gate>: <error>` | A gate ran and failed; the error is the gate's own |
 | `not actually checked: <gates>. A skipped or missing gate is not a passed gate.` | A required gate for this `network_type` skipped or is absent |
 | `report has no network_type; re-run the validator (P1 or later)` | The report predates the auxiliary gate set |
-| `no HSSM consumer; refusing to publish a gonogo network — root filenames on the Hub are permanent` | Never publishable; `run_publish` raises this before staging, so the verdict only sees it for a hand-fed report |
-| `no publishable gate set for network_type '<type>'` | The report names a type the publisher has no gate set for (a hand-edited report; the CLI checks the type before validating) |
+| `no publishable gate set for network_type '<type>'` | The report names a type the publisher has no gate set for, such as a `gonogo` (a hand-fed report; `run_publish` refuses such a type before staging) |
 
-Refusals raised before the verdict (a `gonogo` run, a `_deadline` model name,
-a missing, mismatched or unpublishable provenance key, a validator that
-rejected its arguments) return only `published: false` and `error`, since no
-plan exists yet.
+Refusals raised before the verdict (a network type without a gate set, a
+`_deadline` model name, a missing, mismatched or unpublishable provenance key,
+a validator that rejected its arguments) return only `published: false` and
+`error`, since no plan exists yet.
 
 ## Publication run record
 

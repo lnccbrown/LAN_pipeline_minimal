@@ -180,8 +180,7 @@ HSSM's registry require it. Either way the assembly is LAN + auxiliary net
 `lan-publish` runs the same gates for a cpn or opn, passing `--aux-category
 choice` for a cpn itself and forwarding `--lan-onnx`; see
 [Publish an auxiliary network](stage-and-publish.md#publish-an-auxiliary-network-cpn-opn)
-for what the training run must carry. A gonogo can be validated here but is
-never published.
+for what the training run must carry.
 
 One skip is built in and reported rather than silent: the cpn A3 gate needs
 an HSSM that passes `response` to the network on missing rows (HSSM ≥ 0.6.0).

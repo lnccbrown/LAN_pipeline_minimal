@@ -82,15 +82,15 @@ wrong-model ONNX is: the file would carry a root filename that promises
 something else.
 
 Two refusals are governance decisions rather than checks, and both come before
-the provenance check, staging, and validation. A `gonogo` network is never
-published, because nothing in HSSM consumes one and a root filename on the Hub
-is permanent -- publishing it would reserve `{model}_gonogo.onnx` for a network
-no release can load. Refusing it first matters: a gonogo built from simulation
-has no provenance either, and the refusal it gets must be the one that applies
-to it, not an instruction to relabel a network that can never ship. A
-`_deadline` model name is refused because HSSM builds the root filename from
-the base model, so a network published under the variant is unreachable and
-its name cannot be taken back.
+the provenance check, staging, and validation. A network type without a gate
+set -- anything but `lan`, `cpn` and `opn`, such as a `gonogo`, which nothing in
+HSSM consumes -- is never published, because a root filename on the Hub is
+permanent. Refusing it first matters: such a run usually has no provenance
+either, and the refusal it gets must be the one that applies to it, not an
+instruction to relabel a network that can never ship. A `_deadline` model name
+is refused because HSSM builds the root filename from the base model, so a
+network published under the variant is unreachable and its name cannot be
+taken back.
 
 ### 7. Explicit replacement and verifiable records
 
@@ -130,4 +130,4 @@ they cannot be collapsed into an ordinary CLI invocation.
 | `aux_category` mismatch | The run was derived for another category; derive and train the right one |
 | HSSM-missing-load skipped (cpn) | The locked HSSM is older than 0.6.0; wait for the release that feeds `response` to a cpn |
 | Accuracy failure | Compare against the source LAN's density gate; the error is inherited or the corpus is wrong |
-| gonogo or `_deadline` refusal | Not publishable by design; refused before staging, and there is no flag |
+| Network type without a gate set, or `_deadline` refusal | Not publishable by design; refused before staging, and there is no flag |
