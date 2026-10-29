@@ -40,9 +40,11 @@ opn the density gates do not apply -- the network is not a density -- and
 structure, HSSM missing-data load, and accuracy take their place. In both cases
 a missing or skipped required gate is a refusal even if the report's aggregate
 `passed` field is true. Parity may skip because Torch artifacts legitimately
-lack JAX state. A report without `network_type` predates the auxiliary gate set
-and cannot say which set judged it, so it is refused rather than assumed to be
-a LAN's.
+lack JAX state. HSSM load also skips, rather than fails, when no draw from the
+inset box gives data HSSM accepts; that is still a refusal, because the network
+was never loaded. A report without `network_type` predates the auxiliary gate
+set and cannot say which set judged it, so it is refused rather than assumed to
+be a LAN's.
 
 ### 4. Dry-run review
 

@@ -71,13 +71,13 @@ Gate states are `passed`, `failed`, or `skipped`. The process exits non-zero
 when aggregate `passed` is false. For promotion, do not rely on that aggregate:
 the publisher additionally requires structure, HSSM load, and density to be
 present and not skipped. `mass_survey` is advisory: it is `skipped` with the
-reason `lanfactory.derive not available; refresh the lock after LANfactory L1
-merges` while the locked LANfactory has no `derive` package, and a skip there
+reason `lanfactory.derive not available; this environment's LANfactory predates
+it` when the installed LANfactory has no `derive` package, and a skip there
 never blocks a publish. Once it runs, a `failed` mass survey refuses a publish
 like any other failed gate, and a warn-level result is `passed` with a
 `warning` detail in the report.
 
-An auxiliary network (`cpn`, `opn`, `gonogo`) reports a different gate set
+An auxiliary network (`cpn`, `opn`) reports a different gate set
 after `structure` and `parity`:
 
 ```json
@@ -93,10 +93,9 @@ after `structure` and `parity`:
 }
 ```
 
-A gonogo network always reports `hssm_missing_load` and `accuracy` as
-`skipped` (HSSM has no gonogo consumer). A cpn reports `hssm_missing_load` as
-`skipped` under HSSM < 0.6.0, whose missing-data path ignores `response`; that
-skip records the `hssm_version` it saw.
+A cpn reports `hssm_missing_load` as `skipped` under HSSM < 0.6.0, whose
+missing-data path ignores `response`; that skip records the `hssm_version` it
+saw.
 
 For a cpn or opn the publisher requires `structure`, `hssm_missing_load`, and
 `accuracy` to be present and not skipped. It refuses a gonogo report whatever
@@ -104,8 +103,8 @@ its gates say, and a report with no top-level `network_type`.
 
 The detailed report has `schema_version: 1`, artifact/model/network identity
 (`onnx`, `model`, `network_type`, and `aux_category` — what the output is the
-probability of: `null` for a LAN, `choice` for a cpn, `omission` for an opn,
-`nogo` for a gonogo), aggregate `passed`, and a
+probability of: `null` for a LAN, `choice` for a cpn, `omission` for an
+opn), aggregate `passed`, and a
 `gates` list whose entries include thresholds, scores, errors, or skip reasons
 as applicable. Adding a nullable top-level key does not bump `schema_version`;
 the gate set a report carries is keyed on `network_type`, not on the version,
@@ -116,12 +115,12 @@ In the LAN gates, `mass_survey` records its `verdict` (`pass`, `warn`, or
 `frac_gt_0.05` — the lines it judged them against (`p99_max`,
 `frac_gt_0_10_max`, `warn_p99`, `warn_frac_gt_0_05`), `n_theta`, the
 `seconds` the survey took, and the whole `survey` dict as
-`lanfactory.derive.survey` returned it: `n_theta`, `grid`, `seconds`, `total`
-and `shrunk_box` (each with `mean`, `p50_abs_dev`, `p90_abs_dev`,
-`p99_abs_dev`, `min`, `max`, `frac_gt_0.02`, `frac_gt_0.05`, `frac_gt_0.10`;
-`shrunk_box` adds `frac_of_theta`), `leak_below_onset` (`mean`, `p99`, `max`,
-or `null` for a model without an onset parameter), `by_param` (ten bins per
-parameter with `lo`, `hi`, `mean_dev`, `max_abs_dev`, `n`), and `worst_cell`.
+`lanfactory.derive.survey` returned it: `n_theta`, `grid` (the grid's repr),
+`seconds`, `total` (`mean`, `p50_abs_dev`, `p90_abs_dev`, `p99_abs_dev`,
+`min`, `max`, `frac_gt_0.02`, `frac_gt_0.05`, `frac_gt_0.10`),
+`leak_below_onset` (`mean`, `p99`, `max` over θ, or `null` for a model without
+an onset parameter), and `by_param` (ten bins per parameter with `lo`, `hi`,
+`mean_dev`, `max_abs_dev`, `n`).
 A warn-level result adds `warning`; a failure adds `error` and keeps the
 survey. A skip carries only `skipped` and `reason`.
 

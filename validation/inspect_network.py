@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Look at a candidate network before trusting the gate's verdict.
 
 `validate_network.py` returns numbers. This is the human counterpart: it puts

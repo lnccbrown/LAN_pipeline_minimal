@@ -13,16 +13,18 @@ import types
 
 import numpy as np
 import onnx
+import pandas as pd
 import pytest
 from onnx import TensorProto, helper
 
 import validate_network as vn
 from validate_network import (
-    GONOGO_SKIP_REASON,
     gate_accuracy,
+    gate_hssm_load,
     gate_parity,
     gate_structure,
     hellinger,
+    hssm_load_data,
     validate_network,
 )
 
@@ -202,12 +204,16 @@ class TestWiring:
             assert gates[later].get("skipped"), later
             assert gates[later]["reason"] == "structure gate failed"
 
-    def test_an_unknown_network_type_is_rejected_not_defaulted(self, tmp_path):
+    @pytest.mark.parametrize("network_type", ["LAN", "gonogo"])
+    def test_an_unknown_network_type_is_rejected_not_defaulted(
+        self, tmp_path, network_type
+    ):
         # Defaulting to 0 extra inputs would surface as "input width 6 !=
-        # expected 4", blaming the artifact for a mistyped flag.
+        # expected 4", blaming the artifact for a mistyped flag. gonogo was
+        # dropped: HSSM has no consumer for it.
         path = make_onnx(tmp_path / "good.onnx", (1, 6))
         with pytest.raises(ValueError, match="Unknown network_type"):
-            validate_network(path, model_name="ddm", network_type="LAN")
+            validate_network(path, model_name="ddm", network_type=network_type)
 
     def test_report_shape_is_stable(self, tmp_path, no_derive):
         path = make_onnx(tmp_path / "good.onnx", (1, 6))
@@ -227,18 +233,18 @@ class TestWiring:
         ]
         # The one top-level key the auxiliary gates added; null for a LAN.
         assert report["aux_category"] is None
-        # Without lanfactory.derive (forced here, so the shape is pinned the
-        # same way after the lock moves) the survey skips itself with the
-        # reason that says what has to move.
+        # Without lanfactory.derive (forced here, so the shape does not
+        # depend on the environment) the survey skips itself with the
+        # reason that says what is missing.
         survey = report["gates"][-1]
         assert survey["skipped"] and survey["passed"]
         assert survey["reason"] == (
-            "lanfactory.derive not available; refresh the lock after LANfactory L1 merges"
+            "lanfactory.derive not available; this environment's LANfactory predates it"
         )
         assert report["passed"]
 
 
-AUX_SKIPS = dict(skip_hssm=True, skip_accuracy=True)
+AUX_SKIPS = {"skip_hssm": True, "skip_accuracy": True}
 
 
 class TestAuxiliaryWidths:
@@ -246,7 +252,7 @@ class TestAuxiliaryWidths:
 
     @pytest.mark.parametrize(
         "network_type, aux_category",
-        [("cpn", "choice"), ("opn", None), ("gonogo", None)],
+        [("cpn", "choice"), ("opn", None)],
     )
     def test_n_params_plus_one_is_accepted(self, tmp_path, network_type, aux_category):
         path = make_onnx(tmp_path / "aux.onnx", (1, 5))
@@ -322,7 +328,7 @@ class TestAuxiliaryWiring:
 
     @pytest.mark.parametrize(
         "network_type, expected",
-        [("cpn", "choice"), ("opn", "omission"), ("gonogo", "nogo")],
+        [("cpn", "choice"), ("opn", "omission")],
     )
     def test_each_type_defaults_to_its_output_category(
         self, tmp_path, network_type, expected
@@ -334,18 +340,6 @@ class TestAuxiliaryWiring:
             path, model_name="ddm", network_type=network_type, **AUX_SKIPS
         )
         assert report["aux_category"] == expected
-
-    def test_gonogo_reports_its_two_unrunnable_gates_as_skipped(self, tmp_path):
-        path = make_onnx(tmp_path / "gonogo.onnx", (1, 5))
-        report = validate_network(path, model_name="ddm", network_type="gonogo")
-        gates = {g["gate"]: g for g in report["gates"]}
-        for name in ("hssm_missing_load", "accuracy"):
-            assert gates[name]["skipped"], name
-            assert gates[name]["reason"] == GONOGO_SKIP_REASON
-            assert gates[name]["passed"], name
-        # A structurally valid gonogo with everything else skipped must not
-        # exit non-zero: a skip is a skip, not a veto.
-        assert report["passed"]
 
     def test_a_deadline_model_name_is_rejected(self, tmp_path):
         # The deadline variant is derived where it is needed; naming it would
@@ -361,7 +355,6 @@ class TestAuxiliaryWiring:
         [
             ("cpn", "omission", "choice"),
             ("opn", "deadline", "omission"),
-            ("gonogo", "choice", "nogo"),
         ],
     )
     def test_a_category_the_type_cannot_output_is_rejected_naming_the_expected(
@@ -594,7 +587,7 @@ class TestHssmMissingLoadGate:
         self, tmp_path, monkeypatch, fake_hssm
     ):
         monkeypatch.setattr(vn, "_simulate", fixed_simulate)
-        sys.modules["hssm.modelconfig"].list_models = lambda: []
+        sys.modules["hssm.modelconfig"].list_models = list
         lan = make_onnx(tmp_path / "ddm.onnx", (1, 6))
         gate = vn.gate_hssm_missing_load(
             make_onnx(tmp_path / "opn.onnx", (1, 5)), "ddm", "opn", lan_onnx=lan
@@ -610,7 +603,7 @@ class TestHssmMissingLoadGate:
         self, tmp_path, monkeypatch, fake_hssm
     ):
         monkeypatch.setattr(vn, "_simulate", fixed_simulate)
-        sys.modules["hssm.modelconfig"].list_models = lambda: []
+        sys.modules["hssm.modelconfig"].list_models = list
         gate = vn.gate_hssm_missing_load(
             make_onnx(tmp_path / "opn.onnx", (1, 5)), "ddm", "opn"
         )
@@ -642,15 +635,15 @@ class TestHssmMissingLoadGate:
         assert not gate["passed"]
         assert "validate dependency group" in gate["error"]
 
-    def test_gonogo_has_no_consumer_to_load_into(
+    def test_a_lan_has_no_missing_data_slot_to_load_into(
         self, tmp_path, monkeypatch, fake_hssm
     ):
         monkeypatch.setattr(vn, "_simulate", fixed_simulate)
         gate = vn.gate_hssm_missing_load(
-            make_onnx(tmp_path / "gonogo.onnx", (1, 5)), "ddm", "gonogo"
+            make_onnx(tmp_path / "lan.onnx", (1, 6)), "ddm", "lan"
         )
         assert not gate["passed"]
-        assert "gonogo" in gate["error"]
+        assert "no HSSM missing-data consumer for 'lan'" in gate["error"]
         assert fake_hssm == []
 
 
@@ -844,15 +837,17 @@ class TestAuxTruth:
         assert truth["truth"] == pytest.approx(0.25)
         assert "truth_rt_lt_max_t" not in truth
 
-    def test_gonogo_has_no_truth(self):
-        with pytest.raises(ValueError, match="gonogo"):
-            vn.aux_truth("ddm", "gonogo", np.zeros(4), deadline=1.0)
+    def test_a_lan_has_no_truth(self):
+        with pytest.raises(ValueError, match="no truth is defined for 'lan'"):
+            vn.aux_truth("ddm", "lan", np.zeros(4), deadline=1.0)
 
 
-def canned_survey(p99=0.02, frac_gt_0_05=0.0, frac_gt_0_10=0.0, seconds=41.5):
+def canned_survey(
+    p99=0.02, frac_gt_0_05=0.0, frac_gt_0_10=0.0, seconds=41.5, mean=1.001
+):
     """A survey dict in the shape LANfactory L1's ``survey`` returns."""
     total = {
-        "mean": 1.001,
+        "mean": mean,
         "p50_abs_dev": 0.0037,
         "p90_abs_dev": 0.015,
         "p99_abs_dev": p99,
@@ -864,17 +859,15 @@ def canned_survey(p99=0.02, frac_gt_0_05=0.0, frac_gt_0_10=0.0, seconds=41.5):
     }
     return {
         "n_theta": 20_000,
-        "grid": {"kind": "onset", "n_points": 1000},
+        "grid": "OnsetGrid(n_pre=32, n_knee=128, knee=0.05, n_onset=600, ...)",
         "seconds": seconds,
         "total": total,
-        "shrunk_box": {**total, "frac_of_theta": 0.41},
         "leak_below_onset": {"mean": 1e-4, "p99": 1e-3, "max": 2e-3},
         "by_param": {
             "a": [
                 {"lo": 0.3, "hi": 0.52, "mean_dev": 0.001, "max_abs_dev": 0.02, "n": 2}
             ]
         },
-        "worst_cell": {"a": [2.2, 2.5], "v": [-0.5, 0.5], "mean_dev": 0.2},
     }
 
 
@@ -892,10 +885,10 @@ class FakeDerive:
 def fake_derive(monkeypatch):
     """A stub ``lanfactory.derive`` in sys.modules.
 
-    The locked LANfactory has no derive package, so this is the only way to
-    drive the mass-survey gate's verdicts and the accuracy gate's total_mass
-    attribution. ``survey`` returns whatever ``survey_result`` holds and
-    records its arguments; ``choice_mass`` returns ``total_mass`` for every θ.
+    A stub, not a real LAN, so the mass-survey gate's verdicts and the
+    accuracy gate's total_mass attribution are cheap and exact to drive.
+    ``survey`` returns whatever ``survey_result`` holds and records its
+    arguments; ``choice_mass`` returns ``total_mass`` for every θ.
     """
     state = FakeDerive()
 
@@ -904,12 +897,6 @@ def fake_derive(monkeypatch):
 
         def __init__(self, path):
             self.path = str(path)
-
-    class OnsetGrid:
-        """L1's OnsetGrid is a frozen dataclass of grid sizes: no onset index."""
-
-    class IntegrationGrid:
-        pass
 
     class Mass:
         def __init__(self, total):
@@ -930,23 +917,21 @@ def fake_derive(monkeypatch):
             raise state.survey_error
         return state.survey_result
 
-    def choice_mass(predictor, theta, choices, *, grid, onset=None):
-        # L1: an OnsetGrid needs onset=theta[:, t_idx]; an IntegrationGrid
-        # takes none. Either mismatch is a ValueError there.
+    def choice_mass(predictor, theta, choices, onset, grid=None):
+        # L1: onset is required (0 for a model without one), must be finite
+        # and must broadcast to (n_theta,); the grid defaults to OnsetGrid().
         theta = np.asarray(theta)
         assert theta.ndim == 2, theta.shape
-        if isinstance(grid, OnsetGrid) != (onset is not None):
-            raise ValueError("an OnsetGrid needs onset=theta[:, t_idx]")
-        onset = None if onset is None else np.asarray(onset).tolist()
-        state.calls.append(("mass", theta[0].tolist(), choices, grid, onset))
+        onset = np.broadcast_to(np.asarray(onset, dtype=float), (len(theta),))
+        if not np.all(np.isfinite(onset)):
+            raise ValueError("onset must be finite")
+        state.calls.append(("mass", theta[0].tolist(), choices, onset.tolist()))
         return Mass(state.total_mass)
 
     derive = types.ModuleType("lanfactory.derive")
     derive.load_onnx_predictor = load_onnx_predictor
     derive.survey = survey
     derive.choice_mass = choice_mass
-    derive.OnsetGrid = OnsetGrid
-    derive.IntegrationGrid = IntegrationGrid
     lanfactory = types.ModuleType("lanfactory")
     lanfactory.derive = derive
     monkeypatch.setitem(sys.modules, "lanfactory", lanfactory)
@@ -965,18 +950,16 @@ def no_derive(monkeypatch):
     monkeypatch.setitem(sys.modules, "lanfactory.derive", None)
 
 
-def lanfactory_derive_installed() -> bool:
-    try:
-        import lanfactory.derive  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
 DDM_CONFIG = {
     "params": ["v", "a", "z", "t"],
     "param_bounds": [[-3.0, 0.3, 0.1, 0.0], [3.0, 2.5, 0.9, 2.0]],
     "choices": [-1, 1],
+}
+DDM_ST_CONFIG = {
+    "params": ["v", "a", "z", "t", "st"],
+    "param_bounds": [[-3.0, 0.3, 0.1, 0.25, 0.0], [3.0, 2.5, 0.9, 2.25, 0.25]],
+    "choices": [-1, 1],
+    "ndt_edge_shift": {"param": "st", "scale": 1.0},
 }
 # What L1's survey() wants: ssms' param_bounds_dict, keyed by name.
 DDM_BOUNDS = {"v": (-3.0, 3.0), "a": (0.3, 2.5), "z": (0.1, 0.9), "t": (0.0, 2.0)}
@@ -994,21 +977,19 @@ class TestMassSurveyGate:
         assert gate["skipped"] and gate["passed"]
         assert gate["reason"] == vn.LANFACTORY_DERIVE_SKIP_REASON
         assert gate["reason"] == (
-            "lanfactory.derive not available; refresh the lock after LANfactory L1 merges"
+            "lanfactory.derive not available; this environment's LANfactory predates it"
         )
         assert "survey" not in gate
 
-    @pytest.mark.skipif(
-        lanfactory_derive_installed(),
-        reason="the lock now holds a LANfactory with derive: the canary has fired",
-    )
-    def test_canary_the_locked_lanfactory_still_lacks_derive(self, tmp_path):
-        # The ONE environment-dependent test, by design: when the lock moves
-        # this skips, which is the signal to freeze the thresholds (see the
-        # PROVISIONAL comment) and to consider making the gate required.
-        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
-        assert gate["skipped"]
-        assert gate["reason"] == vn.LANFACTORY_DERIVE_SKIP_REASON
+    def test_the_locked_lanfactory_has_what_the_gates_import(self):
+        # The ONE environment-dependent test, by design: the lock must pin a
+        # LANfactory whose derive package has the names the gates import, or
+        # the survey and the accuracy draws' LAN mass skip unnoticed.
+        from lanfactory.derive import (  # noqa: F401
+            choice_mass,
+            load_onnx_predictor,
+            survey,
+        )
 
     def test_hands_the_model_space_and_onset_param_to_the_survey(
         self, tmp_path, fake_derive
@@ -1023,7 +1004,19 @@ class TestMassSurveyGate:
         assert bounds == DDM_BOUNDS
         assert params == ["v", "a", "z", "t"]
         assert choices == [-1, 1]
-        assert kwargs == {"n_theta": 500, "seed": 7, "onset_param": "t"}
+        assert kwargs == {
+            "n_theta": 500,
+            "seed": 7,
+            "onset_param": "t",
+            "ndt_edge_shift": None,
+        }
+
+    def test_hands_an_st_models_edge_shift_to_the_survey(self, tmp_path, fake_derive):
+        # ddm_st's rts start at t - st; without the shift the survey reports
+        # the model's own early mass as leak and misplaces its grid.
+        vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 7)), DDM_ST_CONFIG)
+        kwargs = fake_derive.calls[1][-1]
+        assert kwargs["ndt_edge_shift"] == {"param": "st", "scale": 1.0}
 
     def test_a_model_without_t_gets_no_onset_param(self, tmp_path, fake_derive):
         config = {
@@ -1105,6 +1098,18 @@ class TestMassSurveyGate:
         assert gate["passed"]
         assert gate["verdict"] == "pass"
         assert "warning" not in gate and "error" not in gate
+
+    @pytest.mark.parametrize("mean", [float("nan"), float("inf")])
+    def test_a_non_finite_total_fails_under_both_tail_lines(
+        self, tmp_path, fake_derive, mean
+    ):
+        # L1 counts a NaN total as an infinite deviation, but under 1 % of the
+        # box that leaves p99 and frac_gt_0.10 clean; only the mean shows it.
+        fake_derive.survey_result = canned_survey(mean=mean)
+        gate = vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 6)), DDM_CONFIG)
+        assert not gate["passed"]
+        assert gate["verdict"] == "fail"
+        assert "not finite" in gate["error"]
 
     def test_thresholds_are_parameters_not_constants(self, tmp_path, fake_derive):
         fake_derive.survey_result = canned_survey(p99=0.12, frac_gt_0_10=0.03)
@@ -1298,16 +1303,12 @@ class TestAccuracyStrata:
         assert fake_derive.calls[0] == ("load", str(lan))
         masses = [c for c in fake_derive.calls if c[0] == "mass"]
         assert [m[1] for m in masses] == [d["theta"] for d in result["draws"]]
-        # ddm's t is its fourth parameter: the grid is L1's OnsetGrid and the
-        # onset handed to choice_mass is that draw's t, as onset=theta[:, 3].
-        derive = sys.modules["lanfactory.derive"]
-        assert all(isinstance(m[3], derive.OnsetGrid) for m in masses)
-        assert [m[4] for m in masses] == [[d["theta"][3]] for d in result["draws"]]
+        # ddm's t is its fourth parameter: the onset handed to choice_mass is
+        # that draw's t, as onset=theta[:, 3].
+        assert [m[3] for m in masses] == [[d["theta"][3]] for d in result["draws"]]
         assert all(list(m[2]) == [-1, 1] for m in masses)
 
-    def test_a_model_without_t_integrates_on_the_plain_grid(
-        self, tmp_path, fake_derive
-    ):
+    def test_a_model_without_t_integrates_from_onset_zero(self, tmp_path, fake_derive):
         config = {
             "params": ["v", "a", "z"],
             "param_bounds": [[-3.0, 0.3, 0.1], [3.0, 2.5, 0.9]],
@@ -1315,10 +1316,16 @@ class TestAccuracyStrata:
         }
         total = vn._lan_total_mass(make_onnx(tmp_path / "lan.onnx", (1, 5)), config)
         assert total(np.array([0.5, 1.0, 0.5])) == 0.97
-        derive = sys.modules["lanfactory.derive"]
-        (_, theta, _, grid, onset) = [c for c in fake_derive.calls if c[0] == "mass"][0]
-        assert isinstance(grid, derive.IntegrationGrid) and onset is None
+        (_, theta, _, onset) = next(c for c in fake_derive.calls if c[0] == "mass")
+        assert onset == [0.0]
         assert theta == [0.5, 1.0, 0.5]
+
+    def test_an_st_model_integrates_from_t_minus_st(self, tmp_path, fake_derive):
+        lan = make_onnx(tmp_path / "lan.onnx", (1, 7))
+        total = vn._lan_total_mass(lan, DDM_ST_CONFIG)
+        assert total(np.array([0.5, 1.0, 0.5, 0.8, 0.2])) == 0.97
+        (_, _, _, onset) = next(c for c in fake_derive.calls if c[0] == "mass")
+        assert onset == pytest.approx([0.6])
 
     def test_total_mass_needs_a_lan_to_evaluate(
         self, tmp_path, monkeypatch, fake_derive
@@ -1350,6 +1357,241 @@ class TestAccuracyStrata:
     def test_an_edge_draw_needs_a_margin(self):
         with pytest.raises(ValueError, match="shrink > 0"):
             vn._draw_theta_edge(DDM_CONFIG, np.random.default_rng(0), shrink=0.0)
+
+
+def fake_simulator(rts_for_call):
+    """An ssms simulator stand-in. ``rts_for_call(i, theta, n)`` gives the rts
+    of the i-th call; choices alternate. Records each call's theta."""
+    calls = []
+
+    def simulator(model, theta, n_samples, random_state, **kwargs):
+        theta = np.asarray(theta, dtype=float)
+        calls.append({"theta": theta, "random_state": random_state})
+        rts = np.asarray(rts_for_call(len(calls) - 1, theta, n_samples), dtype=float)
+        choices = np.where(np.arange(n_samples) % 2 == 0, 1, -1)
+        return {"rts": rts.reshape(-1, 1), "choices": choices.reshape(-1, 1)}
+
+    simulator.calls = calls
+    return simulator
+
+
+@pytest.fixture
+def fake_hssm_g3(monkeypatch):
+    """A stand-in for the hssm package with HSSM's data check and nothing else.
+
+    hssm.HSSM raises on any rt <= 0 before it touches the likelihood, so that
+    check is the whole of what G3's data handling has to satisfy. Records the
+    frames it was handed.
+    """
+    seen = []
+
+    class FakePymcModel:
+        def initial_point(self):
+            return {}
+
+        def compile_logp(self):
+            return lambda point: -123.0
+
+    class HSSM:
+        def __init__(self, data, model, loglik, loglik_kind, **kwargs):
+            seen.append(data.copy())
+            if (data["rt"] <= 0).any():
+                raise ValueError("Data contains negative response times.")
+            self.pymc_model = FakePymcModel()
+
+    module = types.ModuleType("hssm")
+    module.HSSM = HSSM
+    modelconfig = types.ModuleType("hssm.modelconfig")
+    modelconfig.list_models = lambda: ["ddm"]
+    module.modelconfig = modelconfig
+    monkeypatch.setitem(sys.modules, "hssm", module)
+    monkeypatch.setitem(sys.modules, "hssm.modelconfig", modelconfig)
+    return seen
+
+
+def ddm_box():
+    import ssms
+
+    lower, upper = (
+        np.asarray(b, dtype=float)
+        for b in ssms.config.model_config["ddm"]["param_bounds"]
+    )
+    return lower, upper
+
+
+class TestHssmLoadGate:
+    """G3 must not fail a working network because its data were unusable.
+
+    hssm.HSSM refuses data with rt <= 0. An untruncated non-decision-time
+    kernel (ddm_normal_st) produces such trials whenever st is large next to t,
+    and the full ssms box allows exactly that; the gate used to draw there.
+    """
+
+    def test_redraw_constants_match_recovery(self):
+        import recovery_designs as rd
+
+        assert vn.HSSM_LOAD_MAX_REDRAWS == rd.MAX_TRUTH_REDRAWS
+        assert vn.HSSM_LOAD_REDRAW_STRIDE == rd.REDRAW_STRIDE
+
+    def test_theta_is_drawn_from_the_inset_box(self, monkeypatch):
+        sim = fake_simulator(lambda i, theta, n: np.full(n, 0.5))
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        lower, upper = ddm_box()
+        span = upper - lower
+        for seed in range(25):
+            hssm_load_data("ddm", n_trials=10, seed=seed)
+        for call in sim.calls:
+            assert np.all(call["theta"] >= lower + 0.1 * span - 1e-12)
+            assert np.all(call["theta"] <= upper - 0.1 * span + 1e-12)
+
+    def test_a_draw_with_nonpositive_rts_is_redrawn_and_recorded(self, monkeypatch):
+        sim = fake_simulator(
+            lambda i, theta, n: np.linspace(-0.2, 1.0, n) if i == 0 else np.full(n, 0.5)
+        )
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        draw = hssm_load_data("ddm", n_trials=100, seed=0)
+        assert draw["attempts"] == 2
+        assert (draw["data"]["rt"] > 0).all()
+        assert len(draw["rejected"]) == 1
+        assert draw["rejected"][0]["seed"] == 0
+        assert draw["rejected"][0]["n_nonpositive_rt"] > 0
+        # Attempt 0 keeps the seed unchanged; the redraw steps by the stride.
+        assert [c["random_state"] for c in sim.calls] == [
+            0,
+            vn.HSSM_LOAD_REDRAW_STRIDE,
+        ]
+        assert draw["seed"] == vn.HSSM_LOAD_REDRAW_STRIDE
+
+    def test_gate_passes_a_network_whose_first_draw_was_unusable(
+        self, tmp_path, monkeypatch, fake_hssm_g3
+    ):
+        # The regression: before the fix the negative-rt frame went straight
+        # to hssm.HSSM and the gate failed with "negative response times".
+        sim = fake_simulator(
+            lambda i, theta, n: np.full(n, -0.05) if i == 0 else np.full(n, 0.5)
+        )
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        result = gate_hssm_load(tmp_path / "m.onnx", "ddm")
+        assert result["passed"], result
+        assert result["attempts"] == 2
+        assert len(result["rejected_draws"]) == 1
+        assert len(fake_hssm_g3) == 1 and (fake_hssm_g3[0]["rt"] > 0).all()
+
+    def test_an_exhausted_budget_skips_rather_than_fails(
+        self, tmp_path, monkeypatch, fake_hssm_g3
+    ):
+        # The gate's own message calls this "a fact about the box, not the
+        # network", so it must not report a network failure. It skips, the
+        # way parity does, and skipped gates report passed=True.
+        sim = fake_simulator(lambda i, theta, n: np.full(n, -0.05))
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        result = gate_hssm_load(tmp_path / "m.onnx", "ddm")
+        assert result["passed"], result
+        assert result.get("skipped") is True, result
+        assert "box" in result["reason"]
+        assert "error" not in result
+        # The evidence is still in the report.
+        assert result["attempts"] == vn.HSSM_LOAD_MAX_REDRAWS + 1
+        assert len(result["rejected_draws"]) == vn.HSSM_LOAD_MAX_REDRAWS + 1
+        assert fake_hssm_g3 == []
+
+    def test_an_exhausted_budget_still_blocks_publish(
+        self, tmp_path, monkeypatch, fake_hssm_g3
+    ):
+        # Skipping is not passing: G3 is a required gate, so a network HSSM
+        # never loaded cannot be published on the strength of a skipped G3.
+        from publish.publish_network import gate_verdict
+
+        sim = fake_simulator(lambda i, theta, n: np.full(n, -0.05))
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+        others = [
+            {"gate": name, "passed": True}
+            for name in ("structure", "parity", "density")
+        ]
+        report = {
+            "network_type": "lan",
+            "gates": [*others, gate_hssm_load(tmp_path / "m.onnx", "ddm")],
+        }
+        assert all(g["passed"] for g in report["gates"])
+
+        ok, reason = gate_verdict(report)
+        assert not ok
+        assert "hssm_load" in reason and "not actually checked" in reason
+
+    def test_an_hssm_failure_reports_the_draw_it_was_handed(
+        self, tmp_path, monkeypatch, fake_hssm_g3
+    ):
+        sim = fake_simulator(
+            lambda i, theta, n: np.full(n, -0.05) if i == 0 else np.full(n, 0.5)
+        )
+        monkeypatch.setattr("ssms.basic_simulators.simulator.simulator", sim)
+
+        def broken_hssm(**kwargs):
+            raise RuntimeError("compile failed")
+
+        monkeypatch.setattr(sys.modules["hssm"], "HSSM", broken_hssm)
+        result = gate_hssm_load(tmp_path / "m.onnx", "ddm", seed=3)
+        assert not result["passed"]
+        assert result["error"] == "RuntimeError: compile failed"
+        # The failing integration check names the accepted draw, not just
+        # the rejected one before it.
+        assert result["attempts"] == 2
+        assert result["seed"] == 3 + vn.HSSM_LOAD_REDRAW_STRIDE
+        assert result["theta"] == pytest.approx(sim.calls[1]["theta"].tolist())
+        assert [d["seed"] for d in result["rejected_draws"]] == [3]
+
+    def test_a_failure_before_any_draw_still_reports_cleanly(
+        self, tmp_path, monkeypatch, fake_hssm_g3
+    ):
+        def broken_simulator(**kwargs):
+            raise RuntimeError("simulator unavailable")
+
+        monkeypatch.setattr(
+            "ssms.basic_simulators.simulator.simulator", broken_simulator
+        )
+        result = gate_hssm_load(tmp_path / "m.onnx", "ddm")
+        assert not result["passed"]
+        assert result["error"] == "RuntimeError: simulator unavailable"
+        assert result["theta"] is None and result["seed"] is None
+        assert result["attempts"] == 0
+        assert result["rejected_draws"] == []
+        assert fake_hssm_g3 == []
+
+    def test_ddm_normal_st_seed_zero_is_usable(self, monkeypatch):
+        """The draw that failed ddm_normal_st in practice, on the real simulator.
+
+        The networks were trained on an st box widened to 0.35 (ssms ships
+        0.25 at the pinned version), so the test installs that box. Its
+        full-box seed-0 draw (t = 0.283, st = 0.285) simulates an rt below
+        zero through the untruncated Normal kernel; the gate's own draw at the
+        same seed must not.
+        """
+        import copy
+
+        import ssms
+
+        if "ddm_normal_st" not in ssms.config.model_config:
+            pytest.skip("ssms has no ddm_normal_st")
+        config = copy.deepcopy(ssms.config.model_config["ddm_normal_st"])
+        config["param_bounds"] = [
+            [-3.0, 0.3, 0.3, 0.25, 0.001],
+            [3.0, 2.5, 0.7, 2.25, 0.35],
+        ]
+        monkeypatch.setitem(ssms.config.model_config, "ddm_normal_st", config)
+
+        lower, upper = (np.asarray(b, dtype=float) for b in config["param_bounds"])
+        theta = lower + (upper - lower) * np.random.default_rng(0).uniform(
+            size=lower.shape
+        )
+        old = ssms.basic_simulators.simulator.simulator(
+            model="ddm_normal_st", theta=theta, n_samples=100, random_state=0
+        )
+        assert (np.asarray(old["rts"]) <= 0).any(), "full-box draw no longer fails"
+
+        draw = hssm_load_data("ddm_normal_st", n_trials=100, seed=0)
+        assert draw["data"] is not None, draw["rejected"]
+        assert isinstance(draw["data"], pd.DataFrame)
+        assert (draw["data"]["rt"] > 0).all()
 
 
 @pytest.mark.production

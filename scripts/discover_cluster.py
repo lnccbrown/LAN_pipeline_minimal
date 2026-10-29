@@ -41,7 +41,7 @@ def run(command: str, ssh_host: str | None) -> str:
         if ssh_host
         else ["bash", "-lc", command]
     )
-    result = subprocess.run(argv, capture_output=True, text=True)
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(
             f"`{command}` failed ({result.returncode}): {result.stderr.strip()[:200]}\n"

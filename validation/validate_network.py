@@ -14,7 +14,8 @@ which property broke:
     G2 parity     — ONNX output equals the trainer's own jax forward pass,
                     when the *_train_state.jax sibling is present.
     G3 hssm-load  — hssm.HSSM accepts it as a likelihood and produces a finite
-                    initial logp on simulated data.
+                    initial logp on simulated data (drawn from the same inset
+                    box as G4, redrawn until every rt is positive).
     G4 density    — the network's implied density integrates to ~1 and matches
                     simulation (Hellinger) at several in-bounds parameter
                     draws. This is the only gate that catches a network that
@@ -35,9 +36,9 @@ A LAN gets a fifth, advisory gate after G4:
                     (1.9 % of the box beyond 0.05, up to +0.22); it would fail
                     that network with probability 0.06 %. The survey needs
                     ``lanfactory.derive`` and skips itself, with a stated
-                    reason, while the lock pins a LANfactory without it.
+                    reason, in an environment whose LANfactory lacks it.
 
-Auxiliary networks (cpn / opn / gonogo) are not densities, so G3 and G4 do not
+Auxiliary networks (cpn / opn) are not densities, so G3 and G4 do not
 apply to them. They get their own pair after G1 and G2:
 
     A3 hssm-missing-load — hssm.HSSM accepts the network as
@@ -55,8 +56,6 @@ BASE model; the ``_deadline`` variant is derived internally):
             n_params + 1, output log P_s(choice | θ)
     opn     input [θ..., deadline], width n_params + 1,
             output log S_s(deadline | θ) = log P_s(rt > deadline | θ)
-    gonogo  input [θ..., deadline], width n_params + 1,
-            output log P_s(nogo ∪ omission | θ) — derived only, no HSSM consumer
 
 Outputs are SSM-only marginals with the log-sigmoid baked into the graph, so
 every value is ≤ 0; HSSM applies the lapse mixture outside the network.
@@ -65,9 +64,10 @@ On the cpn truth: ssms does NOT censor a base model at max_t. A trial that has
 not terminated by max_t comes back at rt ≈ max_t + t with its sign-implied
 choice, while a derived CPN integrates the first-passage density only up to
 max_t (20 s). aux_truth therefore reports both ``truth`` (every trial) and
-``truth_rt_lt_max_t`` (trials that finished inside the window); the gate judges
-``truth``, and the two only differ for parameter draws where a visible share of
-trials outlasts 20 s.
+``truth_rt_lt_max_t`` (the share of ALL trials that gave the choice AND
+finished inside the window: a joint probability, not one conditional on
+finishing); the gate judges ``truth``, and the two only differ for parameter
+draws where a visible share of trials outlasts 20 s.
 
 Trust: G2 unpickles the ``*_network_config.pickle`` sitting next to the ONNX,
 because that is the only format lanfactory writes it in, and unpickling runs
@@ -125,12 +125,22 @@ DEFAULT_MASS_SURVEY_FRAC_GT_0_10_MAX = 0.02
 MASS_SURVEY_WARN_P99 = 0.05
 MASS_SURVEY_WARN_FRAC_GT_0_05 = 0.01
 MASS_SURVEY_N_THETA = 20_000
-# The survey lives in LANfactory's derive package, which the locked LANfactory
-# (git main) does not have yet. The gate skips itself with this reason and
-# activates on its own once the lock moves, like the cpn A3 gate does for HSSM.
+# The survey lives in LANfactory's derive package, which the lock pins. An
+# environment synced to an older LANfactory skips the gate with this reason
+# rather than failing a network it could not survey.
 LANFACTORY_DERIVE_SKIP_REASON = (
-    "lanfactory.derive not available; refresh the lock after LANfactory L1 merges"
+    "lanfactory.derive not available; this environment's LANfactory predates it"
 )
+
+# G3 redraws its parameter draw when the simulated data contain a response time
+# HSSM refuses (rt <= 0, which an untruncated non-decision-time kernel such as
+# ddm_normal_st's produces whenever st is large next to t). Budget and seed
+# stride are recovery_designs.usable_seed's MAX_TRUTH_REDRAWS and REDRAW_STRIDE,
+# duplicated rather than imported because publish imports this module as
+# ``validation.validate_network`` while recovery_designs is imported by bare
+# name. The tests assert the two stay equal.
+HSSM_LOAD_MAX_REDRAWS = 8
+HSSM_LOAD_REDRAW_STRIDE = 7_000_003
 
 # Inputs beyond the parameter vector, per network type. The trailing inputs
 # come last in the graph, after θ (list_params order) and any extra_fields.
@@ -138,14 +148,12 @@ EXTRA_INPUTS_BY_NETWORK_TYPE = {
     "lan": 2,  # rt, response: a density over both
     "cpn": 1,  # choice: log P(choice | θ), one row per choice code
     "opn": 1,  # deadline: log P(rt > deadline | θ), the survival function
-    "gonogo": 1,  # deadline: log P(nogo ∪ omission | θ); derived only
 }
 # What G1 says the width should be made of, per type.
 INPUT_LAYOUT_BY_NETWORK_TYPE = {
     "lan": "len(param_space) + rt + response for a LAN",
     "cpn": "len(param_space) + choice for a CPN",
     "opn": "len(param_space) + deadline for an OPN",
-    "gonogo": "len(param_space) + deadline for a gonogo network",
 }
 # The gate names each type reports, in order. The publisher (REQUIRED_GATES)
 # and the pinned tests key on a LAN's list; mass_survey was appended to it
@@ -154,7 +162,6 @@ GATES_BY_NETWORK_TYPE = {
     "lan": ("structure", "parity", "hssm_load", "density", "mass_survey"),
     "cpn": ("structure", "parity", "hssm_missing_load", "accuracy"),
     "opn": ("structure", "parity", "hssm_missing_load", "accuracy"),
-    "gonogo": ("structure", "parity", "hssm_missing_load", "accuracy"),
 }
 # What an auxiliary network's OUTPUT is the probability of. This is the one
 # vocabulary the whole pipeline shares: LANfactory's derived corpora record it
@@ -167,9 +174,7 @@ GATES_BY_NETWORK_TYPE = {
 AUX_CATEGORIES_BY_NETWORK_TYPE = {
     "cpn": ("choice",),
     "opn": ("omission",),
-    "gonogo": ("nogo",),
 }
-GONOGO_SKIP_REASON = "HSSM has no gonogo consumer"
 
 # HSSM ≥ 0.6.0 feeds ``response`` to a width n_params + 1 CPN; every earlier
 # release calls the CPN with the parameters only, so a contract-conformant CPN
@@ -273,11 +278,12 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
     """A ``theta -> total mass`` function for the base LAN, or None.
 
     None when there is no LAN path to evaluate or ``lanfactory.derive`` is
-    not importable (the locked LANfactory predates it). The mass is
-    ``choice_mass`` on LANfactory's onset-refined ``OnsetGrid``, which takes
-    the onset per θ as ``onset=theta[:, t_idx]`` when the model has a ``t``
-    parameter, and on the plain ``IntegrationGrid`` otherwise, so a failing
-    accuracy draw can be attributed: a cpn/opn derived from a LAN that is
+    not importable (the environment's LANfactory predates it). The mass is
+    ``choice_mass`` on LANfactory's onset-refined grid, built around the
+    onset ``theta[:, t_idx]`` when the model has a ``t`` parameter (less
+    ``scale * theta[:, param]`` when the config declares an
+    ``ndt_edge_shift``, as the survey does) and around 0 otherwise, so a
+    failing accuracy draw can be attributed: a cpn/opn derived from a LAN that is
     mis-normalised at that θ inherits the error, and the number says so.
     Advisory only — any failure here is logged and yields None, never a
     failed gate.
@@ -285,19 +291,15 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
     if lan_onnx is None:
         return None
     try:
-        from lanfactory.derive import (
-            IntegrationGrid,
-            OnsetGrid,
-            choice_mass,
-            load_onnx_predictor,
-        )
+        from lanfactory.derive import choice_mass, load_onnx_predictor
     except ImportError:
         return None
     try:
         predictor = load_onnx_predictor(lan_onnx)
         params = list(model_config["params"])
         t_idx = params.index("t") if "t" in params else None
-        grid = OnsetGrid() if t_idx is not None else IntegrationGrid()
+        shift = model_config.get("ndt_edge_shift")
+        shift_idx = params.index(shift["param"]) if shift is not None else None
         choices = list(model_config["choices"])
     except Exception as e:  # noqa: BLE001 - attribution must not break the gate
         logger.warning(f"LAN total_mass unavailable for the accuracy draws: {e}")
@@ -305,10 +307,11 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
 
     def total(theta: np.ndarray) -> float | None:
         row = np.atleast_2d(np.asarray(theta, dtype=float))
-        onset = row[:, t_idx] if t_idx is not None else None
+        onset = row[:, t_idx] if t_idx is not None else 0.0
+        if shift_idx is not None:
+            onset = onset - shift["scale"] * row[:, shift_idx]
         try:
-            mass = choice_mass(predictor, row, choices, grid=grid, onset=onset)
-            return float(mass.total[0])
+            return float(choice_mass(predictor, row, choices, onset).total[0])
         except Exception as e:  # noqa: BLE001
             logger.warning(f"LAN total_mass failed at theta={theta.tolist()}: {e}")
             return None
@@ -519,24 +522,104 @@ def gate_parity(
     )
 
 
+def hssm_load_data(
+    model_name: str, n_trials: int = 100, seed: int = 0, shrink: float = 0.1
+) -> dict:
+    """Simulate G3's dataset from the first parameter draw HSSM can accept.
+
+    theta comes from the training bounds shrunk by ``shrink`` on each side, the
+    same inset box G4 draws from: the edge of the box is where the network is
+    least accurate and, for models whose st may exceed t, where the simulator
+    returns response times at or below zero. HSSM rejects such data outright,
+    so a draw there fails G3 for a reason that says nothing about the network.
+
+    A draw whose data still contain an rt <= 0 (or a non-finite rt) is
+    redrawn, the way recovery_designs.usable_seed redraws a degenerate truth:
+    attempt 0 uses ``seed`` unchanged and each later attempt steps it by
+    HSSM_LOAD_REDRAW_STRIDE, so the dataset is a pure function of
+    (model, seed). Trials are never dropped; every rejected draw is returned
+    so the report shows it.
+
+    Returns ``{"data": DataFrame | None, "theta", "seed", "attempts",
+    "rejected"}``; ``data`` is None when the budget ran out.
+    """
+    import pandas as pd
+    import ssms
+
+    model_config = ssms.config.model_config[model_name]
+    rejected = []
+    for attempt in range(HSSM_LOAD_MAX_REDRAWS + 1):
+        resolved = seed + attempt * HSSM_LOAD_REDRAW_STRIDE
+        theta = _draw_theta(model_config, np.random.default_rng(resolved), shrink)
+        rts, choices = _simulate(model_name, theta, n_trials, resolved)
+        rts = rts.astype(float)
+        n_bad = int(np.sum(~(np.isfinite(rts) & (rts > 0))))
+        if n_bad == 0:
+            data = pd.DataFrame({"rt": rts, "response": choices})
+            return {
+                "data": data,
+                "theta": [float(x) for x in theta],
+                "seed": resolved,
+                "attempts": attempt + 1,
+                "rejected": rejected,
+            }
+        rejected.append(
+            {
+                "seed": resolved,
+                "theta": [float(x) for x in theta],
+                "n_nonpositive_rt": n_bad,
+            }
+        )
+    return {
+        "data": None,
+        "theta": None,
+        "seed": None,
+        "attempts": HSSM_LOAD_MAX_REDRAWS + 1,
+        "rejected": rejected,
+    }
+
+
 def gate_hssm_load(
-    onnx_path: Path, model_name: str, n_trials: int = 100, seed: int = 0
+    onnx_path: Path,
+    model_name: str,
+    n_trials: int = 100,
+    seed: int = 0,
+    shrink: float = 0.1,
 ) -> dict:
     """G3: HSSM accepts the network and produces a finite initial logp.
 
     This is the integration the whole pipeline exists to serve; everything
-    upstream can be correct and still fail here.
+    upstream can be correct and still fail here. The data come from
+    `hssm_load_data`: an inset-box draw whose response times are all positive,
+    redrawn when they are not, with every redraw recorded in the result.
     """
+    draw = {"attempts": 0, "rejected": []}
     try:
         import hssm
-        import pandas as pd
         import ssms
 
-        rng = np.random.default_rng(seed)
         model_config = ssms.config.model_config[model_name]
-        theta = _draw_theta(model_config, rng)
-        rts, choices = _simulate(model_name, theta, n_trials, seed)
-        data = pd.DataFrame({"rt": rts, "response": choices})
+        draw = hssm_load_data(model_name, n_trials=n_trials, seed=seed, shrink=shrink)
+        if draw["data"] is None:
+            # Skipped, not failed: no network was loaded, so there is no
+            # verdict on it. Like a skipped parity gate this reports
+            # passed=True, and like any skipped gate it still blocks publish,
+            # which requires hssm_load to have run.
+            return _result(
+                "hssm_load",
+                True,
+                skipped=True,
+                n_trials=n_trials,
+                attempts=draw["attempts"],
+                rejected_draws=draw["rejected"],
+                reason=(
+                    f"no usable dataset in {draw['attempts']} draws from the "
+                    f"{shrink:.0%}-inset box: every draw simulated an rt <= 0 or "
+                    "a non-finite rt, which HSSM rejects. This is a fact about "
+                    "the box, not the network; the network was never loaded."
+                ),
+            )
+        data = draw["data"]
 
         model = hssm.HSSM(
             data=data,
@@ -548,9 +631,28 @@ def gate_hssm_load(
         pymc_model = model.pymc_model
         logp = float(pymc_model.compile_logp()(pymc_model.initial_point()))
     except Exception as e:  # noqa: BLE001
-        return _result("hssm_load", False, error=f"{type(e).__name__}: {e}")
+        # theta/seed are None when the failure came before a usable draw.
+        return _result(
+            "hssm_load",
+            False,
+            n_trials=n_trials,
+            theta=draw.get("theta"),
+            seed=draw.get("seed"),
+            attempts=draw["attempts"],
+            rejected_draws=draw["rejected"],
+            error=f"{type(e).__name__}: {e}",
+        )
 
-    return _result("hssm_load", np.isfinite(logp), initial_logp=logp, n_trials=n_trials)
+    return _result(
+        "hssm_load",
+        np.isfinite(logp),
+        initial_logp=logp,
+        n_trials=n_trials,
+        theta=draw["theta"],
+        seed=draw["seed"],
+        attempts=draw["attempts"],
+        rejected_draws=draw["rejected"],
+    )
 
 
 def hellinger(p: np.ndarray, q: np.ndarray) -> float:
@@ -723,10 +825,16 @@ def gate_mass_survey(
     grid carries 15-25 % quadrature error at a < 0.5, which would be blamed
     on the network) — and judges the tails of |total − 1|:
 
+        FAIL  total.mean not finite  (a NaN or infinite total anywhere: a NaN
+              share under 1 % would otherwise pass both tail checks)
         FAIL  total.p99_abs_dev > p99_max  or  total.frac_gt_0.10 > frac_gt_0_10_max
         WARN  total.p99_abs_dev > MASS_SURVEY_WARN_P99
               or total.frac_gt_0.05 > MASS_SURVEY_WARN_FRAC_GT_0_05
               (passed=True, with a ``warning`` detail)
+
+    A model whose config declares ``ndt_edge_shift`` (ddm_st, full_ddm*)
+    starts its response times at ``t - scale * st``, and the survey builds
+    its grid and measures the leak from there.
 
     Skipped, with LANFACTORY_DERIVE_SKIP_REASON, while ``lanfactory.derive``
     is not importable; the survey dict is small and recorded whole, so a
@@ -756,8 +864,10 @@ def gate_mass_survey(
             n_theta=n_theta,
             seed=seed,
             onset_param="t" if "t" in params else None,
+            ndt_edge_shift=model_config.get("ndt_edge_shift"),
         )
         total = result["total"]
+        mean = float(total["mean"])
         p99 = float(total["p99_abs_dev"])
         frac_gt_0_10 = float(total["frac_gt_0.10"])
         frac_gt_0_05 = float(total["frac_gt_0.05"])
@@ -777,6 +887,8 @@ def gate_mass_survey(
         "survey": result,
     }
     failures = []
+    if not np.isfinite(mean):
+        failures.append(f"total.mean {mean} is not finite")
     if p99 > p99_max:
         failures.append(f"total.p99_abs_dev {p99:.4f} > {p99_max}")
     if frac_gt_0_10 > frac_gt_0_10_max:
@@ -949,8 +1061,9 @@ def aux_truth(
     """Monte-Carlo truth for one auxiliary-network input row.
 
     cpn: P(choice | θ) from the base model at max_t = AUX_MAX_T. Reported
-    twice — ``truth`` counts every trial, ``truth_rt_lt_max_t`` only those
-    that finished inside the window, because ssms does not censor the base
+    twice — ``truth`` counts every trial, ``truth_rt_lt_max_t`` is the joint
+    P(choice, rt < max_t | θ) over all trials (not conditional on rt <
+    max_t), because ssms does not censor the base
     model at max_t while a derived CPN integrates only up to it (see the
     module docstring). opn: P(rt > deadline | θ) as the omission rate of the
     ``_deadline`` variant, read from ``rts`` — ssms marks an omission there
@@ -1122,8 +1235,8 @@ def resolve_aux_category(network_type: str, aux_category: str | None) -> str | N
     """What the network's output is the probability of, validated.
 
     The vocabulary is the one shared with LANfactory's derived corpora and the
-    publisher's provenance: ``choice`` for a cpn, ``omission`` for an opn,
-    ``nogo`` for a gonogo. None for a LAN. Every auxiliary type has exactly
+    publisher's provenance: ``choice`` for a cpn, ``omission`` for an opn.
+    None for a LAN. Every auxiliary type has exactly
     one possibility and defaults to it; an explicit value must match, so a
     record that says the net is something else is rejected here rather than
     written into the report.
@@ -1177,7 +1290,7 @@ def validate_network(
     if model_name.endswith("_deadline"):
         raise ValueError(
             f"--model-name must be the base model, not {model_name!r}: the "
-            "_deadline variant is derived internally for opn/gonogo."
+            "_deadline variant is derived internally for an opn."
         )
     aux_category = resolve_aux_category(network_type, aux_category)
 
@@ -1238,14 +1351,6 @@ def validate_network(
                     frac_gt_0_10_max=mass_survey_frac_gt_0_10_max,
                 )
             )
-        elif network_type == "gonogo":
-            # Nothing in HSSM consumes a gonogo network, and without a consumer
-            # there is no truth to hold it to either. Reported, not silent, so
-            # the publisher can see exactly what was not checked.
-            gates += [
-                _result(g, True, skipped=True, reason=GONOGO_SKIP_REASON)
-                for g in ("hssm_missing_load", "accuracy")
-            ]
         else:
             gates.append(
                 _result("hssm_missing_load", True, skipped=True, reason="--skip-hssm")
@@ -1293,13 +1398,13 @@ def main(
         ...,
         help="ssm-simulators BASE model name, e.g. ddm (never a _deadline variant).",
     ),
-    network_type: str = typer.Option("lan", help="lan | cpn | opn | gonogo."),
+    network_type: str = typer.Option("lan", help="lan | cpn | opn."),
     aux_category: str | None = typer.Option(
         None,
         help=(
             "What an auxiliary network's output is the probability of: choice "
-            "for a cpn, omission for an opn, nogo for a gonogo. Each type "
-            "defaults to its value; an explicit one must match it."
+            "for a cpn, omission for an opn. Each type defaults to its value; "
+            "an explicit one must match it."
         ),
     ),
     lan_onnx: Path | None = typer.Option(

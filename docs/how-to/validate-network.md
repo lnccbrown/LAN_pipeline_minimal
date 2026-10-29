@@ -30,13 +30,28 @@ when a gate fails.
 | --- | --- |
 | G1 `structure` | ONNX loads; all input dimensions are concrete; there is one input, one scalar output, and the input width matches the model |
 | G2 `parity` | The exported ONNX matches the JAX trainer state when the required siblings exist |
-| G3 `hssm_load` | HSSM accepts the likelihood and obtains a finite initial log probability |
+| G3 `hssm_load` | HSSM accepts the likelihood and obtains a finite initial log probability on 100 simulated trials |
 | G4 `density` | Integrated mass is near one and Hellinger error is acceptable relative to a measured simulator sampling floor, at five draws from the 10 %-shrunk box |
 | G5 `mass_survey` | Total mass is near one across the *whole* training box: 20 000 draws on LANfactory's onset-refined grid, judged on the tails of `|total − 1|` (advisory; see below) |
 
+G3 and G4 draw parameters from the training box shrunk by 10% on each side.
+HSSM rejects any response time at or below zero, and models whose box allows
+`st` larger than `t` (`ddm_st`, and `ddm_normal_st` with its untruncated
+non-decision-time kernel) simulate such trials near the edge. G3 therefore
+redraws its parameters, up to eight times, until every simulated response time
+is positive. It never drops trials. The report records the draw it used
+(`theta`, `seed`, `attempts`) and every rejected draw (`rejected_draws`), and
+if the budget runs out the gate skips with a `reason` that starts
+`no usable dataset` and names the box. A skip, not a failure, because the
+network was never loaded and so nothing was learned about it. The rejected
+draws stay in the report, and because G3 is required, the publisher refuses a
+report whose G3 skipped: an exhausted G3 blocks publication just as a failed
+one does.
+
 G2 legitimately skips for Torch artifacts and for a bare ONNX without the JAX
 state/config pair. G1, G3, and G4 are required for publication; G5 is
-advisory and skips itself under the locked LANfactory. A skipped gate
+advisory and skips itself in an environment whose LANfactory predates
+`lanfactory.derive`. A skipped gate
 may carry `passed: true` in the detailed report to mean it did not itself fail;
 inspect the compact `gates` states rather than treating that as evidence the
 check ran.
@@ -59,15 +74,19 @@ G5 runs LANfactory's `lanfactory.derive.survey` — uniform θ over the full box
 total mass on the *onset-refined* grid — and judges the tails of the
 `|total − 1|` distribution. The grid matters: a uniform 1000-point grid carries
 15–25 % quadrature error at a < 0.5, which the survey would otherwise blame on
-the network. The whole survey dict (per-parameter bins, the worst cell, the
-shrunk-box subset, any leak of mass below the onset) is recorded in the gate
-so a deviation can be located, together with the `seconds` it took.
+the network. The whole survey dict (per-parameter bins and any leak of mass
+below the onset) is recorded in the gate so a deviation can be located,
+together with the `seconds` it took.
 
 | Verdict | Rule | Effect |
 | --- | --- | --- |
-| fail | `total.p99_abs_dev > 0.10` or `total.frac_gt_0.10 > 0.02` | The gate fails and the report fails |
+| fail | `total.mean` is not finite, `total.p99_abs_dev > 0.10`, or `total.frac_gt_0.10 > 0.02` | The gate fails and the report fails |
 | warn | `total.p99_abs_dev > 0.05` or `total.frac_gt_0.05 > 0.01` | The gate passes with a `warning` detail |
-| pass | neither | — |
+| pass | none of these | — |
+
+A non-finite mean fails on its own: the survey counts a NaN total as an
+infinite deviation, but if under 1 % of the box is NaN, the p99 and the 0.10
+fraction can both stay clean.
 
 The published `ddm` LAN, which is in production and demonstrably usable, lands
 in *warn*: the warn line sits under its p99 and the fail line above it.
@@ -80,15 +99,13 @@ to be frozen after the four modern LANs (`ddm_sdv`, `gamma_drift`,
 them without a code change; record a changed threshold in the report, and do
 not loosen one to pass a candidate.
 
-!!! note "G5 skips itself until the lock moves"
+!!! note "G5 needs `lanfactory.derive`"
 
-    The survey lives in LANfactory's `derive` package, which the locked
-    LANfactory (git `main`) does not have yet. Until the lock is refreshed
-    after that work merges, G5 is reported as `skipped` with the reason
-    `lanfactory.derive not available; refresh the lock after LANfactory L1
-    merges`, and activates by itself once `lanfactory.derive` imports. The
-    publisher does not require G5, so the skip never blocks a publish; a
-    failing G5, once it runs, refuses one like any other failed gate.
+    The survey lives in LANfactory's `derive` package, which the lock pins. An
+    environment synced to an older LANfactory reports G5 as `skipped` with the
+    reason `lanfactory.derive not available; this environment's LANfactory
+    predates it`. The publisher does not require G5, so the skip never blocks
+    a publish; a failing G5 refuses one like any other failed gate.
     `--skip-mass-survey` shortens a diagnostic run the way `--skip-density`
     does.
 
@@ -108,7 +125,7 @@ If the density comparison needs a reviewed tolerance change, pass
 `--hellinger-ratio-max` and preserve the resulting threshold in the report.
 Do not loosen it merely to turn one candidate green.
 
-## Validate an auxiliary network (cpn, opn, gonogo)
+## Validate an auxiliary network (cpn, opn)
 
 Auxiliary networks are not densities, so the density gate does not apply to
 them. They share G1 and G2 with a LAN and then run their own pair:
@@ -126,7 +143,7 @@ command rejects a `_deadline` name outright.
 
 | Gate | Evidence |
 | --- | --- |
-| G1 `structure` | As for a LAN, with the width contract `n_params + 1`: `[θ…, choice]` for a cpn, `[θ…, deadline]` for an opn or gonogo |
+| G1 `structure` | As for a LAN, with the width contract `n_params + 1`: `[θ…, choice]` for a cpn, `[θ…, deadline]` for an opn |
 | G2 `parity` | As for a LAN |
 | A3 `hssm_missing_load` | HSSM accepts the network as `loglik_missing_data` next to the base LAN and obtains a finite initial log probability on simulated data with missing rows, at `p_outlier = 0` and at HSSM's default lapse |
 | A4 `accuracy` | The network's probability tracks a Monte-Carlo truth at 20 parameter draws stratified over the full box: `P(choice | θ)` for a cpn, `P(rt > deadline | θ)` for an opn |
@@ -148,7 +165,7 @@ Without either, `total_mass` is `null`. The pass rule and its thresholds are
 unchanged.
 
 `--aux-category` names what the network's output is the probability of:
-`choice` for a cpn, `omission` for an opn, `nogo` for a gonogo. That is the
+`choice` for a cpn, `omission` for an opn. That is the
 vocabulary LANfactory's derived corpora and the publisher's provenance carry,
 and each type has exactly one value, so the flag defaults to it; an explicit
 value that does not match (say `deadline` for an opn) is rejected naming the
@@ -166,14 +183,11 @@ choice` for a cpn itself and forwarding `--lan-onnx`; see
 for what the training run must carry. A gonogo can be validated here but is
 never published.
 
-Two skips are built in and reported rather than silent:
-
-- A gonogo network has no HSSM consumer, so A3 and A4 are `skipped` with the
-  reason `HSSM has no gonogo consumer`. Only G1 and G2 judge it.
-- The cpn A3 gate needs an HSSM that passes `response` to the network on
-  missing rows (HSSM ≥ 0.6.0). Under an older HSSM it is `skipped` with the
-  reason `HSSM < 0.6.0 ignores response on missing rows`, and activates by
-  itself once the locked HSSM moves.
+One skip is built in and reported rather than silent: the cpn A3 gate needs
+an HSSM that passes `response` to the network on missing rows (HSSM ≥ 0.6.0).
+Under an older HSSM it is `skipped` with the reason `HSSM < 0.6.0 ignores
+response on missing rows`, and activates by itself once the locked HSSM
+moves.
 
 `--skip-accuracy` shortens a diagnostic run the way `--skip-density` does for a
 LAN. The A4 thresholds (`--accuracy-mean-abs-max`, default `0.01`, and
@@ -187,7 +201,9 @@ changed threshold in the report; do not loosen it to pass one candidate.
     not terminated by then comes back at `rt ≈ max_t + t` with its
     sign-implied choice, while a derived cpn integrates only up to 20 s. A4
     judges the all-trials proportion and records the windowed one as
-    `truth_rt_lt_max_t` on every draw, so the two can be compared where a
+    `truth_rt_lt_max_t` on every draw: the share of all trials that gave the
+    choice and finished inside the window (a joint probability, not
+    conditional on finishing), so the two can be compared where a
     visible share of trials outlasts the window.
 
 ## Inspect the result visually
