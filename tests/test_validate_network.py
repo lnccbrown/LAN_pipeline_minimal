@@ -394,14 +394,14 @@ class TestAuxiliaryWiring:
     def test_cpn_missing_load_waits_for_an_hssm_that_passes_response(
         self, tmp_path, monkeypatch
     ):
-        # Under the locked hssm 0.4.0 HSSM calls a CPN with the parameters
+        # Under the locked hssm 0.5.0 HSSM calls a CPN with the parameters
         # only, so a contract-conformant width n_params + 1 CPN cannot load.
         # The gate must say so as a skip. Only the below-0.6.0 direction is
         # patched here; the supported direction drives the real gate against
         # a stubbed hssm in TestHssmMissingLoadGate.
         path = make_onnx(tmp_path / "cpn.onnx", (1, 5))
         monkeypatch.setattr(
-            vn, "_hssm_version_supports_cpn_response", lambda: (False, "0.4.0")
+            vn, "_hssm_version_supports_cpn_response", lambda: (False, "0.5.0")
         )
         report = validate_network(
             path,
@@ -413,7 +413,7 @@ class TestAuxiliaryWiring:
         gate = {g["gate"]: g for g in report["gates"]}["hssm_missing_load"]
         assert gate["skipped"] and gate["passed"]
         assert gate["reason"] == "HSSM < 0.6.0 ignores response on missing rows"
-        assert gate["hssm_version"] == "0.4.0"
+        assert gate["hssm_version"] == "0.5.0"
 
     @pytest.mark.parametrize(
         "installed, supported",
@@ -423,7 +423,7 @@ class TestAuxiliaryWiring:
         self, monkeypatch, installed, supported
     ):
         # Patched rather than read from the environment: CI installs without
-        # the validate group, and a real 0.4.0 could not see an off-by-one at
+        # the validate group, and a real 0.5.0 could not see an off-by-one at
         # the boundary anyway.
         monkeypatch.setattr(importlib.metadata, "version", lambda name: installed)
         assert vn._hssm_version_supports_cpn_response() == (supported, installed)
