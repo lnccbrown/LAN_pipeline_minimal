@@ -63,17 +63,17 @@ a simulation-trained auxiliary network has no source LAN for this chain to
 point at; `aux_category` is `choice` for a cpn and `omission` for an opn.
 
 The training run also carries the derived corpus's tail-policy record as
-tags, logged by LANfactory from the corpus manifest. The labels of a derived
-corpus are renormalised by the source LAN's own total on the integration
-grid, and the record says how much that renormalisation had to do and where
-it was not trusted:
+tags, logged by LANfactory from the corpus manifest; each is one number for
+the whole corpus, over its θ. The labels of a derived corpus are renormalised
+by the source LAN's own total on the integration grid, and the record says how
+much that renormalisation had to do and where it was not trusted:
 
 | Tag | What it records |
 | --- | --- |
-| `derive_total_mass_{mean,min,max}` | The per-file total mass the LAN put on the grid, before renormalisation -- how far from normalised the source LAN was |
+| `derive_total_mass_{mean,min,max}` | The total mass the LAN put on the grid at each θ, before renormalisation, summarised over the corpus -- how far from normalised the source LAN was |
 | `derive_fallback_frac` | The share of the parameter box labelled by simulation instead, because the LAN's total was outside (0.98, 1.03) |
-| `derive_sim_past_max_t_max` | The most simulated mass any file placed past `max_t` |
-| `derive_leak_below_onset_p99` | The p99, over files, of the mass the LAN leaked below the onset (non-decision time) |
+| `derive_sim_past_max_t_max` | Over the θ labelled by simulation, the largest share of trials past `max_t`; `None` when nothing fell back |
+| `derive_leak_below_onset_p99` | The p99, over θ, of the mass the LAN leaked below the onset (non-decision time) |
 
 The numbers are kept so that inheritance can be read rather than hidden: a
 LAN whose total drifts at the box edge shows up as a fallback fraction on

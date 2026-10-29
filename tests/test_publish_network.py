@@ -244,8 +244,8 @@ class TestAuxProvenance:
     @pytest.mark.parametrize("absent", ["", "None", "null"])
     def test_a_legacy_lan_may_have_no_run_uuid(self, absent):
         # The 2023 Hub artifacts predate run uuids; LANfactory logs the key
-        # as "" for a corpus derived from one. The key must exist, its value
-        # may be empty, and it comes back normalised to "".
+        # as None ("None" in MLflow) for a corpus derived from one. The key
+        # must exist, its value may be empty, and it comes back as "".
         provenance = aux_provenance(
             {**PROVENANCE, "source_lan_run_uuid": absent}, "cpn"
         )
@@ -312,14 +312,14 @@ class TestAuxProvenance:
         assert not set(record) & set(older)
 
     def test_a_tag_stored_as_none_is_absent_not_forwarded(self):
-        # LANfactory stringifies every derive_stats entry, and the survey
-        # reports leak_below_onset as None for a model with no onset param,
-        # so the tag arrives as the string "None". That is an absence, not a
-        # value to put on the publish run.
+        # LANfactory stringifies every derive_stats entry, and
+        # derive_sim_past_max_t_max is None when nothing fell back to
+        # simulation, so the tag arrives as the string "None". That is an
+        # absence, not a value to put on the publish run.
         tags = {
             "derive_total_mass_mean": "0.998",
             "derive_fallback_frac": "",
-            "derive_leak_below_onset_p99": "None",
+            "derive_sim_past_max_t_max": "None",
             "data_origin": "null",
         }
         assert forwarded_tags(tags) == {"derive_total_mass_mean": "0.998"}

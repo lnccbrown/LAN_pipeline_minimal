@@ -105,7 +105,8 @@ AUX_PROVENANCE_KEYS = (
 # Keys that must exist on the run but may be empty: the legacy LANs on the
 # Hub (the 2023 artifacts, bare ``{model}.onnx``) predate training-run uuids,
 # so a network derived from one has a sha256 and a Hub commit but no
-# run_uuid. LANfactory logs the key as "" in that case; the card says so.
+# run_uuid. LANfactory logs the key as None in that case, which MLflow stores
+# as "None" (see _ABSENT_PARAM_VALUES); the card says so.
 AUX_PROVENANCE_MAY_BE_EMPTY = ("source_lan_run_uuid",)
 # The contract's vocabulary, and the subset this module can publish. Only a
 # derived-from-lan run has the source_lan_* / integration_* keys the card is
@@ -117,12 +118,12 @@ PUBLISHABLE_DERIVATION_METHODS = ("derived-from-lan",)
 # stringifies it), plus the spellings a hand-relabelled run might use.
 _ABSENT_PARAM_VALUES = frozenset({"", "None", "null"})
 # Tags on the training run that travel to the publish run when present: the
-# tail-policy record of the derived corpus — the per-file total mass the
-# source LAN put on the integration grid before its labels were renormalised
-# by that total, the share of the parameter box that fell back to simulation
-# because the total was outside (0.98, 1.03), the most simulated mass any file
-# placed past max_t, the p99 of the mass leaking below the onset — and where
-# the corpus came from. LANfactory logs these on the training run from the
+# tail-policy record of the derived corpus, corpus-wide over its θ — the
+# total mass the source LAN put on the integration grid before its labels
+# were renormalised by that total (mean / min / max), the share of θ that fell
+# back to simulation because the total was outside (0.98, 1.03), the largest
+# share of simulated trials past max_t among those fallback θ, the p99 of the
+# mass leaking below the onset — and where the corpus came from. LANfactory logs these on the training run from the
 # corpus manifest; they are forwarded when present and never invented.
 AUX_FORWARDED_TAGS = (
     "derive_total_mass_mean",
@@ -506,9 +507,9 @@ def forwarded_tags(tags: Mapping[str, str]) -> dict[str, str]:
     """The training-run tags that travel to the publish run, when present.
 
     A tag MLflow stored as ``"None"`` or ``""`` is absent, not a value:
-    LANfactory stringifies every derive_stats entry, and the survey reports
-    ``leak_below_onset`` as ``None`` when the model has no onset parameter, so
-    the tag arrives as the string ``"None"``. Forwarding it verbatim would put
+    LANfactory stringifies every derive_stats entry, and
+    ``derive_sim_past_max_t_max`` is ``None`` when no θ in the corpus fell
+    back to simulation, so that tag arrives as the string ``"None"``. Forwarding it verbatim would put
     a ``"None"`` tag on the publish run and crash the card at ``float()``.
     """
     return {
@@ -650,8 +651,8 @@ def write_aux_model_card(
     if all(masses.values()):
         tail_record = [
             (
-                "the derived corpus's per-file total mass before renormalisation "
-                "is recorded on the training and publish runs as "
+                "the derived corpus's total mass before renormalisation, over "
+                "its θ, is recorded on the training and publish runs as "
                 "derive_total_mass_{mean,min,max} = "
                 f"{_card_number(masses['mean'])} / {_card_number(masses['min'])} / "
                 f"{_card_number(masses['max'])}."
@@ -661,8 +662,8 @@ def write_aux_model_card(
         tail_record = [
             (
                 "the training run carries no derive_total_mass_{mean,min,max} "
-                "tags, so the derived corpus's per-file total mass is not "
-                "recorded here."
+                "tags, so the derived corpus's total mass is not recorded "
+                "here."
             )
         ]
     fallback = tags.get("derive_fallback_frac")
@@ -680,14 +681,15 @@ def write_aux_model_card(
     sim_past = tags.get("derive_sim_past_max_t_max")
     if sim_past is not None:
         tail_record.append(
-            "The most simulated mass any file placed past max_t was "
-            f"{_card_number(sim_past)} (derive_sim_past_max_t_max)."
+            "Of the θ labelled by simulation, the largest share of trials "
+            f"past max_t was {_card_number(sim_past)} "
+            "(derive_sim_past_max_t_max)."
         )
     leak = tags.get("derive_leak_below_onset_p99")
     if leak is not None:
         tail_record.append(
-            f"The p99 of the mass leaking below the onset is {_card_number(leak)} "
-            "(derive_leak_below_onset_p99)."
+            "The p99, over θ, of the mass leaking below the onset is "
+            f"{_card_number(leak)} (derive_leak_below_onset_p99)."
         )
     else:
         tail_record.append(
