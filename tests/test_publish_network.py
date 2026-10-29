@@ -6,26 +6,34 @@ publish are pure functions and belong here.
 """
 
 import json
+from typing import ClassVar
 
 import click
 import pytest
 
 from publish.publish_network import (
+    AUX_PROVENANCE_KEYS,
     PRODUCTION_REPOS,
+    REQUIRED_GATES,
+    REQUIRED_GATES_BY_NETWORK_TYPE,
     PublishError,
+    aux_provenance,
+    forwarded_tags,
     gate_verdict,
     stage_artifacts,
     upload_include_patterns,
+    write_aux_model_card,
 )
 
 
-def report(**gates):
+def report(network_type="lan", **gates):
     """A validation report with the given gates; value is (passed, skipped)."""
     return {
+        "network_type": network_type,
         "gates": [
             {"gate": name, "passed": passed, **({"skipped": True} if skipped else {})}
             for name, (passed, skipped) in gates.items()
-        ]
+        ],
     }
 
 
@@ -36,6 +44,62 @@ ALL_RAN = {
     "density": (True, False),
     "mass_survey": (True, False),
 }
+
+AUX_ALL_RAN = {
+    "structure": (True, False),
+    "parity": (True, True),
+    "hssm_missing_load": (True, False),
+    "accuracy": (True, False),
+}
+
+# What LANfactory logs on a training run started from a derive-aux corpus.
+PROVENANCE = {
+    "derivation_method": "derived-from-lan",
+    "aux_category": "choice",
+    "source_lan_run_uuid": "f" * 32,
+    "source_lan_sha256": "a1b2" * 16,
+    "source_lan_hf_commit": "c" * 40,
+    "integration_grid": "1000",
+    "integration_max_t": "20.0",
+}
+
+
+def aux_report(network_type="cpn", model="ddm_sdv"):
+    """A passing auxiliary report with the numbers the card and metrics read."""
+    return {
+        "schema_version": 1,
+        "onnx": f"/staged/{model}_{network_type}.onnx",
+        "model": model,
+        "network_type": network_type,
+        "aux_category": "choice" if network_type == "cpn" else "omission",
+        "passed": True,
+        "gates": [
+            {"gate": "structure", "passed": True, "input_width": 6},
+            {"gate": "parity", "passed": True, "skipped": True, "reason": "torch"},
+            {
+                "gate": "hssm_missing_load",
+                "passed": True,
+                "initial_logp_by_p_outlier": {"0.0": -123.4, "0.05": -120.1},
+                "n_trials": 100,
+                "n_missing": 20,
+                "lan": f"{model} (by name)",
+            },
+            {
+                "gate": "accuracy",
+                "passed": True,
+                "mean_abs_error": 0.0012,
+                "max_abs_error": 0.0031,
+                "mean_abs_max": 0.01,
+                "max_abs_max": 0.03,
+                "n_param_draws": 20,
+                "n_sim": 100_000,
+                "draws": [
+                    {"theta": [1.0], "choice": 1.0, "truth_mc_se": 0.0016},
+                    {"theta": [1.0], "choice": -1.0, "truth_mc_se": 0.0009},
+                ],
+            },
+        ],
+    }
 
 
 class TestGateVerdict:
@@ -103,6 +167,340 @@ class TestGateVerdict:
         ok, reason = gate_verdict(r)
         assert not ok
         assert "worst_ratio 13.4" in reason
+
+    def test_the_lan_gate_set_is_unchanged(self):
+        # The alias other modules and the pinned tests import.
+        assert REQUIRED_GATES == ("structure", "hssm_load", "density")
+        assert REQUIRED_GATES_BY_NETWORK_TYPE["lan"] is REQUIRED_GATES
+
+    def test_a_report_without_network_type_is_refused(self):
+        # A pre-P1 report cannot say which gate set judged it; assuming "lan"
+        # would let an auxiliary report from an old validator walk through.
+        r = report(**ALL_RAN)
+        del r["network_type"]
+        ok, reason = gate_verdict(r)
+        assert not ok
+        assert "no network_type" in reason and "re-run the validator" in reason
+
+    @pytest.mark.parametrize("network_type", ["cpn", "opn"])
+    def test_an_auxiliary_report_needs_the_auxiliary_gates(self, network_type):
+        ok, reason = gate_verdict(report(network_type, **AUX_ALL_RAN))
+        assert ok, reason
+
+        # The LAN gates prove nothing about a graph with no rt input.
+        ok, reason = gate_verdict(report(network_type, **ALL_RAN))
+        assert not ok
+        assert "hssm_missing_load" in reason and "accuracy" in reason
+
+    @pytest.mark.parametrize("network_type", ["cpn", "opn"])
+    @pytest.mark.parametrize("gate", ["structure", "hssm_missing_load", "accuracy"])
+    def test_a_skipped_required_gate_refuses_an_auxiliary_network(
+        self, network_type, gate
+    ):
+        # Every required gate, not just the one with a built-in skip: the cpn
+        # missing-load gate skips itself under HSSM < 0.6.0, and --skip-accuracy
+        # skips accuracy on purpose. Either is a network nothing has checked.
+        skipped = {**AUX_ALL_RAN, gate: (True, True)}
+        assert all(g["passed"] for g in report(network_type, **skipped)["gates"])
+
+        ok, reason = gate_verdict(report(network_type, **skipped))
+        assert not ok
+        assert gate in reason and "not actually checked" in reason
+
+    @pytest.mark.parametrize("network_type", ["mlp", "gonogo"])
+    def test_an_unknown_network_type_is_refused(self, network_type):
+        # Even one where every gate ran: a type with no gate set has nothing
+        # to be cleared by (gonogo was dropped: HSSM has no consumer).
+        ok, reason = gate_verdict(report(network_type, **AUX_ALL_RAN))
+        assert not ok
+        assert network_type in reason
+
+
+class TestAuxProvenance:
+    def test_a_lan_has_no_provenance(self):
+        assert aux_provenance(PROVENANCE, "lan") == {}
+
+    def test_exactly_the_required_keys_are_read(self):
+        params = {**PROVENANCE, "model": "ddm_sdv", "n_epochs": "10"}
+        assert aux_provenance(params, "cpn") == PROVENANCE
+        assert set(PROVENANCE) == set(AUX_PROVENANCE_KEYS)
+
+    @pytest.mark.parametrize("missing", AUX_PROVENANCE_KEYS)
+    def test_each_missing_required_key_is_named(self, missing):
+        params = {k: v for k, v in PROVENANCE.items() if k != missing}
+        with pytest.raises(PublishError, match=missing) as excinfo:
+            aux_provenance(params, "cpn")
+        # A run started from a simulated corpus is the common way to get
+        # here, and the message must say what to do about it.
+        assert "simulated corpus" in str(excinfo.value)
+
+    @pytest.mark.parametrize("absent", ["", "None", "null", " "])
+    def test_an_empty_or_none_value_counts_as_missing(self, absent):
+        # MLflow stores a param logged as None as the string "None": a corpus
+        # derived from a local ONNX with no Hub revision would otherwise pass
+        # and publish with source_lan_hf_commit="None" on the run and card.
+        with pytest.raises(PublishError, match="source_lan_hf_commit"):
+            aux_provenance({**PROVENANCE, "source_lan_hf_commit": absent}, "cpn")
+
+    @pytest.mark.parametrize("absent", ["", "None", "null"])
+    def test_a_legacy_lan_may_have_no_run_uuid(self, absent):
+        # The 2023 Hub artifacts predate run uuids; LANfactory logs the key
+        # as None ("None" in MLflow) for a corpus derived from one. The key
+        # must exist, its value may be empty, and it comes back as "".
+        provenance = aux_provenance(
+            {**PROVENANCE, "source_lan_run_uuid": absent}, "cpn"
+        )
+        assert provenance["source_lan_run_uuid"] == ""
+        with pytest.raises(PublishError, match="source_lan_run_uuid"):
+            aux_provenance(
+                {k: v for k, v in PROVENANCE.items() if k != "source_lan_run_uuid"},
+                "cpn",
+            )
+
+    def test_trained_from_simulation_is_recognised_but_not_publishable(self):
+        # The contract allows the value, but no writer emits it and the card
+        # would assert a LAN lineage the network does not have.
+        with pytest.raises(PublishError, match="trained-from-simulation") as excinfo:
+            aux_provenance(
+                {**PROVENANCE, "derivation_method": "trained-from-simulation"},
+                "cpn",
+            )
+        assert "no publish path" in str(excinfo.value)
+        assert "derived-from-lan" in str(excinfo.value)
+
+    def test_a_mis_categorised_network_is_refused(self):
+        # A cpn is published as ddm_sdv_cpn.onnx and HSSM feeds it a choice;
+        # a run that says its output is an omission probability is a
+        # different network wearing that filename.
+        with pytest.raises(PublishError, match="omission"):
+            aux_provenance({**PROVENANCE, "aux_category": "omission"}, "cpn")
+        assert aux_provenance({**PROVENANCE, "aux_category": "omission"}, "opn")
+
+    def test_an_unknown_derivation_method_is_refused(self):
+        with pytest.raises(PublishError, match="derivation_method"):
+            aux_provenance({**PROVENANCE, "derivation_method": "magic"}, "cpn")
+
+    def test_only_the_known_training_tags_are_forwarded(self):
+        tags = {
+            "derive_total_mass_mean": "0.998",
+            "derive_total_mass_max": "1.0",
+            "data_origin": "derived",
+            "run_uuid": "f" * 32,
+            "mlflow.user": "someone",
+        }
+        assert forwarded_tags(tags) == {
+            "derive_total_mass_mean": "0.998",
+            "derive_total_mass_max": "1.0",
+            "data_origin": "derived",
+        }
+
+    def test_the_tail_policy_record_travels_when_present_and_only_then(self):
+        # LANfactory L2/L3 log the corpus manifest's fallback fraction, the
+        # simulated mass past max_t and the onset leak beside the mass stats;
+        # an older training run has none of them and none is invented.
+        record = {
+            "derive_fallback_frac": "0.012",
+            "derive_sim_past_max_t_max": "0.004",
+            "derive_leak_below_onset_p99": "0.0007",
+        }
+        forwarded = forwarded_tags({**record, "run_uuid": "f" * 32})
+        assert forwarded == record
+
+        older = forwarded_tags(
+            {"derive_total_mass_mean": "0.998", "run_uuid": "f" * 32}
+        )
+        assert older == {"derive_total_mass_mean": "0.998"}
+        assert not set(record) & set(older)
+
+    def test_a_tag_stored_as_none_is_absent_not_forwarded(self):
+        # LANfactory stringifies every derive_stats entry, and
+        # derive_sim_past_max_t_max is None when nothing fell back to
+        # simulation, so the tag arrives as the string "None". That is an
+        # absence, not a value to put on the publish run.
+        tags = {
+            "derive_total_mass_mean": "0.998",
+            "derive_fallback_frac": "",
+            "derive_sim_past_max_t_max": "None",
+            "data_origin": "null",
+        }
+        assert forwarded_tags(tags) == {"derive_total_mass_mean": "0.998"}
+
+
+class TestAuxModelCard:
+    """The card generated when the operator staged none."""
+
+    def load(self, tmp_path, network_type, training_tags=None):
+        import yaml
+
+        provenance = {
+            **PROVENANCE,
+            "aux_category": "choice" if network_type == "cpn" else "omission",
+        }
+        path = write_aux_model_card(
+            tmp_path,
+            "ddm_sdv",
+            network_type,
+            provenance,
+            aux_report(network_type),
+            training_tags,
+        )
+        assert path == tmp_path / "model_card.yaml"
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    def test_the_cpn_card_names_its_source_and_contract(self, tmp_path):
+        card = self.load(tmp_path, "cpn")
+        # Multi-line strings as `|` blocks, pinned on the raw text: safe_load
+        # erases the scalar style, and a description folded into a quoted
+        # scalar with doubled apostrophes is not something a reviewer reads.
+        raw = (tmp_path / "model_card.yaml").read_text(encoding="utf-8")
+        assert "description: |" in raw and "usage_example: |" in raw
+        assert "''" not in raw
+        assert card["title"] == "ddm_sdv (CPN)"
+        assert card["license"] == "bsd-2-clause"
+        assert card["library_name"] == "onnx"
+        assert "cpn" in card["tags"] and "derived-from-lan" in card["tags"]
+        description = card["description"]
+        assert "a1b2" * 16 in description
+        assert "f" * 32 in description and "c" * 40 in description
+        assert "[θ in list_params order, choice]" in description
+        assert "1000-point grid" in description and "max_t = 20.0" in description
+        assert "log P(choice | θ)" in description
+        # The gate numbers and the noise they are judged against.
+        assert "0.0012" in description and "0.0031" in description
+        assert "0.0016" in description
+        assert "renormalised by the source LAN's own total" in description
+        assert 'model="ddm_sdv"' in card["usage_example"]
+        assert "missing_data=True" in card["usage_example"]
+        assert "-999.0" in card["usage_example"]
+        assert "deadline=True" not in card["usage_example"]
+        # Left to lanfactory, which fills them from the pickled configs.
+        assert "architecture" not in card and "training" not in card
+
+    def test_the_opn_card_names_the_deadline_contract(self, tmp_path):
+        card = self.load(tmp_path, "opn")
+        assert card["title"] == "ddm_sdv (OPN)"
+        assert "[θ in list_params order, deadline]" in card["description"]
+        assert "log P(rt > deadline | θ)" in card["description"]
+        assert "deadline=True" in card["usage_example"]
+        assert "missing_data=True" in card["usage_example"]
+
+    @pytest.mark.parametrize("network_type", ["cpn", "opn"])
+    def test_the_card_renders_through_lanfactory(self, tmp_path, network_type):
+        # The loader and renderer that run at upload time, on the file they
+        # will read: a card that crashes there crashes halfway into a commit.
+        from lanfactory.hf.model_card import generate_readme, load_model_card_yaml
+
+        self.load(tmp_path, network_type)
+        readme = generate_readme(load_model_card_yaml(tmp_path), "ddm_sdv")
+        assert f"# ddm_sdv ({network_type.upper()})" in readme
+        assert "missing_data=True" in readme
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ValueError("'architecture' must be a mapping"),
+            KeyError("license"),
+            TypeError("bad tag"),
+        ],
+        ids=lambda e: type(e).__name__,
+    )
+    def test_a_card_lanfactory_would_reject_is_refused_and_removed(
+        self, tmp_path, monkeypatch, error
+    ):
+        # The guard catches whatever the loader raises -- the breadth is the
+        # point, since any of these would surface halfway into a Hub commit.
+        from lanfactory.hf import model_card
+
+        def reject(folder):
+            raise error
+
+        monkeypatch.setattr(model_card, "load_model_card_yaml", reject)
+        with pytest.raises(PublishError, match="would fail upload"):
+            write_aux_model_card(tmp_path, "ddm_sdv", "cpn", PROVENANCE, aux_report())
+        assert not (tmp_path / "model_card.yaml").exists()
+
+    def test_the_tail_policy_quotes_the_masses_only_when_recorded(self, tmp_path):
+        # forwarded_tags only forwards derive_total_mass_* when present, so a
+        # card claiming they are "recorded on the training and publish runs"
+        # would be false for a run without them.
+        without = self.load(tmp_path, "cpn")["description"]
+        assert "renormalised by the source LAN's own total" in without
+        assert "carries no derive_total_mass" in without
+
+        tags = {
+            "derive_total_mass_mean": "0.998",
+            "derive_total_mass_min": "0.990",
+            "derive_total_mass_max": "1.0",
+        }
+        with_tags = self.load(tmp_path, "cpn", tags)["description"]
+        assert "renormalised by the source LAN's own total" in with_tags
+        assert "0.998 / 0.99 / 1" in with_tags
+        assert "carries no derive_total_mass" not in with_tags
+
+        # One tag alone is not a record; the statement stays honest.
+        partial = self.load(tmp_path, "cpn", {"derive_total_mass_mean": "0.998"})
+        assert "carries no derive_total_mass" in partial["description"]
+
+    def test_the_tail_policy_reports_the_fallback_and_the_leak_when_recorded(
+        self, tmp_path
+    ):
+        # The renormalisation is only trusted where the LAN's total sat in
+        # (0.98, 1.03); the card says how much of the box fell back to
+        # simulation and how much mass leaked below the onset, or that the
+        # training run never recorded either.
+        without = self.load(tmp_path, "cpn")["description"]
+        assert "carries no derive_fallback_frac" in without
+        assert "carries no derive_leak_below_onset_p99" in without
+        assert "labelled by simulation because" not in without
+        assert "derive_sim_past_max_t_max" not in without
+
+        tags = {
+            "derive_fallback_frac": "0.012",
+            "derive_sim_past_max_t_max": "0.004",
+            "derive_leak_below_onset_p99": "0.0007",
+        }
+        with_tags = self.load(tmp_path, "cpn", tags)["description"]
+        assert (
+            "1.2 % of the parameter box was labelled by simulation because the "
+            "LAN's total was outside (0.98, 1.03)" in with_tags
+        )
+        assert "leaking below the onset is 0.0007" in with_tags
+        assert "past max_t was 0.004 (derive_sim_past_max_t_max)" in with_tags
+        assert "carries no derive_fallback_frac" not in with_tags
+        assert "carries no derive_leak_below_onset_p99" not in with_tags
+
+        # Each figure stands on its own: a run that recorded only the fallback
+        # states the leak's absence, not a made-up value.
+        only_fallback = self.load(tmp_path, "opn", {"derive_fallback_frac": "0"})
+        description = only_fallback["description"]
+        assert "0 % of the parameter box was labelled by simulation" in description
+        assert "carries no derive_leak_below_onset_p99" in description
+
+    def test_a_tag_stored_as_none_is_stated_absent_not_crashed_on(self, tmp_path):
+        # forwarded_tags drops these before the card sees them, but a caller
+        # handing the card raw run tags must get the absence sentence, not a
+        # ValueError from float("None") halfway through staging.
+        stringified = {
+            "derive_total_mass_mean": "None",
+            "derive_total_mass_min": "None",
+            "derive_total_mass_max": "None",
+            "derive_fallback_frac": "",
+            "derive_sim_past_max_t_max": "None",
+            "derive_leak_below_onset_p99": "None",
+        }
+        description = self.load(tmp_path, "cpn", stringified)["description"]
+        assert "carries no derive_total_mass" in description
+        assert "carries no derive_fallback_frac" in description
+        assert "carries no derive_leak_below_onset_p99" in description
+        assert "derive_sim_past_max_t_max" not in description
+        assert "None" not in description
+
+    def test_a_card_without_gate_numbers_still_renders(self, tmp_path):
+        # Defensive only: the card is written after the verdict, so a report
+        # with no accuracy gate never reaches it. It must not crash if one did.
+        thin = {"network_type": "cpn", "gates": []}
+        write_aux_model_card(tmp_path, "ddm_sdv", "cpn", PROVENANCE, thin)
+        assert "n/a" in (tmp_path / "model_card.yaml").read_text()
 
 
 class TestStaging:
@@ -757,3 +1155,422 @@ class TestUploadIncludePatterns:
         assert "recovery_report.json" in upload_include_patterns(
             DEFAULT_INCLUDE_PATTERNS
         )
+
+
+class TestAuxiliaryPublish:
+    """run_publish end to end for a cpn/opn: a throwaway sqlite store, a fake
+    artifact folder, the validator and the uploader stubbed.
+
+    What is real: run resolution, the provenance refusals, staging, the
+    verdict, the generated card, the publish record and its back-references.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        """Returns ``training_run(params, tags) -> run_id`` in an owned store."""
+        import mlflow
+
+        monkeypatch.chdir(tmp_path)
+        previous = mlflow.get_tracking_uri()
+        mlflow.set_tracking_uri(f"sqlite:///{tmp_path}/mlflow.db")
+        monkeypatch.setenv("MLFLOW_ARTIFACT_LOCATION", str(tmp_path / "artifacts"))
+        experiment = mlflow.create_experiment(
+            "ddm_sdv-training", artifact_location=str(tmp_path / "artifacts")
+        )
+
+        def training_run(params, tags):
+            with mlflow.start_run(experiment_id=experiment) as run:
+                mlflow.log_params(params)
+                mlflow.set_tags(tags)
+            return run.info.run_id
+
+        yield training_run
+        mlflow.set_tracking_uri(previous)
+
+    @pytest.fixture
+    def stubs(self, monkeypatch):
+        """Stub the validator and the uploader; returns their recorded calls."""
+        from lanfactory.hf import upload
+
+        import validation.validate_network as validator
+        from publish import publish_network
+
+        calls = {"validate": [], "upload": []}
+
+        def fake_validate(**kwargs):
+            calls["validate"].append(kwargs)
+            r = aux_report(kwargs["network_type"], kwargs["model_name"])
+            # Honour the flag the way the real validator does: a skipped
+            # accuracy gate reports passed=True with skipped=True and none of
+            # the numbers. Without this the stub would let --skip-accuracy
+            # complete a live publish, which is the opposite of the contract.
+            if kwargs.get("skip_accuracy"):
+                r["gates"][-1] = {
+                    "gate": "accuracy",
+                    "passed": True,
+                    "skipped": True,
+                    "reason": "--skip-accuracy",
+                }
+            return r
+
+        def fake_upload(**kwargs):
+            calls["upload"].append(kwargs)
+            return "https://huggingface.co/example/HSSM_staging/commit/abc"
+
+        monkeypatch.setattr(validator, "validate_network", fake_validate)
+        monkeypatch.setattr(upload, "upload_model", fake_upload)
+        monkeypatch.setattr(
+            publish_network, "resolve_hf_commit", lambda *a: ("0" * 40, True)
+        )
+        return calls
+
+    UUID = "e" * 32
+    TAGS: ClassVar[dict[str, str]] = {
+        "run_uuid": UUID,
+        "derive_total_mass_mean": "0.998",
+        "derive_total_mass_min": "0.990",
+        "derive_total_mass_max": "1.000",
+        "derive_fallback_frac": "0.012",
+        "derive_sim_past_max_t_max": "0.004",
+        "derive_leak_below_onset_p99": "0.0007",
+        "data_origin": "derived",
+    }
+
+    def params(self, network_type="cpn", model="ddm_sdv", **provenance):
+        """A training run's params: the derive-aux keys for an auxiliary
+        type, bare identity for a LAN."""
+        if network_type == "lan":
+            return {"model": model, "network_type": "lan", **provenance}
+        category = {"cpn": "choice", "opn": "omission"}[network_type]
+        return {
+            "model": model,
+            "network_type": network_type,
+            **PROVENANCE,
+            "aux_category": category,
+            **provenance,
+        }
+
+    def artifacts(self, tmp_path, network_type="cpn", model="ddm_sdv"):
+        source = tmp_path / "trained"
+        source.mkdir()
+        (source / f"{model}_{network_type}_{self.UUID}_model.onnx").write_bytes(b"x")
+        return source
+
+    def publish(self, run_id, source, tmp_path, **kwargs):
+        from publish.publish_network import run_publish
+
+        return run_publish(
+            hf_repo="example/HSSM_staging",
+            run_id=run_id,
+            artifact_dir=source,
+            staging_dir=tmp_path / "staged",
+            **kwargs,
+        )
+
+    @pytest.mark.parametrize("network_type", ["opn", "cpn", "lan"])
+    def test_a_deadline_model_is_refused_before_anything_runs(
+        self, tmp_path, store, stubs, network_type
+    ):
+        # HSSM asks for {base_model}{suffix}.onnx; a file named after the
+        # deadline variant is unreachable, and its root filename is permanent.
+        # Type-independent: the check must not narrow itself to the opn, the
+        # one type a deadline is naturally associated with.
+        run_id = store(self.params(network_type, model="ddm_sdv_deadline"), self.TAGS)
+        source = self.artifacts(tmp_path, network_type, "ddm_sdv_deadline")
+
+        with pytest.raises(PublishError, match="_deadline") as excinfo:
+            self.publish(run_id, source, tmp_path)
+
+        assert "'ddm_sdv'" in str(excinfo.value)
+        assert stubs["validate"] == [] and stubs["upload"] == []
+        assert not (tmp_path / "staged").exists()
+
+    def test_a_run_without_provenance_is_refused_by_name(self, tmp_path, store, stubs):
+        # A training run started from a simulated corpus: LANfactory logged
+        # none of the derive-aux keys. Refused before staging or validation.
+        params = {k: v for k, v in self.params().items() if k != "source_lan_sha256"}
+        run_id = store(params, self.TAGS)
+        source = self.artifacts(tmp_path)
+
+        with pytest.raises(PublishError, match="source_lan_sha256"):
+            self.publish(run_id, source, tmp_path)
+
+        assert stubs["validate"] == [] and stubs["upload"] == []
+        assert not (tmp_path / "staged").exists()
+
+    def test_skip_accuracy_can_rehearse_but_never_publish(self, tmp_path, store, stubs):
+        # The flag's contract: it shortens a dry run and can never produce an
+        # upload, because accuracy is a required gate and a skipped required
+        # gate is a refusal. Without --dry-run, to prove the refusal is what
+        # stands in front of the uploader.
+        run_id = store(self.params("cpn"), self.TAGS)
+        source = self.artifacts(tmp_path, "cpn")
+
+        result = self.publish(run_id, source, tmp_path, skip_accuracy=True)
+
+        assert result["published"] is False
+        assert (
+            "accuracy" in result["error"] and "not actually checked" in result["error"]
+        )
+        assert stubs["upload"] == []
+        # No card either: there are no gate numbers to put on one.
+        assert not (tmp_path / "staged" / "model_card.yaml").exists()
+
+    def test_a_cpn_with_provenance_publishes_under_its_root_filename(
+        self, tmp_path, store, stubs
+    ):
+        import mlflow
+
+        run_id = store(self.params("cpn"), self.TAGS)
+        source = self.artifacts(tmp_path, "cpn")
+
+        result = self.publish(run_id, source, tmp_path)
+
+        assert result["published"] is True
+        assert result["root_filename"] == "ddm_sdv_cpn.onnx"
+        assert result["provenance"] == {**PROVENANCE, "aux_category": "choice"}
+        (upload,) = stubs["upload"]
+        assert (upload["network_type"], upload["model_name"]) == ("cpn", "ddm_sdv")
+        assert upload["model_folder"] == tmp_path / "staged"
+        # The validator was told what the cpn predicts; the verdict needed it.
+        (validate,) = stubs["validate"]
+        assert validate["aux_category"] == "choice"
+        assert validate["network_type"] == "cpn"
+
+        client = mlflow.MlflowClient()
+        publish = client.get_run(result["publish_run_id"])
+        for key, value in PROVENANCE.items():
+            if key != "aux_category":
+                assert publish.data.params[key] == value
+        assert publish.data.params["aux_category"] == "choice"
+        assert publish.data.params["source_training_run_id"] == run_id
+        assert publish.data.params["source_run_uuid"] == self.UUID
+        assert publish.data.metrics["gate_accuracy_mean_abs_error"] == 0.0012
+        assert publish.data.metrics["gate_accuracy_max_abs_error"] == 0.0031
+        assert publish.data.metrics["gate_hssm_missing_initial_logp_p0"] == -123.4
+        assert publish.data.metrics["gate_hssm_missing_initial_logp_p05"] == -120.1
+        assert publish.data.tags["derive_total_mass_mean"] == "0.998"
+        assert publish.data.tags["derive_fallback_frac"] == "0.012"
+        assert publish.data.tags["derive_sim_past_max_t_max"] == "0.004"
+        assert publish.data.tags["derive_leak_below_onset_p99"] == "0.0007"
+        assert publish.data.tags["data_origin"] == "derived"
+        assert "run_uuid" not in publish.data.tags
+        assert client.get_run(run_id).data.tags["published"] == "true"
+
+    def test_an_opn_is_validated_with_its_provenance_category_and_its_lan(
+        self, tmp_path, store, stubs
+    ):
+        # Provenance and validator share the output vocabulary, so the
+        # provenance's "omission" is handed straight through for an opn too:
+        # the validator then refuses a mislabelled run on its own.
+        run_id = store(self.params("opn"), self.TAGS)
+        source = self.artifacts(tmp_path, "opn")
+        lan = tmp_path / "ddm_sdv.onnx"
+        lan.write_bytes(b"lan")
+
+        # dry_run: with skip_accuracy honoured by the stub this cannot publish,
+        # and the passthrough is what is under test here.
+        result = self.publish(
+            run_id, source, tmp_path, lan_onnx=lan, skip_accuracy=True, dry_run=True
+        )
+
+        assert result["root_filename"] == "ddm_sdv_opn.onnx"
+        assert result["published"] is False
+        (validate,) = stubs["validate"]
+        assert validate["aux_category"] == "omission"
+        assert validate["lan_onnx"] == lan
+        assert validate["skip_accuracy"] is True
+
+    @pytest.mark.parametrize("with_provenance", [False, True], ids=["bare", "labelled"])
+    def test_a_type_without_a_gate_set_is_refused_before_anything_is_read(
+        self, tmp_path, store, stubs, with_provenance
+    ):
+        # Before provenance, staging or validation, and the same refusal
+        # whether or not the run carries derive-aux keys: a gonogo (which
+        # lanfactory.hf still names) built from simulation, the common case,
+        # must not be told to relabel a network that can never ship.
+        params = {"model": "ddm_sdv", "network_type": "gonogo"}
+        if with_provenance:
+            params |= {**PROVENANCE, "aux_category": "nogo"}
+        run_id = store(params, self.TAGS)
+        source = self.artifacts(tmp_path, "gonogo")
+
+        with pytest.raises(PublishError, match="is not one of") as excinfo:
+            self.publish(run_id, source, tmp_path)
+
+        assert "gonogo" in str(excinfo.value)
+        assert "relabel" not in str(excinfo.value)
+        assert stubs["validate"] == [] and stubs["upload"] == []
+        assert not (tmp_path / "staged").exists()
+
+    def test_the_cli_forwards_lan_onnx_and_skip_accuracy(self, tmp_path, store, stubs):
+        # The main -> run_publish boundary is the one the operator drives;
+        # the run_publish -> validate_network passthrough is pinned above.
+        from typer.testing import CliRunner
+
+        from publish import publish_network
+
+        run_id = store(self.params("opn"), self.TAGS)
+        source = self.artifacts(tmp_path, "opn")
+        lan = tmp_path / "ddm_sdv.onnx"
+        lan.write_bytes(b"lan")
+
+        result = CliRunner().invoke(
+            publish_network.app,
+            [
+                "--hf-repo",
+                "example/HSSM_staging",
+                "--run-id",
+                run_id,
+                "--artifact-dir",
+                str(source),
+                "--staging-dir",
+                str(tmp_path / "staged"),
+                "--lan-onnx",
+                str(lan),
+                "--skip-accuracy",
+                "--dry-run",
+            ],
+        )
+
+        # The skipped accuracy gate refuses, and a refused dry run exits 1
+        # (it used to exit 0, which hid the refusal from a script).
+        assert result.exit_code == 1, result.output
+        (validate,) = stubs["validate"]
+        assert validate["lan_onnx"] == lan
+        assert validate["skip_accuracy"] is True
+        plan = json.loads(result.stdout.strip().splitlines()[-1])
+        assert plan["published"] is False and "accuracy" in plan["gate"]
+        assert plan["error"] == plan["gate"]
+        assert "model_card.yaml" not in plan["staged"]
+        assert stubs["upload"] == []
+
+    def test_a_dry_run_shows_the_provenance_and_the_generated_card(
+        self, tmp_path, store, stubs
+    ):
+        # Through the CLI: the one JSON line on stdout is the contract a
+        # driver reads, and the card is what a reviewer opens before the
+        # real publish.
+        import yaml
+        from typer.testing import CliRunner
+
+        from publish import publish_network
+
+        run_id = store(self.params("cpn"), self.TAGS)
+        source = self.artifacts(tmp_path, "cpn")
+        staged = tmp_path / "staged"
+
+        result = CliRunner().invoke(
+            publish_network.app,
+            [
+                "--hf-repo",
+                "example/HSSM_staging",
+                "--run-id",
+                run_id,
+                "--artifact-dir",
+                str(source),
+                "--staging-dir",
+                str(staged),
+                "--dry-run",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        plan = json.loads(result.stdout.strip().splitlines()[-1])
+        assert plan["dry_run"] is True and plan["published"] is False
+        assert plan["provenance"] == {**PROVENANCE, "aux_category": "choice"}
+        assert plan["root_filename"] == "ddm_sdv_cpn.onnx"
+        assert "model_card.yaml" in plan["staged"]
+        assert "validation_report.json" in plan["staged"]
+        # The tags the publish run would carry, so a training run missing
+        # its tail-policy record is visible before anything is uploaded.
+        assert plan["forwarded_tags"] == {
+            key: value for key, value in self.TAGS.items() if key != "run_uuid"
+        }
+        card = yaml.safe_load((staged / "model_card.yaml").read_text(encoding="utf-8"))
+        assert card["title"] == "ddm_sdv (CPN)"
+        # The training run's tail-policy tags reached the card, not just the
+        # record.
+        assert "0.998 / 0.99 / 1" in card["description"]
+        assert (
+            "1.2 % of the parameter box was labelled by simulation"
+            in (card["description"])
+        )
+        assert "leaking below the onset is 0.0007" in card["description"]
+        assert stubs["upload"] == []
+
+    def test_a_dry_run_plan_omits_tags_the_training_run_lacks(
+        self, tmp_path, store, stubs
+    ):
+        # An older run logged only the mass stats: the plan shows exactly
+        # those, and the card says the rest is unrecorded rather than
+        # inventing it.
+        import yaml
+
+        older = {
+            key: value
+            for key, value in self.TAGS.items()
+            if not key.startswith(("derive_fallback", "derive_sim", "derive_leak"))
+        }
+        run_id = store(self.params("cpn"), older)
+        source = self.artifacts(tmp_path, "cpn")
+
+        plan = self.publish(run_id, source, tmp_path, dry_run=True)
+
+        assert plan["forwarded_tags"] == {
+            key: value for key, value in older.items() if key != "run_uuid"
+        }
+        assert "derive_fallback_frac" not in plan["forwarded_tags"]
+        card = yaml.safe_load(
+            (tmp_path / "staged" / "model_card.yaml").read_text(encoding="utf-8")
+        )
+        assert "carries no derive_fallback_frac" in card["description"]
+        assert "carries no derive_leak_below_onset_p99" in card["description"]
+
+    def test_an_operator_card_is_never_overwritten(self, tmp_path, store, stubs):
+        run_id = store(self.params("cpn"), self.TAGS)
+        source = self.artifacts(tmp_path, "cpn")
+        (source / "model_card.yaml").write_text("title: ddm_sdv CPN, reviewed\n")
+
+        self.publish(run_id, source, tmp_path, dry_run=True)
+
+        staged_card = (tmp_path / "staged" / "model_card.yaml").read_text()
+        assert staged_card == "title: ddm_sdv CPN, reviewed\n"
+
+    def test_a_lan_plan_carries_an_empty_provenance_block(
+        self, tmp_path, store, stubs, monkeypatch
+    ):
+        # Same key in every plan, so a driver never has to test for it.
+        import validation.validate_network as validator
+
+        monkeypatch.setattr(
+            validator, "validate_network", lambda **kw: report(**ALL_RAN)
+        )
+        run_id = store(
+            {"model": "ddm_sdv", "network_type": "lan"}, {"run_uuid": self.UUID}
+        )
+        source = self.artifacts(tmp_path, "lan")
+
+        result = self.publish(run_id, source, tmp_path, dry_run=True)
+
+        assert result["provenance"] == {}
+        assert result["forwarded_tags"] == {}
+        assert result["root_filename"] == "ddm_sdv.onnx"
+        assert not (tmp_path / "staged" / "model_card.yaml").exists()
+
+    def test_a_validator_refusal_is_a_publish_error(
+        self, tmp_path, store, stubs, monkeypatch
+    ):
+        # validate_network raises ValueError on a bad flag combination; main
+        # catches PublishError alone, and must still print its JSON line.
+        import validation.validate_network as validator
+
+        def refuse(**kwargs):
+            raise ValueError("--aux-category is required for a cpn")
+
+        monkeypatch.setattr(validator, "validate_network", refuse)
+        run_id = store(self.params("cpn"), self.TAGS)
+        source = self.artifacts(tmp_path, "cpn")
+
+        with pytest.raises(PublishError, match="Validation refused"):
+            self.publish(run_id, source, tmp_path)

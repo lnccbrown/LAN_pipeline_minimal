@@ -29,6 +29,65 @@ validation_report.json
 publication run -> Hugging Face URL + verified commit (when available)
 ```
 
+## The derived-from-LAN chain
+
+An auxiliary network (cpn, opn) has no data-generation experiment. Its corpus
+is integrated from a published LAN by LANfactory's `derive-aux`, so its lineage
+points at another network rather than at simulator workers:
+
+```text
+published LAN (root file on the Hub)
+  |-- source_lan_sha256      the exact bytes integrated
+  |-- source_lan_hf_commit   the Hub revision they were downloaded at
+  `-- source_lan_run_uuid    the LAN's own training run
+            |
+            | derivation_method, aux_category,
+            | integration_grid, integration_max_t
+            v
+derived corpus -> training run (params above; tags derive_total_mass_*,
+                                derive_fallback_frac, derive_sim_past_max_t_max,
+                                derive_leak_below_onset_p99)
+            |
+            v
+validation_report.json (structure, parity, hssm_missing_load, accuracy)
+            |
+            v
+publication run -> Hugging Face URL + the same provenance params
+```
+
+The keys are one contract shared by three writers: the derived corpus's
+`generator_config["source"]`, the training run's MLflow params, and the
+publication run's params. `derivation_method` is `derived-from-lan` or
+`trained-from-simulation`, though only the former has a publish path today --
+a simulation-trained auxiliary network has no source LAN for this chain to
+point at; `aux_category` is `choice` for a cpn and `omission` for an opn.
+
+The training run also carries the derived corpus's tail-policy record as
+tags, logged by LANfactory from the corpus manifest; each is one number for
+the whole corpus, over its θ. The labels of a derived corpus are renormalised
+by the source LAN's own total on the integration grid, and the record says how
+much that renormalisation had to do and where it was not trusted:
+
+| Tag | What it records |
+| --- | --- |
+| `derive_total_mass_{mean,min,max}` | The total mass the LAN put on the grid at each θ, before renormalisation, summarised over the corpus -- how far from normalised the source LAN was |
+| `derive_fallback_frac` | The share of the parameter box labelled by simulation instead, because the LAN's total was outside (0.98, 1.03) |
+| `derive_sim_past_max_t_max` | Over the θ labelled by simulation, the largest share of trials past `max_t`; `None` when nothing fell back |
+| `derive_leak_below_onset_p99` | The p99, over θ, of the mass the LAN leaked below the onset (non-decision time) |
+
+The numbers are kept so that inheritance can be read rather than hidden: a
+LAN whose total drifts at the box edge shows up as a fallback fraction on
+every network derived from it. The publisher forwards each tag to the
+publication run when the training run carries it (a tag MLflow stored as
+`"None"` or `""` counts as absent). The generated model card quotes the mass
+stats, the fallback fraction and the onset leak, and states the absence of
+each a training run lacks; `derive_sim_past_max_t_max` is quoted only when
+present, and `data_origin` travels as a tag without being quoted.
+
+The publisher refuses an auxiliary run that lacks any required key, so a
+network on the Hub can always be traced back to the LAN it was integrated
+from -- which is what makes a later problem in that LAN actionable.
+
 ## Why training links to an experiment
 
 One data-generation submission can create many worker runs, and multi-lane
@@ -61,6 +120,7 @@ is ineligible for publication.
 | Which workers formed the data source? | Runs and file inventories in the generation experiment |
 | Which generation collection trained the network? | `data_generation_experiment_id` on the training run |
 | Which files belong to the training run? | The run's `run_uuid` and matching artifact names |
+| Which LAN was an auxiliary network integrated from? | `source_lan_sha256` and `source_lan_hf_commit` on the training and publication runs |
 | Which checks ran on the candidate? | `validation_report.json`, including each gate's skipped state |
 | What was uploaded? | The publication run and Hugging Face URL |
 | Which remote revision is confirmed? | `hf_commit` only when `hf_commit_verified` is true |

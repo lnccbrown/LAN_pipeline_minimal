@@ -16,6 +16,7 @@ configs/
 ├── production_gamma_drift/
 ├── production_gamma_drift_angle/
 ├── production_angle_extended/
+├── derived_ddm_sdv/     # cpn/opn training configs for a derive-aux corpus (no datagen pair)
 └── cluster/
     ├── oscar.yaml        # committed lab/cluster inventory and defaults
     └── oscar.local.yaml  # generated personal overlay; gitignored
@@ -32,6 +33,13 @@ activations, a GPU batch that leaves a remainder on a training file — because
 none of those fail loudly, and all of them fail late. The 2023-era legacy networks on
 franklab/HSSM predate this pipeline and have no recorded configs; their
 provenance is a registry concern, not something to reconstruct here.
+
+`derived_<model>/network_training_{cpn,opn}.yaml` train auxiliary networks on a
+corpus LANfactory's `derive-aux` integrates from that model's published LAN, so
+there is no `data_generation.yaml` to pair them with and the prefix keeps them
+out of the production pairing. Their batch size must divide a derived file's
+row count (4096 θ per file; a cpn file holds one row per choice), which
+`tests/test_production_configs.py` also checks.
 
 Start with `quick_test/` when checking a checkout. Copy and review an example
 before adapting it to a scientific run; the example scale is not a universal

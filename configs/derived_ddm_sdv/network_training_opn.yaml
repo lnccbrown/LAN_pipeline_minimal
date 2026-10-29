@@ -1,0 +1,73 @@
+# Derived ddm_sdv omission-probability network (OPN) training — laptop, CPU, torch backend.
+#
+# Not a production_<model>/ pair: there is no data_generation.yaml because
+# the corpus is not simulated. It is integrated from the published ddm_sdv
+# LAN by LANfactory's `derive-aux` (the derive-aux-networks plan), which
+# writes the provenance keys `lan-publish` later requires on the training run.
+#
+# Same architecture as the LAN it is derived from (see
+# production_ddm_sdv/network_training.yaml): one input wider, one log-
+# probability out. Fine on a CPU in minutes at this corpus size.
+MODEL: "ddm_sdv"
+NETWORK_TYPE: "opn"
+# Unused by every consumer (nothing in this repo or LANfactory reads the
+# key); kept as "lan" for schema parity with production_ddm_sdv. The
+# corpus itself records generator_approach "derived" in its own
+# generator_config, which is the authoritative description.
+GENERATOR_APPROACH: "lan"
+
+LAYER_SIZES: [[100, 100, 100, 1]]
+ACTIVATIONS: [['tanh', 'tanh', 'tanh']]
+
+# 40, with the validation split and patience below: the derive rehearsal
+# (2026-10-28) trained this OPN at 10 epochs, 2 validation files and
+# patience 2, and it failed the accuracy gate on fit, not derivation (A4 mean
+# 0.0108 > 0.01; labels within 0.005 of simulation). This schedule passed
+# (A4 mean 0.0031, max 0.0105). The CPN passed on the old schedule and keeps
+# it until a CPN run on this one.
+N_EPOCHS: 40
+
+# 512 MUST divide the rows per file of a derive-aux corpus, which is
+# 4096 θ per file -> 4096 rows per file (one deadline per θ).
+# LANfactory's DatasetTorch hard-fails at load ("samples_per_file must be
+# divisible by batch_size") on any remainder, so a change here has to keep
+# 4096 % batch == 0 (and 8192 % batch == 0 for a cpn).
+CPU_BATCH_SIZE: 512         # equal to GPU so a GPU run is the same
+GPU_BATCH_SIZE: 512         # optimisation problem, not a 16x larger one
+
+OPTIMIZER_: "adam"
+LEARNING_RATE: 0.001
+WEIGHT_DECAY: 0.0
+LR_SCHEDULER: 'reduce_on_plateau'
+LR_SCHEDULER_PARAMS:
+  factor: 0.1
+  patience: 5                # see TRAIN_VAL_SPLIT
+  threshold: 0.001
+  min_lr: 0.00000001
+  verbose: True
+
+# Splits across FILES: with derive-aux's default 100 files that is 90 train
+# / 10 validation. LANfactory's DatasetTorch resamples each file with
+# replacement as it loads it, so the validation loss carries bootstrap noise:
+# on 2 files (8192 rows) its SE was 0.0027, several times the scheduler's
+# 0.1 % threshold, and patience 2 cut the LR at epochs 5 and 8 while the
+# training loss was still falling. 10 files shrink that noise by about √5,
+# and patience 5 rides out what is left.
+TRAIN_VAL_SPLIT: 0.9
+
+# A SENTINEL, applied as min(files_found, this). It does NOT assert that
+# 10000 files exist.
+N_TRAINING_FILES: 10000
+
+# Must stay a quoted string: it is eval'd with numpy in scope, and a bare
+# -16.1 raises TypeError.
+LABELS_LOWER_BOUND: "np.log(1e-7)"
+
+# False deliberately: DatasetTorch advances files on batch index, so a
+# shuffled index stream reads rows from whichever file happens to be loaded.
+SHUFFLE: False
+
+# PLACEHOLDER. Point at the folder `derive-aux --network-type opn` wrote for
+# the ddm_sdv LAN, e.g. data/derived/opn/ddm_sdv. Overridden by
+# --training-data-folder; it is a local path, so it is not committed.
+TRAINING_DATA_FOLDER: ""

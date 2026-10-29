@@ -1551,7 +1551,10 @@ class TestHssmLoadGate:
             {"gate": name, "passed": True}
             for name in ("structure", "parity", "density")
         ]
-        report = {"gates": [*others, gate_hssm_load(tmp_path / "m.onnx", "ddm")]}
+        report = {
+            "network_type": "lan",
+            "gates": [*others, gate_hssm_load(tmp_path / "m.onnx", "ddm")],
+        }
         assert all(g["passed"] for g in report["gates"])
 
         ok, reason = gate_verdict(report)

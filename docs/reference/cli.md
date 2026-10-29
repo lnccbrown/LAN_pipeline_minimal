@@ -61,10 +61,12 @@ uv run lan-publish --help
 | `--hf-repo TEXT` | required | Non-production Hugging Face target; there is deliberately no default |
 | `--run-id TEXT` | selection A | Exact MLflow training run |
 | `--model TEXT` | selection B | Model for newest-completed-run selection |
-| `--network-type TEXT` | selection B | `lan`, `cpn`, or `opn` |
+| `--network-type TEXT` | selection B | `lan`, `cpn`, or `opn`; any other type is refused |
 | `--artifact-dir PATH` | run output path | Local folder holding the training artifacts |
 | `--staging-dir PATH` | temporary directory | Persistent isolated upload assembly directory |
+| `--lan-onnx PATH` | resolved by name | cpn/opn: local base LAN for `hssm_missing_load`; required for models outside HSSM's registry |
 | `--skip-density` | false | Skip G4 for a shorter rehearsal; the result cannot publish |
+| `--skip-accuracy` | false | Skip A4 (cpn/opn) for a shorter rehearsal; the result cannot publish |
 | `--dry-run` | false | Validate and print the plan without HF/MLflow publication writes |
 | `--overwrite-root` | false | Intentionally replace an existing canonical root artifact |
 | `--log-level TEXT` | `INFO` | Logging threshold |

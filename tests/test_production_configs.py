@@ -11,6 +11,10 @@ next run un-reproducible from the repo.
 
 These are cheap structural checks, not a schema. The pipeline's own loaders own
 the schema; this owns the things that are only wrong in context.
+
+It also owns `derived_<model>/network_training_{cpn,opn}.yaml`, which have no
+generation pair and are checked against derive-aux's fixed rows-per-file
+instead.
 """
 
 import re
@@ -132,3 +136,72 @@ class TestLoaderContract:
         # TypeError at load, deep inside a submitted job.
         _, _, training = run_config
         assert isinstance(training["LABELS_LOWER_BOUND"], str)
+
+
+# ---------------------------------------------------------------------------
+# derived_<model>/ — training configs for auxiliary networks whose corpus is
+# integrated from a LAN by LANfactory's derive-aux, not simulated. No
+# data_generation.yaml exists to pair them with, which is why the prefix is
+# not `production_`: the pairing fixture above would fail to find one.
+# ---------------------------------------------------------------------------
+
+DERIVED = sorted(CONFIGS.glob("derived_*/network_training_*.yaml"))
+# derive-aux's default θ per file. A cpn file holds one row per (θ, choice);
+# an opn file one row per θ.
+DERIVED_THETA_PER_FILE = 4096
+
+
+def test_derived_configs_are_not_paired_as_production():
+    assert not any(p.name.startswith("derived_") for p in PRODUCTION)
+    assert DERIVED, f"no derived_*/network_training_*.yaml under {CONFIGS}"
+
+
+@pytest.fixture(params=DERIVED, ids=lambda p: f"{p.parent.name}/{p.name}")
+def derived_config(request):
+    path = request.param
+    return path, yaml.safe_load(path.read_text())
+
+
+class TestDerivedConfigs:
+    def test_the_directory_and_file_names_say_what_the_config_trains(
+        self, derived_config
+    ):
+        path, training = derived_config
+        assert training["MODEL"] == path.parent.name[len("derived_") :]
+        network_type = path.stem[len("network_training_") :]
+        assert training["NETWORK_TYPE"] == network_type
+        assert network_type in ("cpn", "opn")
+
+    def test_the_batch_divides_a_derived_file_exactly(self, derived_config):
+        # DatasetTorch raises at load on any remainder, and a derived corpus
+        # has a fixed row count per file: 4096 θ, times the number of choices
+        # for a cpn (one row per choice code).
+        from ssms.config import model_config
+
+        _, training = derived_config
+        n_choices = len(model_config[training["MODEL"]]["choices"])
+        rows = DERIVED_THETA_PER_FILE * (
+            n_choices if training["NETWORK_TYPE"] == "cpn" else 1
+        )
+        assert rows % training["GPU_BATCH_SIZE"] == 0, (
+            rows,
+            training["GPU_BATCH_SIZE"],
+        )
+        assert rows % training["CPU_BATCH_SIZE"] == 0, (
+            rows,
+            training["CPU_BATCH_SIZE"],
+        )
+        assert training["CPU_BATCH_SIZE"] == training["GPU_BATCH_SIZE"]
+
+    def test_the_loader_contract_holds(self, derived_config):
+        _, training = derived_config
+        assert training["SHUFFLE"] is False
+        assert isinstance(training["LABELS_LOWER_BOUND"], str)
+        for layers, acts in zip(training["LAYER_SIZES"], training["ACTIVATIONS"]):
+            assert len(acts) == len(layers) - 1 and layers[-1] == 1
+
+    def test_the_training_folder_is_a_placeholder(self, derived_config):
+        # A derive-aux output is a local path; committing one would pin a
+        # laptop. --training-data-folder supplies it at submission.
+        _, training = derived_config
+        assert training["TRAINING_DATA_FOLDER"] == ""

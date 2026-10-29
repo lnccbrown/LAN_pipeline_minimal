@@ -18,6 +18,9 @@ configs/
   production_<model>/
     data_generation.yaml
     network_training.yaml
+  derived_<model>/
+    network_training_cpn.yaml
+    network_training_opn.yaml
   cluster/
     oscar.yaml
     oscar.local.yaml       # generated, gitignored, personal
@@ -54,8 +57,21 @@ individual YAML loaders cannot check on their own:
 - `SHUFFLE` is off for the file-advancing loader; and
 - `LABELS_LOWER_BOUND` remains a quoted string.
 
+A `derived_<model>/` directory holds `network_training_cpn.yaml` and
+`network_training_opn.yaml` for auxiliary networks trained on a corpus that
+LANfactory's `derive-aux` integrates from the model's published LAN. There is
+no generation file to pair with, so the prefix keeps the directory out of the
+production checks; its own tests require the batch size to divide a derived
+file's rows (4096 parameter sets per file, one row per choice for a cpn),
+because the Torch loader refuses any remainder at load time. The current
+derived directories are:
+
+| Directory | Model | Networks |
+| --- | --- | --- |
+| `configs/derived_ddm_sdv/` | `ddm_sdv` | cpn, opn |
+
 Run `uv run pytest tests/test_production_configs.py -q` after adding or changing
-a versioned pair. These checks protect contextual reproducibility; the upstream
+a versioned pair or a derived config. These checks protect contextual reproducibility; the upstream
 simulator and trainer documentation still own their complete schemas. Start a
 new scientific configuration from `examples/`, not from a production record,
 unless reproducing that exact run.

@@ -97,10 +97,10 @@ A cpn reports `hssm_missing_load` as `skipped` under HSSM < 0.6.0, whose
 missing-data path ignores `response`; that skip records the `hssm_version` it
 saw.
 
-Auxiliary reports are validator-only for now. The publisher still requires the
-LAN gate set (`structure`, `hssm_load`, `density`) and does not pass
-`--aux-category`, so it refuses every cpn/opn report and cannot yet
-validate a cpn at all. Teaching it the auxiliary gate set is a separate change.
+For a cpn or opn the publisher requires `structure`, `hssm_missing_load`, and
+`accuracy` to be present and not skipped. It refuses a report of any other
+`network_type` whatever its gates say, and a report with no top-level
+`network_type`.
 
 The detailed report has `schema_version: 1`, artifact/model/network identity
 (`onnx`, `model`, `network_type`, and `aux_category` — what the output is the
@@ -197,9 +197,60 @@ the staging directory and write `validation_report.json` there:
   "training_run_id": "0123456789abcdef",
   "run_uuid": "run-uuid",
   "staged": ["run-uuid_lan_ddm__network.onnx", "validation_report.json"],
-  "gate": "all required gates ran and passed"
+  "gate": "all required gates ran and passed",
+  "provenance": {},
+  "forwarded_tags": {}
 }
 ```
+
+`provenance` and `forwarded_tags` are always present. For a LAN
+`provenance` is empty and `forwarded_tags` carries at most `data_origin`,
+which LANfactory tags every training run with. For a cpn or opn
+`provenance` carries the derive-aux keys read from the training run,
+`forwarded_tags` the training-run tags the publish run would carry (the
+tail-policy record and `data_origin`, each only when the training run has
+it), and `staged` then also lists the generated `model_card.yaml` unless an
+operator card was staged:
+
+```json
+{
+  "published": false,
+  "dry_run": true,
+  "model": "ddm_sdv",
+  "network_type": "opn",
+  "hf_repo": "example/HSSM_staging",
+  "root_filename": "ddm_sdv_opn.onnx",
+  "training_run_id": "0123456789abcdef",
+  "run_uuid": "run-uuid",
+  "staged": ["ddm_sdv_opn_run-uuid_model.onnx", "model_card.yaml", "validation_report.json"],
+  "gate": "all required gates ran and passed",
+  "provenance": {
+    "derivation_method": "derived-from-lan",
+    "aux_category": "omission",
+    "source_lan_run_uuid": "lan-run-uuid",
+    "source_lan_sha256": "<sha256 of the integrated LAN>",
+    "source_lan_hf_commit": "<Hub revision it was downloaded at>",
+    "integration_grid": "1000",
+    "integration_max_t": "20.0"
+  },
+  "forwarded_tags": {
+    "derive_total_mass_mean": "0.998",
+    "derive_total_mass_min": "0.990",
+    "derive_total_mass_max": "1.000",
+    "derive_fallback_frac": "0.012",
+    "derive_sim_past_max_t_max": "0.004",
+    "derive_leak_below_onset_p99": "0.0007",
+    "data_origin": "derived"
+  }
+}
+```
+
+Values are strings, as MLflow stores params and tags. Every key of
+`forwarded_tags` appears only when the training run carries it: a training run from before LANfactory logged the fallback
+fraction and the onset leak shows only the mass stats here, and a tag the
+training run stored as `"None"` or `""` (`derive_sim_past_max_t_max` is
+logged that way when nothing fell back to simulation) is dropped rather than
+forwarded.
 
 A successful upload adds:
 
@@ -218,6 +269,43 @@ verified, `hf_commit_candidate` replaces `hf_commit` and may be null;
 `hf_commit_verified` is false.
 
 A handled refusal or gate failure returns `published: false` plus `error` and
-any plan fields established before the refusal. A real publication attempt
-exits non-zero in that case. A dry run can exit successfully with
-`published: false`, because not publishing is its intended outcome.
+any plan fields established before the refusal, and exits non-zero, dry run
+or not. A dry run whose gates cleared exits successfully with `published:
+false`, because not publishing is its intended outcome.
+
+The `gate` field (and `error`, when the verdict refused) is one of:
+
+| Verdict | Meaning |
+| --- | --- |
+| `all required gates ran and passed` | Publishable |
+| `gate failed — <gate>: <error>` | A gate ran and failed; the error is the gate's own |
+| `not actually checked: <gates>. A skipped or missing gate is not a passed gate.` | A required gate for this `network_type` skipped or is absent |
+| `report has no network_type; re-run the validator (P1 or later)` | The report predates the auxiliary gate set |
+| `no publishable gate set for network_type '<type>'` | The report names a type the publisher has no gate set for, such as a `gonogo` (a hand-fed report; `run_publish` refuses such a type before staging) |
+
+Refusals raised before the verdict (a network type without a gate set, a
+`_deadline` model name, a missing, mismatched or unpublishable provenance key,
+a validator that rejected its arguments) return only `published: false` and
+`error`, since no plan exists yet.
+
+## Publication run record
+
+The publish run in the `publishing` experiment carries, as params, `model`,
+`network_type`, `hf_repo`, `hf_commit` or `hf_commit_candidate`,
+`source_training_run_id`, `source_run_uuid`, `onnx_filename`, and for a cpn or
+opn every key of the `provenance` block. Tags: `schema_version`, `phase`,
+`hf_commit_verified`, `published_at`, `hf_url`, `gates_run`, and, each when
+the training run carries it, the tail-policy record `derive_total_mass_mean`,
+`derive_total_mass_min`, `derive_total_mass_max`, `derive_fallback_frac`,
+`derive_sim_past_max_t_max`, `derive_leak_below_onset_p99`, and
+`data_origin` (see [data lineage](../explanations/data-lineage.md)).
+
+Metrics are logged when the corresponding gate ran:
+
+| Metric | Gate |
+| --- | --- |
+| `gate_parity_max_abs_error` | `parity` |
+| `gate_hssm_initial_logp` | `hssm_load` (LAN) |
+| `gate_density_worst_ratio`, `gate_density_worst_mass` | `density` (LAN) |
+| `gate_accuracy_mean_abs_error`, `gate_accuracy_max_abs_error` | `accuracy` (cpn, opn) |
+| `gate_hssm_missing_initial_logp_p0`, `gate_hssm_missing_initial_logp_p05` | `hssm_missing_load` at `p_outlier` 0 and 0.05 (cpn, opn) |

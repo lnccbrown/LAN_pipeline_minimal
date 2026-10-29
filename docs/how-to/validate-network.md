@@ -181,12 +181,10 @@ until every response time is positive, so it records `attempts` and
 `rejected_draws` too, and skips with G3's `no usable dataset` reason when no
 draw is usable. A skipped A3 blocks a publish like any skipped required gate.
 
-!!! warning "Auxiliary reports do not promote yet"
-
-    The publisher still requires the LAN gate set and does not pass
-    `--aux-category`, so it refuses every auxiliary report, and
-    `lan-publish --network-type cpn` cannot validate a cpn at all. Use this
-    command to validate an auxiliary artifact; publishing it is a follow-up.
+`lan-publish` runs the same gates for a cpn or opn, passing `--aux-category
+choice` for a cpn itself and forwarding `--lan-onnx`; see
+[Publish an auxiliary network](stage-and-publish.md#publish-an-auxiliary-network-cpn-opn)
+for what the training run must carry.
 
 One skip is built in and reported rather than silent: the cpn A3 gate needs
 an HSSM that passes `response` to the network on missing rows (HSSM ≥ 0.6.0).
