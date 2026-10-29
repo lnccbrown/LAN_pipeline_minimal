@@ -125,7 +125,7 @@ If the density comparison needs a reviewed tolerance change, pass
 `--hellinger-ratio-max` and preserve the resulting threshold in the report.
 Do not loosen it merely to turn one candidate green.
 
-## Validate an auxiliary network (cpn, opn, gonogo)
+## Validate an auxiliary network (cpn, opn)
 
 Auxiliary networks are not densities, so the density gate does not apply to
 them. They share G1 and G2 with a LAN and then run their own pair:
@@ -143,7 +143,7 @@ command rejects a `_deadline` name outright.
 
 | Gate | Evidence |
 | --- | --- |
-| G1 `structure` | As for a LAN, with the width contract `n_params + 1`: `[θ…, choice]` for a cpn, `[θ…, deadline]` for an opn or gonogo |
+| G1 `structure` | As for a LAN, with the width contract `n_params + 1`: `[θ…, choice]` for a cpn, `[θ…, deadline]` for an opn |
 | G2 `parity` | As for a LAN |
 | A3 `hssm_missing_load` | HSSM accepts the network as `loglik_missing_data` next to the base LAN and obtains a finite initial log probability on simulated data with missing rows, at `p_outlier = 0` and at HSSM's default lapse |
 | A4 `accuracy` | The network's probability tracks a Monte-Carlo truth at 20 parameter draws stratified over the full box: `P(choice | θ)` for a cpn, `P(rt > deadline | θ)` for an opn |
@@ -165,7 +165,7 @@ Without either, `total_mass` is `null`. The pass rule and its thresholds are
 unchanged.
 
 `--aux-category` names what the network's output is the probability of:
-`choice` for a cpn, `omission` for an opn, `nogo` for a gonogo. That is the
+`choice` for a cpn, `omission` for an opn. That is the
 vocabulary LANfactory's derived corpora and the publisher's provenance carry,
 and each type has exactly one value, so the flag defaults to it; an explicit
 value that does not match (say `deadline` for an opn) is rejected naming the
@@ -184,14 +184,11 @@ HSSM's registry require it. Either way the assembly is LAN + auxiliary net
     `lan-publish --network-type cpn` cannot validate a cpn at all. Use this
     command to validate an auxiliary artifact; publishing it is a follow-up.
 
-Two skips are built in and reported rather than silent:
-
-- A gonogo network has no HSSM consumer, so A3 and A4 are `skipped` with the
-  reason `HSSM has no gonogo consumer`. Only G1 and G2 judge it.
-- The cpn A3 gate needs an HSSM that passes `response` to the network on
-  missing rows (HSSM ≥ 0.6.0). Under an older HSSM it is `skipped` with the
-  reason `HSSM < 0.6.0 ignores response on missing rows`, and activates by
-  itself once the locked HSSM moves.
+One skip is built in and reported rather than silent: the cpn A3 gate needs
+an HSSM that passes `response` to the network on missing rows (HSSM ≥ 0.6.0).
+Under an older HSSM it is `skipped` with the reason `HSSM < 0.6.0 ignores
+response on missing rows`, and activates by itself once the locked HSSM
+moves.
 
 `--skip-accuracy` shortens a diagnostic run the way `--skip-density` does for a
 LAN. The A4 thresholds (`--accuracy-mean-abs-max`, default `0.01`, and

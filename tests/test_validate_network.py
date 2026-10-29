@@ -19,7 +19,6 @@ from onnx import TensorProto, helper
 
 import validate_network as vn
 from validate_network import (
-    GONOGO_SKIP_REASON,
     gate_accuracy,
     gate_hssm_load,
     gate_parity,
@@ -205,12 +204,16 @@ class TestWiring:
             assert gates[later].get("skipped"), later
             assert gates[later]["reason"] == "structure gate failed"
 
-    def test_an_unknown_network_type_is_rejected_not_defaulted(self, tmp_path):
+    @pytest.mark.parametrize("network_type", ["LAN", "gonogo"])
+    def test_an_unknown_network_type_is_rejected_not_defaulted(
+        self, tmp_path, network_type
+    ):
         # Defaulting to 0 extra inputs would surface as "input width 6 !=
-        # expected 4", blaming the artifact for a mistyped flag.
+        # expected 4", blaming the artifact for a mistyped flag. gonogo was
+        # dropped: HSSM has no consumer for it.
         path = make_onnx(tmp_path / "good.onnx", (1, 6))
         with pytest.raises(ValueError, match="Unknown network_type"):
-            validate_network(path, model_name="ddm", network_type="LAN")
+            validate_network(path, model_name="ddm", network_type=network_type)
 
     def test_report_shape_is_stable(self, tmp_path, no_derive):
         path = make_onnx(tmp_path / "good.onnx", (1, 6))
@@ -249,7 +252,7 @@ class TestAuxiliaryWidths:
 
     @pytest.mark.parametrize(
         "network_type, aux_category",
-        [("cpn", "choice"), ("opn", None), ("gonogo", None)],
+        [("cpn", "choice"), ("opn", None)],
     )
     def test_n_params_plus_one_is_accepted(self, tmp_path, network_type, aux_category):
         path = make_onnx(tmp_path / "aux.onnx", (1, 5))
@@ -325,7 +328,7 @@ class TestAuxiliaryWiring:
 
     @pytest.mark.parametrize(
         "network_type, expected",
-        [("cpn", "choice"), ("opn", "omission"), ("gonogo", "nogo")],
+        [("cpn", "choice"), ("opn", "omission")],
     )
     def test_each_type_defaults_to_its_output_category(
         self, tmp_path, network_type, expected
@@ -337,18 +340,6 @@ class TestAuxiliaryWiring:
             path, model_name="ddm", network_type=network_type, **AUX_SKIPS
         )
         assert report["aux_category"] == expected
-
-    def test_gonogo_reports_its_two_unrunnable_gates_as_skipped(self, tmp_path):
-        path = make_onnx(tmp_path / "gonogo.onnx", (1, 5))
-        report = validate_network(path, model_name="ddm", network_type="gonogo")
-        gates = {g["gate"]: g for g in report["gates"]}
-        for name in ("hssm_missing_load", "accuracy"):
-            assert gates[name]["skipped"], name
-            assert gates[name]["reason"] == GONOGO_SKIP_REASON
-            assert gates[name]["passed"], name
-        # A structurally valid gonogo with everything else skipped must not
-        # exit non-zero: a skip is a skip, not a veto.
-        assert report["passed"]
 
     def test_a_deadline_model_name_is_rejected(self, tmp_path):
         # The deadline variant is derived where it is needed; naming it would
@@ -364,7 +355,6 @@ class TestAuxiliaryWiring:
         [
             ("cpn", "omission", "choice"),
             ("opn", "deadline", "omission"),
-            ("gonogo", "choice", "nogo"),
         ],
     )
     def test_a_category_the_type_cannot_output_is_rejected_naming_the_expected(
@@ -645,15 +635,15 @@ class TestHssmMissingLoadGate:
         assert not gate["passed"]
         assert "validate dependency group" in gate["error"]
 
-    def test_gonogo_has_no_consumer_to_load_into(
+    def test_a_lan_has_no_missing_data_slot_to_load_into(
         self, tmp_path, monkeypatch, fake_hssm
     ):
         monkeypatch.setattr(vn, "_simulate", fixed_simulate)
         gate = vn.gate_hssm_missing_load(
-            make_onnx(tmp_path / "gonogo.onnx", (1, 5)), "ddm", "gonogo"
+            make_onnx(tmp_path / "lan.onnx", (1, 6)), "ddm", "lan"
         )
         assert not gate["passed"]
-        assert "gonogo" in gate["error"]
+        assert "no HSSM missing-data consumer for 'lan'" in gate["error"]
         assert fake_hssm == []
 
 
@@ -847,9 +837,9 @@ class TestAuxTruth:
         assert truth["truth"] == pytest.approx(0.25)
         assert "truth_rt_lt_max_t" not in truth
 
-    def test_gonogo_has_no_truth(self):
-        with pytest.raises(ValueError, match="gonogo"):
-            vn.aux_truth("ddm", "gonogo", np.zeros(4), deadline=1.0)
+    def test_a_lan_has_no_truth(self):
+        with pytest.raises(ValueError, match="no truth is defined for 'lan'"):
+            vn.aux_truth("ddm", "lan", np.zeros(4), deadline=1.0)
 
 
 def canned_survey(

@@ -38,7 +38,7 @@ A LAN gets a fifth, advisory gate after G4:
                     ``lanfactory.derive`` and skips itself, with a stated
                     reason, in an environment whose LANfactory lacks it.
 
-Auxiliary networks (cpn / opn / gonogo) are not densities, so G3 and G4 do not
+Auxiliary networks (cpn / opn) are not densities, so G3 and G4 do not
 apply to them. They get their own pair after G1 and G2:
 
     A3 hssm-missing-load — hssm.HSSM accepts the network as
@@ -56,8 +56,6 @@ BASE model; the ``_deadline`` variant is derived internally):
             n_params + 1, output log P_s(choice | θ)
     opn     input [θ..., deadline], width n_params + 1,
             output log S_s(deadline | θ) = log P_s(rt > deadline | θ)
-    gonogo  input [θ..., deadline], width n_params + 1,
-            output log P_s(nogo ∪ omission | θ) — derived only, no HSSM consumer
 
 Outputs are SSM-only marginals with the log-sigmoid baked into the graph, so
 every value is ≤ 0; HSSM applies the lapse mixture outside the network.
@@ -149,14 +147,12 @@ EXTRA_INPUTS_BY_NETWORK_TYPE = {
     "lan": 2,  # rt, response: a density over both
     "cpn": 1,  # choice: log P(choice | θ), one row per choice code
     "opn": 1,  # deadline: log P(rt > deadline | θ), the survival function
-    "gonogo": 1,  # deadline: log P(nogo ∪ omission | θ); derived only
 }
 # What G1 says the width should be made of, per type.
 INPUT_LAYOUT_BY_NETWORK_TYPE = {
     "lan": "len(param_space) + rt + response for a LAN",
     "cpn": "len(param_space) + choice for a CPN",
     "opn": "len(param_space) + deadline for an OPN",
-    "gonogo": "len(param_space) + deadline for a gonogo network",
 }
 # The gate names each type reports, in order. The publisher (REQUIRED_GATES)
 # and the pinned tests key on a LAN's list; mass_survey was appended to it
@@ -165,7 +161,6 @@ GATES_BY_NETWORK_TYPE = {
     "lan": ("structure", "parity", "hssm_load", "density", "mass_survey"),
     "cpn": ("structure", "parity", "hssm_missing_load", "accuracy"),
     "opn": ("structure", "parity", "hssm_missing_load", "accuracy"),
-    "gonogo": ("structure", "parity", "hssm_missing_load", "accuracy"),
 }
 # What an auxiliary network's OUTPUT is the probability of. This is the one
 # vocabulary the whole pipeline shares: LANfactory's derived corpora record it
@@ -178,9 +173,7 @@ GATES_BY_NETWORK_TYPE = {
 AUX_CATEGORIES_BY_NETWORK_TYPE = {
     "cpn": ("choice",),
     "opn": ("omission",),
-    "gonogo": ("nogo",),
 }
-GONOGO_SKIP_REASON = "HSSM has no gonogo consumer"
 
 # HSSM ≥ 0.6.0 feeds ``response`` to a width n_params + 1 CPN; every earlier
 # release calls the CPN with the parameters only, so a contract-conformant CPN
@@ -1240,8 +1233,8 @@ def resolve_aux_category(network_type: str, aux_category: str | None) -> str | N
     """What the network's output is the probability of, validated.
 
     The vocabulary is the one shared with LANfactory's derived corpora and the
-    publisher's provenance: ``choice`` for a cpn, ``omission`` for an opn,
-    ``nogo`` for a gonogo. None for a LAN. Every auxiliary type has exactly
+    publisher's provenance: ``choice`` for a cpn, ``omission`` for an opn.
+    None for a LAN. Every auxiliary type has exactly
     one possibility and defaults to it; an explicit value must match, so a
     record that says the net is something else is rejected here rather than
     written into the report.
@@ -1295,7 +1288,7 @@ def validate_network(
     if model_name.endswith("_deadline"):
         raise ValueError(
             f"--model-name must be the base model, not {model_name!r}: the "
-            "_deadline variant is derived internally for opn/gonogo."
+            "_deadline variant is derived internally for an opn."
         )
     aux_category = resolve_aux_category(network_type, aux_category)
 
@@ -1356,14 +1349,6 @@ def validate_network(
                     frac_gt_0_10_max=mass_survey_frac_gt_0_10_max,
                 )
             )
-        elif network_type == "gonogo":
-            # Nothing in HSSM consumes a gonogo network, and without a consumer
-            # there is no truth to hold it to either. Reported, not silent, so
-            # the publisher can see exactly what was not checked.
-            gates += [
-                _result(g, True, skipped=True, reason=GONOGO_SKIP_REASON)
-                for g in ("hssm_missing_load", "accuracy")
-            ]
         else:
             gates.append(
                 _result("hssm_missing_load", True, skipped=True, reason="--skip-hssm")
@@ -1411,13 +1396,13 @@ def main(
         ...,
         help="ssm-simulators BASE model name, e.g. ddm (never a _deadline variant).",
     ),
-    network_type: str = typer.Option("lan", help="lan | cpn | opn | gonogo."),
+    network_type: str = typer.Option("lan", help="lan | cpn | opn."),
     aux_category: str | None = typer.Option(
         None,
         help=(
             "What an auxiliary network's output is the probability of: choice "
-            "for a cpn, omission for an opn, nogo for a gonogo. Each type "
-            "defaults to its value; an explicit one must match it."
+            "for a cpn, omission for an opn. Each type defaults to its value; "
+            "an explicit one must match it."
         ),
     ),
     lan_onnx: Path | None = typer.Option(

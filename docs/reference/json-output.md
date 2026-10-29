@@ -77,7 +77,7 @@ never blocks a publish. Once it runs, a `failed` mass survey refuses a publish
 like any other failed gate, and a warn-level result is `passed` with a
 `warning` detail in the report.
 
-An auxiliary network (`cpn`, `opn`, `gonogo`) reports a different gate set
+An auxiliary network (`cpn`, `opn`) reports a different gate set
 after `structure` and `parity`:
 
 ```json
@@ -93,20 +93,19 @@ after `structure` and `parity`:
 }
 ```
 
-A gonogo network always reports `hssm_missing_load` and `accuracy` as
-`skipped` (HSSM has no gonogo consumer). A cpn reports `hssm_missing_load` as
-`skipped` under HSSM < 0.6.0, whose missing-data path ignores `response`; that
-skip records the `hssm_version` it saw.
+A cpn reports `hssm_missing_load` as `skipped` under HSSM < 0.6.0, whose
+missing-data path ignores `response`; that skip records the `hssm_version` it
+saw.
 
 Auxiliary reports are validator-only for now. The publisher still requires the
 LAN gate set (`structure`, `hssm_load`, `density`) and does not pass
-`--aux-category`, so it refuses every cpn/opn/gonogo report and cannot yet
+`--aux-category`, so it refuses every cpn/opn report and cannot yet
 validate a cpn at all. Teaching it the auxiliary gate set is a separate change.
 
 The detailed report has `schema_version: 1`, artifact/model/network identity
 (`onnx`, `model`, `network_type`, and `aux_category` — what the output is the
-probability of: `null` for a LAN, `choice` for a cpn, `omission` for an opn,
-`nogo` for a gonogo), aggregate `passed`, and a
+probability of: `null` for a LAN, `choice` for a cpn, `omission` for an
+opn), aggregate `passed`, and a
 `gates` list whose entries include thresholds, scores, errors, or skip reasons
 as applicable. Adding a nullable top-level key does not bump `schema_version`;
 the gate set a report carries is keyed on `network_type`, not on the version,
