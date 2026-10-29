@@ -16,7 +16,12 @@ dependencies = [
     # lockfile pins exact commits.
     "lanfactory>=0.8",
     "ssm-simulators>=0.15.0",
-    "mlflow>=3.6.0",
+    # An MLflow store opens only on a version that has all of its migrations:
+    # lan-publish on 3.15 refused a store a 3.16 LANfactory trainer wrote.
+    "mlflow>=3.16",
+    # gen_sbatch and discover_cluster read YAML configs. It arrives through
+    # mlflow, but a transitive dependency is not a contract.
+    "pyyaml>=6.0",
     # Declared so the CUDA-build pin in [tool.uv.sources] binds to it — uv
     # sources only apply to *direct* dependencies. lanfactory pulls torch in
     # regardless; this only controls which wheel is chosen.
