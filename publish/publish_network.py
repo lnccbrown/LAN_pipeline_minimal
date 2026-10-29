@@ -42,7 +42,7 @@ import os
 import shutil
 import sys
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
@@ -401,7 +401,7 @@ def publish_network(
     """Record the publish in MLflow and stamp the training run. Returns run id."""
     import mlflow
 
-    published_at = datetime.now(timezone.utc).isoformat()
+    published_at = datetime.now(UTC).isoformat()
     # An unconfirmed sha is a lead, not a fact. Recording it under hf_commit
     # would put a possibly-wrong value in the field everything else trusts, so
     # it goes somewhere that reads as uncertain.

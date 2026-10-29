@@ -473,17 +473,17 @@ def shared_draw(model: ModelUnderTest, seed: int) -> dict[str, float]:
 def _simulate(model: ModelUnderTest, theta: np.ndarray, seed: int):
     """Trial-wise simulation with both RNG streams pinned. Returns (rt, response).
 
-    `random_state` alone does NOT make every ssms model reproducible. Any
-    parameter applied through `simulator_param_mappings` — ddm_sdv's `sv` is
-    `norm.rvs(loc=0, scale=sv)` — draws from scipy's *global* RandomState, a
-    stream `random_state` never touches. Measured: back-to-back calls with the
-    same random_state differ for ddm_sdv, agree for plain ddm, and agree for
-    ddm_sdv at sv=0. Seeding the global RNG closes the gap for every model.
+    Before ssm-simulators 0.14, `random_state` alone did NOT make every model
+    reproducible: parameters applied through `simulator_param_mappings` —
+    ddm_sdv's `sv` — drew from scipy's *global* RandomState. 0.14 binds those
+    draws to a child stream of `random_state` (lnccbrown/ssm-simulators#348),
+    and on 0.15 ddm, ddm_sdv, full_ddm and angle are identical across global
+    states. The global seeding stays as a cheap guard for any mapping that
+    still draws globally.
 
     This matters more than reproducibility for its own sake: the reference and
     network arms must see byte-identical data, or the paired comparison that
     makes recovery interpretable is gone.
-    Upstream: ssm-simulators should thread random_state into the mappings.
     Saved and restored: the seeding is needed for the duration of the call and
     nothing longer. Left in place it silently makes the CALLER's later
     np.random draws deterministic — a sweep looping over models, or a test
@@ -588,17 +588,28 @@ def usable_seed(model: ModelUnderTest, seed: int) -> tuple[int, int]:
     Rejecting on the aggregator's own criterion, rather than on a
     hand-tightened box, keeps this model-general: nothing here knows what makes
     a particular model's drift one-sided, or how many responses it has.
+
+    An attempt must also produce no response time HSSM would refuse — see
+    `_rts_clear`. That check is exact rather than probed, and it too takes no
+    design, so it moves every rung of an index together.
     """
     for attempt in range(MAX_TRUTH_REDRAWS + 1):
         # Attempt 0 uses the seed unchanged, so a dataset that was never
         # degenerate is byte-identical to what it was before this existed:
         # re-running a sweep moves the bad draws and nothing else.
         resolved = seed + attempt * REDRAW_STRIDE
-        if all(_probe_clears(model, probe, resolved) for probe in PROBE_DESIGNS):
+        if all(
+            _probe_clears(model, probe, resolved) for probe in PROBE_DESIGNS
+        ) and _rts_clear(model, resolved):
             return resolved, attempt + 1
-    # Exhausted. Hand back the last attempt rather than raising: the shard's
-    # own data check records the share and the aggregator excludes the fit, so
-    # the failure stays visible in the report instead of killing the array task.
+    # Exhausted. Hand back the last attempt rather than raising, so the
+    # failure stays visible in the report instead of killing the array task.
+    # That attempt can fail either check. A low choice share is recorded by
+    # the shard's data check and excluded by the aggregator after the fit; an
+    # rt <= 0 or a non-finite rt would reach HSSM, so run_one skips the fit,
+    # records `n_rt_nonpositive` / `n_rt_nonfinite`, and the aggregator
+    # excludes the shard under `excluded_for_nonpositive_rt` /
+    # `excluded_for_nonfinite_rt`.
     return resolved, MAX_TRUTH_REDRAWS + 1
 
 
@@ -612,6 +623,52 @@ def _probe_clears(model: ModelUnderTest, probe: Design, seed: int) -> bool:
     """
     data, _ = _simulate_once(model, probe, seed)
     return min_choice_share(data["response"].to_numpy(), model) >= MIN_CHOICE_SHARE
+
+
+def _rts_clear(model: ModelUnderTest, seed: int) -> bool:
+    """Whether no rung of the default ladder holds an rt HSSM refuses at this seed.
+
+    HSSM rejects any dataset with an rt <= 0 ("negative response times"), and
+    a model whose non-decision time is drawn from an untruncated kernel —
+    ddm_normal_st's Normal(t, st) — emits one whenever a trial's draw lands
+    below minus its decision time. Measured on ddm_normal_st at seeds 0-19:
+    10 of the 240 default-sweep datasets held 1-3 such trials. The fit then
+    dies before the likelihood is evaluated, which says nothing about the
+    network.
+
+    A probe cannot settle this the way it settles the choice share. That is a
+    rate, and 1000 probe trials estimate it to half a percentage point; this
+    is a rare per-trial event (about one trial in a thousand on those
+    datasets), so a clean probe says little about a dataset simulated from a
+    different stream. The check is exact instead: it simulates the dataset of
+    every rung in DEFAULT_LADDER, and the simulator is cheap next to one fit.
+    The set is a constant, so the outcome depends only on (model, seed), every
+    rung of an index moves together, and the ladder stays paired.
+
+    Exactly those rungs and no more. Every extra dataset checked is another
+    chance to reject a truth whose fitted data are clean, and the truths it
+    rejects are the ones with st large next to t — the region an st model is
+    meant to be tested in. Measured on ddm_normal_st at the sweep's seeds
+    (10_000-10_019): checking the optional rungs and every other choice of
+    condition parameter as well would have redrawn 3 of 20 indices, all on
+    datasets the default sweep never fits; this check redraws none of them
+    for the sweep's variants (L0, `@v`, `@a`, `@st`). An optional rung
+    therefore shares the default ladder's truth but is not vouched for: an
+    rt <= 0 or non-finite rt there is caught by run_one, which skips the fit and leaves the
+    shard for the aggregator to exclude. Like the L1 probe, the check reads the
+    model's own condition parameter, so L0 and `L1@a` stay paired across
+    variants only while neither redraws — a limit the choice-share probe
+    already has, not a new one.
+
+    Never trimmed instead: dropping the offending trials would change the
+    rung's trial count, which is the one thing a row of the ladder holds fixed.
+    """
+    for name in DEFAULT_LADDER:
+        data, _ = _simulate_once(model, DESIGNS[name], seed)
+        rt = data["rt"].to_numpy()
+        if not np.all(np.isfinite(rt) & (rt > 0)):
+            return False
+    return True
 
 
 def build_dataset(model: ModelUnderTest, design: Design, seed: int):

@@ -44,8 +44,8 @@ from pathlib import Path
 import typer
 
 sys.path.insert(0, str(Path(__file__).parent))
-import aggregate_recovery as agg  # noqa: E402
-import recovery_designs as rd  # noqa: E402
+import aggregate_recovery as agg
+import recovery_designs as rd
 
 logger = logging.getLogger("recover_parameters")
 app = typer.Typer(add_completion=False)
@@ -77,6 +77,9 @@ def _sanity(data, model: rd.ModelUnderTest) -> dict:
         "rt_min": float(rt.min()),
         "rt_max": float(rt.max()),
         "n_rt_nonpositive": int((rt <= 0).sum()),
+        # NaN and +inf slip past `rt <= 0`; `_rts_clear` rejects them too, and
+        # so must run_one when that check was exhausted or never ran.
+        "n_rt_nonfinite": int((~np.isfinite(rt)).sum()),
         # Exact, not a fudge: a censored trial comes back at max_t + t, and no
         # trial that terminated on its own can reach the budget.
         "n_rt_at_ceiling": int((rt >= rd.SIMULATOR_MAX_T).sum()),
@@ -115,7 +118,12 @@ def _summarise(idata, model: rd.ModelUnderTest, design, truth) -> dict:
     import arviz as az
     import numpy as np
 
-    posterior = idata["posterior"] if "posterior" in idata else idata.posterior
+    # Not `.get(key, idata.<attr>)`: that evaluates the attribute fallback
+    # eagerly, and the key lookup is there for the idata types where the
+    # attribute form is the one that fails.
+    posterior = (
+        idata["posterior"] if "posterior" in idata else idata.posterior  # noqa: SIM401
+    )
     out = {}
     for param, var in rd.posterior_names(model, design).items():
         if var not in posterior:
@@ -221,6 +229,47 @@ def run_one(
     # same index sees byte-identical data.
     seed = 10_000 + dataset_index
     data, truth = rd.build_dataset(model, design, seed=seed)
+    record = {
+        "schema_version": 2,
+        "model": model_name,
+        "design": design_name,
+        # `L1_n500@v` and `L1_n500@sv` are different designs, not one
+        # design run twice. This is what keeps them apart everywhere.
+        "design_id": rd.design_id(model, design),
+        "dataset_index": dataset_index,
+        "likelihood": likelihood,
+        # The arm is what the aggregator pools on. Two candidate networks for
+        # one model and design are different arms and must not share a cell,
+        # so the ONNX identity is part of it.
+        "arm": arm,
+        "p_outlier": p_outlier,
+        "bounds_from": bounds_from,
+        "condition_param": model.condition_param,
+        "has_analytical_reference": model.has_analytical,
+        "onnx": str(onnx_path) if onnx_path else None,
+        "seed": seed,
+        "data": _sanity(data, model),
+        "env": {
+            "python": platform.python_version(),
+            "hssm": getattr(hssm, "__version__", "unknown"),
+        },
+    }
+
+    # HSSM refuses any rt <= 0 and the refusal kills the array task; a NaN or
+    # +inf rt is no better. Either happens when usable_seed ran out of redraws
+    # without a clean attempt, or on an optional rung `_rts_clear` does not
+    # vouch for. Either way it is a fact about the draw, not the likelihood, so
+    # the fit is skipped and the aggregator excludes it under
+    # `excluded_for_nonpositive_rt` or `excluded_for_nonfinite_rt`.
+    n_nonpositive = record["data"]["n_rt_nonpositive"]
+    n_nonfinite = record["data"]["n_rt_nonfinite"]
+    if n_nonpositive or n_nonfinite:
+        logger.warning(
+            f"{n_nonpositive} rt <= 0 and {n_nonfinite} non-finite rt in the "
+            f"dataset at seed {seed}; not fitting, the aggregator will exclude "
+            "this shard"
+        )
+        return _finite({**record, "parameters": {}, "posterior_corr": {}})
 
     hssm.set_floatX("float32", update_jax=True)
     kwargs = {}
@@ -266,32 +315,19 @@ def run_one(
     )
     elapsed = time.time() - started
 
+    # See _summarise for why these are not `.get`.
     sample_stats = (
-        idata["sample_stats"] if "sample_stats" in idata else idata.sample_stats
+        idata["sample_stats"]  # noqa: SIM401
+        if "sample_stats" in idata
+        else idata.sample_stats
     )
-    posterior = idata["posterior"] if "posterior" in idata else idata.posterior
+    posterior = (
+        idata["posterior"] if "posterior" in idata else idata.posterior  # noqa: SIM401
+    )
     diverging = np.asarray(sample_stats["diverging"])
     return _finite(
         {
-            "schema_version": 2,
-            "model": model_name,
-            "design": design_name,
-            # `L1_n500@v` and `L1_n500@sv` are different designs, not one
-            # design run twice. This is what keeps them apart everywhere.
-            "design_id": rd.design_id(model, design),
-            "dataset_index": dataset_index,
-            "likelihood": likelihood,
-            # The arm is what the aggregator pools on. Two candidate networks for
-            # one model and design are different arms and must not share a cell,
-            # so the ONNX identity is part of it.
-            "arm": arm,
-            "p_outlier": p_outlier,
-            "bounds_from": bounds_from,
-            "condition_param": model.condition_param,
-            "has_analytical_reference": model.has_analytical,
-            "onnx": str(onnx_path) if onnx_path else None,
-            "seed": seed,
-            "data": _sanity(data, model),
+            **record,
             "sampler": {
                 "draws": draws,
                 "tune": tune,
@@ -303,10 +339,6 @@ def run_one(
             },
             "parameters": _summarise(idata, model, design, truth),
             "posterior_corr": _posterior_corr(posterior, model, design),
-            "env": {
-                "python": platform.python_version(),
-                "hssm": getattr(hssm, "__version__", "unknown"),
-            },
         }
     )
 

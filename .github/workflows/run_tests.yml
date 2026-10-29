@@ -28,15 +28,13 @@ jobs:
       - name: Install GSL (for the ssm-simulators build)
         run: sudo apt-get update && sudo apt-get install -y libgsl-dev
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
+      # uv provides the interpreter too: every step runs Python through
+      # `uv run`, so no separate setup-python step.
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
+          python-version: "3.12"
 
       # Builds ssm-simulators + lanfactory from the git commits pinned in
       # uv.lock (sourced from their main branches, see pyproject

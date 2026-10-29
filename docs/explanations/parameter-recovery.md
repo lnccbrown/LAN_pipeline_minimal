@@ -63,6 +63,26 @@ randomness, so every arm of one index sees the same data, and `--bounds-from`
 pins one likelihood's bounds as the priors for *all* arms. Arms that differ in
 their priors as well as their likelihoods are not paired.
 
+Some truths are redrawn before anything is fit, and the redraw is decided per
+dataset index, never per rung, so every rung of an index keeps the same truth.
+An index is redrawn (up to eight times; attempt 0 keeps the seed unchanged) when
+a probe shows one response taken by fewer than 2% of trials, or when any rung
+of the default ladder would contain a response time HSSM refuses (rt <= 0 or
+non-finite). The second check is exact — it simulates each default rung's own
+dataset — because a model with an untruncated non-decision-time kernel such as
+`ddm_normal_st` emits such trials about once per thousand, too rarely for a
+probe to catch. Offending trials are never dropped: that would change the
+rung's trial count. The optional 2000-trial rungs share the index's truth but
+are not checked.
+
+If the budget runs out, or an optional rung holds such a trial, the shard is
+not fitted: HSSM would refuse an rt <= 0 and kill the array task, and a NaN or
+infinite rt is no more usable. The shard records `n_rt_nonpositive` and
+`n_rt_nonfinite`, and the aggregator counts it under
+`excluded_for_nonpositive_rt` or `excluded_for_nonfinite_rt` (an rt of -inf
+counts once, under the first), next to `excluded_for_degenerate_data`, rather
+than under `errors`.
+
 ## 3. Walk a ladder of design complexity
 
 Weak identifiability is usually a property of the design, and the standard
