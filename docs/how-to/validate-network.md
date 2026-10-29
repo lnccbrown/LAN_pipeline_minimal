@@ -74,9 +74,9 @@ G5 runs LANfactory's `lanfactory.derive.survey` — uniform θ over the full box
 total mass on the *onset-refined* grid — and judges the tails of the
 `|total − 1|` distribution. The grid matters: a uniform 1000-point grid carries
 15–25 % quadrature error at a < 0.5, which the survey would otherwise blame on
-the network. The whole survey dict (per-parameter bins, the worst cell, the
-shrunk-box subset, any leak of mass below the onset) is recorded in the gate
-so a deviation can be located, together with the `seconds` it took.
+the network. The whole survey dict (per-parameter bins and any leak of mass
+below the onset) is recorded in the gate so a deviation can be located,
+together with the `seconds` it took.
 
 | Verdict | Rule | Effect |
 | --- | --- | --- |

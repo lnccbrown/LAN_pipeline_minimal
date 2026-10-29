@@ -116,12 +116,12 @@ In the LAN gates, `mass_survey` records its `verdict` (`pass`, `warn`, or
 `frac_gt_0.05` — the lines it judged them against (`p99_max`,
 `frac_gt_0_10_max`, `warn_p99`, `warn_frac_gt_0_05`), `n_theta`, the
 `seconds` the survey took, and the whole `survey` dict as
-`lanfactory.derive.survey` returned it: `n_theta`, `grid`, `seconds`, `total`
-and `shrunk_box` (each with `mean`, `p50_abs_dev`, `p90_abs_dev`,
-`p99_abs_dev`, `min`, `max`, `frac_gt_0.02`, `frac_gt_0.05`, `frac_gt_0.10`;
-`shrunk_box` adds `frac_of_theta`), `leak_below_onset` (`mean`, `p99`, `max`,
-or `null` for a model without an onset parameter), `by_param` (ten bins per
-parameter with `lo`, `hi`, `mean_dev`, `max_abs_dev`, `n`), and `worst_cell`.
+`lanfactory.derive.survey` returned it: `n_theta`, `grid` (the grid's repr),
+`seconds`, `total` (`mean`, `p50_abs_dev`, `p90_abs_dev`, `p99_abs_dev`,
+`min`, `max`, `frac_gt_0.02`, `frac_gt_0.05`, `frac_gt_0.10`),
+`leak_below_onset` (`mean`, `p99`, `max` over θ, or `null` for a model without
+an onset parameter), and `by_param` (ten bins per parameter with `lo`, `hi`,
+`mean_dev`, `max_abs_dev`, `n`).
 A warn-level result adds `warning`; a failure adds `error` and keeps the
 survey. A skip carries only `skipped` and `reason`.
 

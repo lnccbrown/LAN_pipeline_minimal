@@ -859,17 +859,15 @@ def canned_survey(
     }
     return {
         "n_theta": 20_000,
-        "grid": {"kind": "onset", "n_points": 1000},
+        "grid": "OnsetGrid(n_pre=32, n_knee=128, knee=0.05, n_onset=600, ...)",
         "seconds": seconds,
         "total": total,
-        "shrunk_box": {**total, "frac_of_theta": 0.41},
         "leak_below_onset": {"mean": 1e-4, "p99": 1e-3, "max": 2e-3},
         "by_param": {
             "a": [
                 {"lo": 0.3, "hi": 0.52, "mean_dev": 0.001, "max_abs_dev": 0.02, "n": 2}
             ]
         },
-        "worst_cell": {"a": [2.2, 2.5], "v": [-0.5, 0.5], "mean_dev": 0.2},
     }
 
 
