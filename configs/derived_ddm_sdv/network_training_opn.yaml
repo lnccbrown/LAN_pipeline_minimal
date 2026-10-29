@@ -19,9 +19,13 @@ GENERATOR_APPROACH: "lan"
 LAYER_SIZES: [[100, 100, 100, 1]]
 ACTIVATIONS: [['tanh', 'tanh', 'tanh']]
 
-# Modest: the derived corpus is small and smooth (no simulator noise in the
-# labels), and the plateau scheduler below stops learning early anyway.
-N_EPOCHS: 10
+# 40, with the validation split and patience below: the derive rehearsal
+# (2026-10-28) trained this OPN at 10 epochs, 2 validation files and
+# patience 2, and it failed the accuracy gate on fit, not derivation (A4 mean
+# 0.0108 > 0.01; labels within 0.005 of simulation). This schedule passed
+# (A4 mean 0.0031, max 0.0105). The CPN passed on the old schedule and keeps
+# it until a CPN run on this one.
+N_EPOCHS: 40
 
 # 512 MUST divide the rows per file of a derive-aux corpus, which is
 # 4096 θ per file -> 4096 rows per file (one deadline per θ).
@@ -37,14 +41,19 @@ WEIGHT_DECAY: 0.0
 LR_SCHEDULER: 'reduce_on_plateau'
 LR_SCHEDULER_PARAMS:
   factor: 0.1
-  patience: 2
+  patience: 5                # see TRAIN_VAL_SPLIT
   threshold: 0.001
   min_lr: 0.00000001
   verbose: True
 
-# Splits across FILES: with derive-aux's default 100 files that is 98 train
-# / 2 validation.
-TRAIN_VAL_SPLIT: 0.98
+# Splits across FILES: with derive-aux's default 100 files that is 90 train
+# / 10 validation. LANfactory's DatasetTorch resamples each file with
+# replacement as it loads it, so the validation loss carries bootstrap noise:
+# on 2 files (8192 rows) its SE was 0.0027, several times the scheduler's
+# 0.1 % threshold, and patience 2 cut the LR at epochs 5 and 8 while the
+# training loss was still falling. 10 files shrink that noise by about √5,
+# and patience 5 rides out what is left.
+TRAIN_VAL_SPLIT: 0.9
 
 # A SENTINEL, applied as min(files_found, this). It does NOT assert that
 # 10000 files exist.
