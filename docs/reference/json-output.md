@@ -203,12 +203,14 @@ the staging directory and write `validation_report.json` there:
 }
 ```
 
-`provenance` and `forwarded_tags` are always present. Both are empty for a
-LAN. For a cpn or opn `provenance` carries the derive-aux keys read from the
-training run, `forwarded_tags` the training-run tags the publish run would
-carry (the tail-policy record and `data_origin`, each only when the training
-run has it), and `staged` then also lists the generated `model_card.yaml`
-unless an operator card was staged:
+`provenance` and `forwarded_tags` are always present. For a LAN
+`provenance` is empty and `forwarded_tags` carries at most `data_origin`,
+which LANfactory tags every training run with. For a cpn or opn
+`provenance` carries the derive-aux keys read from the training run,
+`forwarded_tags` the training-run tags the publish run would carry (the
+tail-policy record and `data_origin`, each only when the training run has
+it), and `staged` then also lists the generated `model_card.yaml` unless an
+operator card was staged:
 
 ```json
 {

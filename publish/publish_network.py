@@ -529,10 +529,8 @@ def _dump_card(card: Mapping[str, object]) -> str:
 
     The card is reviewed by eye before the real publish, and a description
     folded into a quoted scalar with doubled apostrophes is not something a
-    reviewer can read. yaml is imported here, not at module level: pyproject
-    does not declare PyYAML (it arrives through mlflow and huggingface-hub),
-    and the publisher's import-time surface should not lean on that path any
-    more than it has to.
+    reviewer can read. yaml is imported here, not at module level, so the
+    publisher's import-time surface stays what it was before cards.
     """
     import yaml
 
@@ -947,13 +945,13 @@ def main(
         # Density is a required gate, so skipping it makes gate_verdict refuse.
         # The flag cannot produce a publish at all — it only saves the cost of
         # the slowest gate while dry-running the resolve/stage/plan path.
-        help="Skip G4. No publish is possible with this set; it only "
-        "shortens --dry-run.",
+        help="Skip G4. No publish is possible with this set: it shortens a "
+        "--dry-run, which then exits 1.",
     ),
     skip_accuracy: bool = typer.Option(
         False,
         help="Skip A4, the auxiliary analogue of --skip-density. No publish is "
-        "possible with this set; it only shortens --dry-run.",
+        "possible with this set: it shortens a --dry-run, which then exits 1.",
     ),
     dry_run: bool = typer.Option(
         False, help="Validate and show the plan; touch neither HF nor MLflow."
