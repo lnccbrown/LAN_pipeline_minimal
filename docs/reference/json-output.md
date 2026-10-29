@@ -267,9 +267,9 @@ verified, `hf_commit_candidate` replaces `hf_commit` and may be null;
 `hf_commit_verified` is false.
 
 A handled refusal or gate failure returns `published: false` plus `error` and
-any plan fields established before the refusal. A real publication attempt
-exits non-zero in that case. A dry run can exit successfully with
-`published: false`, because not publishing is its intended outcome.
+any plan fields established before the refusal, and exits non-zero, dry run
+or not. A dry run whose gates cleared exits successfully with `published:
+false`, because not publishing is its intended outcome.
 
 The `gate` field (and `error`, when the verdict refused) is one of:
 

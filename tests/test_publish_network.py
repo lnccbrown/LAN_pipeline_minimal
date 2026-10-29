@@ -1404,12 +1404,15 @@ class TestAuxiliaryPublish:
             ],
         )
 
-        assert result.exit_code == 0, result.output
+        # The skipped accuracy gate refuses, and a refused dry run exits 1
+        # (it used to exit 0, which hid the refusal from a script).
+        assert result.exit_code == 1, result.output
         (validate,) = stubs["validate"]
         assert validate["lan_onnx"] == lan
         assert validate["skip_accuracy"] is True
         plan = json.loads(result.stdout.strip().splitlines()[-1])
         assert plan["published"] is False and "accuracy" in plan["gate"]
+        assert plan["error"] == plan["gate"]
         assert "model_card.yaml" not in plan["staged"]
         assert stubs["upload"] == []
 

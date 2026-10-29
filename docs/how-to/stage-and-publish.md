@@ -51,7 +51,8 @@ from its own earlier dry run or failed gate so you can inspect the report.
 ## Read the dry-run plan
 
 A successful dry run prints one JSON object with `dry_run: true` and
-`published: false`. Review:
+`published: false`, and exits 0. A dry run a gate refused prints the plan with
+an `error` and exits 1, as a real attempt does. Review:
 
 - `training_run_id` and `run_uuid`;
 - `model`, `network_type`, and target `hf_repo`;

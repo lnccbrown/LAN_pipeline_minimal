@@ -1028,7 +1028,9 @@ def main(
         raise typer.Exit(code=1) from e
 
     print(json.dumps(result))
-    if not result["published"] and not dry_run:
+    # A refusal fails a dry run too: the dry run is the rehearsal, and one that
+    # exits 0 on a refused gate reads as a green light to whoever scripts it.
+    if "error" in result or not (result["published"] or dry_run):
         raise typer.Exit(code=1)
 
 
