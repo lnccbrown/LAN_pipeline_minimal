@@ -286,8 +286,10 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
     None when there is no LAN path to evaluate or ``lanfactory.derive`` is
     not importable (the environment's LANfactory predates it). The mass is
     ``choice_mass`` on LANfactory's onset-refined grid, built around the
-    onset ``theta[:, t_idx]`` when the model has a ``t`` parameter and around
-    0 otherwise, so a failing accuracy draw can be attributed: a cpn/opn derived from a LAN that is
+    onset ``theta[:, t_idx]`` when the model has a ``t`` parameter (less
+    ``scale * theta[:, param]`` when the config declares an
+    ``ndt_edge_shift``, as the survey does) and around 0 otherwise, so a
+    failing accuracy draw can be attributed: a cpn/opn derived from a LAN that is
     mis-normalised at that θ inherits the error, and the number says so.
     Advisory only — any failure here is logged and yields None, never a
     failed gate.
@@ -302,6 +304,8 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
         predictor = load_onnx_predictor(lan_onnx)
         params = list(model_config["params"])
         t_idx = params.index("t") if "t" in params else None
+        shift = model_config.get("ndt_edge_shift")
+        shift_idx = params.index(shift["param"]) if shift is not None else None
         choices = list(model_config["choices"])
     except Exception as e:  # noqa: BLE001 - attribution must not break the gate
         logger.warning(f"LAN total_mass unavailable for the accuracy draws: {e}")
@@ -310,6 +314,8 @@ def _lan_total_mass(lan_onnx: Path | None, model_config: dict):
     def total(theta: np.ndarray) -> float | None:
         row = np.atleast_2d(np.asarray(theta, dtype=float))
         onset = row[:, t_idx] if t_idx is not None else 0.0
+        if shift_idx is not None:
+            onset = onset - shift["scale"] * row[:, shift_idx]
         try:
             return float(choice_mass(predictor, row, choices, onset).total[0])
         except Exception as e:  # noqa: BLE001
@@ -830,6 +836,10 @@ def gate_mass_survey(
               or total.frac_gt_0.05 > MASS_SURVEY_WARN_FRAC_GT_0_05
               (passed=True, with a ``warning`` detail)
 
+    A model whose config declares ``ndt_edge_shift`` (ddm_st, full_ddm*)
+    starts its response times at ``t - scale * st``, and the survey builds
+    its grid and measures the leak from there.
+
     Skipped, with LANFACTORY_DERIVE_SKIP_REASON, while ``lanfactory.derive``
     is not importable; the survey dict is small and recorded whole, so a
     reader can see which parameter bins carry the deviation.
@@ -858,6 +868,7 @@ def gate_mass_survey(
             n_theta=n_theta,
             seed=seed,
             onset_param="t" if "t" in params else None,
+            ndt_edge_shift=model_config.get("ndt_edge_shift"),
         )
         total = result["total"]
         p99 = float(total["p99_abs_dev"])

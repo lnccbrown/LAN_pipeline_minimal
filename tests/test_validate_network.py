@@ -965,6 +965,12 @@ DDM_CONFIG = {
     "param_bounds": [[-3.0, 0.3, 0.1, 0.0], [3.0, 2.5, 0.9, 2.0]],
     "choices": [-1, 1],
 }
+DDM_ST_CONFIG = {
+    "params": ["v", "a", "z", "t", "st"],
+    "param_bounds": [[-3.0, 0.3, 0.1, 0.25, 0.0], [3.0, 2.5, 0.9, 2.25, 0.25]],
+    "choices": [-1, 1],
+    "ndt_edge_shift": {"param": "st", "scale": 1.0},
+}
 # What L1's survey() wants: ssms' param_bounds_dict, keyed by name.
 DDM_BOUNDS = {"v": (-3.0, 3.0), "a": (0.3, 2.5), "z": (0.1, 0.9), "t": (0.0, 2.0)}
 
@@ -1008,7 +1014,19 @@ class TestMassSurveyGate:
         assert bounds == DDM_BOUNDS
         assert params == ["v", "a", "z", "t"]
         assert choices == [-1, 1]
-        assert kwargs == {"n_theta": 500, "seed": 7, "onset_param": "t"}
+        assert kwargs == {
+            "n_theta": 500,
+            "seed": 7,
+            "onset_param": "t",
+            "ndt_edge_shift": None,
+        }
+
+    def test_hands_an_st_models_edge_shift_to_the_survey(self, tmp_path, fake_derive):
+        # ddm_st's rts start at t - st; without the shift the survey reports
+        # the model's own early mass as leak and misplaces its grid.
+        vn.gate_mass_survey(make_onnx(tmp_path / "lan.onnx", (1, 7)), DDM_ST_CONFIG)
+        kwargs = fake_derive.calls[1][-1]
+        assert kwargs["ndt_edge_shift"] == {"param": "st", "scale": 1.0}
 
     def test_a_model_without_t_gets_no_onset_param(self, tmp_path, fake_derive):
         config = {
@@ -1299,6 +1317,13 @@ class TestAccuracyStrata:
         (_, theta, _, onset) = next(c for c in fake_derive.calls if c[0] == "mass")
         assert onset == [0.0]
         assert theta == [0.5, 1.0, 0.5]
+
+    def test_an_st_model_integrates_from_t_minus_st(self, tmp_path, fake_derive):
+        lan = make_onnx(tmp_path / "lan.onnx", (1, 7))
+        total = vn._lan_total_mass(lan, DDM_ST_CONFIG)
+        assert total(np.array([0.5, 1.0, 0.5, 0.8, 0.2])) == 0.97
+        (_, _, _, onset) = next(c for c in fake_derive.calls if c[0] == "mass")
+        assert onset == pytest.approx([0.6])
 
     def test_total_mass_needs_a_lan_to_evaluate(
         self, tmp_path, monkeypatch, fake_derive
