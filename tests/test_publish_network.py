@@ -34,6 +34,7 @@ ALL_RAN = {
     "parity": (True, False),
     "hssm_load": (True, False),
     "density": (True, False),
+    "mass_survey": (True, False),
 }
 
 
@@ -41,6 +42,28 @@ class TestGateVerdict:
     def test_accepts_a_report_where_every_gate_ran(self):
         ok, reason = gate_verdict(report(**ALL_RAN))
         assert ok, reason
+
+    def test_the_mass_survey_is_advisory_so_its_skip_does_not_block(self):
+        # The survey is advisory, so it is deliberately absent from
+        # REQUIRED_GATES: it skips where LANfactory predates lanfactory.derive,
+        # or on --skip-mass-survey, and neither may block a publish.
+        skipped_survey = {**ALL_RAN, "mass_survey": (True, True)}
+        ok, reason = gate_verdict(report(**skipped_survey))
+        assert ok, reason
+        # A report from before the gate existed carries no such entry at all.
+        without_survey = {k: v for k, v in ALL_RAN.items() if k != "mass_survey"}
+        ok, reason = gate_verdict(report(**without_survey))
+        assert ok, reason
+
+    def test_a_failed_mass_survey_still_refuses_like_any_failed_gate(self):
+        failing = {**ALL_RAN, "mass_survey": (False, False)}
+        r = report(**failing)
+        next(g for g in r["gates"] if g["gate"] == "mass_survey")["error"] = (
+            "total.p99_abs_dev 0.2000 > 0.1"
+        )
+        ok, reason = gate_verdict(r)
+        assert not ok
+        assert "mass_survey" in reason and "0.2000" in reason
 
     def test_a_skipped_required_gate_is_not_a_pass(self):
         # The trap this function exists for: skipped gates report passed=True,
@@ -74,7 +97,9 @@ class TestGateVerdict:
     def test_a_failed_gate_is_reported_with_its_error(self):
         failing = {**ALL_RAN, "density": (False, False)}
         r = report(**failing)
-        r["gates"][-1]["error"] = "worst_ratio 13.4 > 3.0"
+        next(g for g in r["gates"] if g["gate"] == "density")["error"] = (
+            "worst_ratio 13.4 > 3.0"
+        )
         ok, reason = gate_verdict(r)
         assert not ok
         assert "worst_ratio 13.4" in reason
@@ -522,6 +547,34 @@ class TestProductionGuard:
                 network_type="lan",
                 allow_production=True,
             )
+
+
+class TestRunPublishRefusals:
+    def test_a_type_the_validator_has_no_gates_for_is_refused_before_staging(
+        self, tmp_path, monkeypatch
+    ):
+        # lanfactory.hf still names gonogo; the validator dropped it. Without
+        # the check run_publish staged the run and died in a ValueError.
+        from types import SimpleNamespace
+
+        from publish import publish_network
+
+        run = SimpleNamespace(
+            info=SimpleNamespace(run_id="r"),
+            data=SimpleNamespace(
+                params={"model": "ddm", "network_type": "gonogo"},
+                tags={"run_uuid": "a" * 32},
+            ),
+        )
+        monkeypatch.setattr(publish_network, "resolve_training_run", lambda **kw: run)
+        with pytest.raises(PublishError, match="'gonogo' is not one of"):
+            publish_network.run_publish(
+                hf_repo="example/HSSM_staging",
+                run_id="r",
+                artifact_dir=tmp_path,
+                staging_dir=tmp_path / "staged",
+            )
+        assert not (tmp_path / "staged").exists()
 
 
 class TestProductionConfirmation:

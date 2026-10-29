@@ -61,7 +61,7 @@ uv run lan-publish --help
 | `--hf-repo TEXT` | required | Non-production Hugging Face target; there is deliberately no default |
 | `--run-id TEXT` | selection A | Exact MLflow training run |
 | `--model TEXT` | selection B | Model for newest-completed-run selection |
-| `--network-type TEXT` | selection B | `lan`, `cpn`, `opn`, or `gonogo` |
+| `--network-type TEXT` | selection B | `lan`, `cpn`, or `opn` |
 | `--artifact-dir PATH` | run output path | Local folder holding the training artifacts |
 | `--staging-dir PATH` | temporary directory | Persistent isolated upload assembly directory |
 | `--skip-density` | false | Skip G4 for a shorter rehearsal; the result cannot publish |
@@ -81,12 +81,20 @@ uv run python validation/validate_network.py --help
 | Option | Required/default | Meaning |
 | --- | --- | --- |
 | `--onnx-path PATH` | required | Trusted ONNX artifact; sibling config may be unpickled |
-| `--model-name TEXT` | required | ssm-simulators model name |
-| `--network-type TEXT` | `lan` | `lan`, `cpn`, `opn`, or `gonogo` |
+| `--model-name TEXT` | required | ssm-simulators base model name; a `_deadline` variant is rejected |
+| `--network-type TEXT` | `lan` | `lan`, `cpn`, or `opn` |
+| `--aux-category TEXT` | cpn: `choice`; opn: `omission` | What an auxiliary network's output is the probability of; an explicit value must match the type's |
+| `--lan-onnx PATH` | resolved by name | Local base LAN for `hssm_missing_load`; required for models outside HSSM's registry |
 | `--report-path PATH` | next to ONNX | Detailed JSON report destination |
-| `--skip-density` | false | Mark density skipped |
-| `--skip-hssm` | false | Mark HSSM integration skipped |
+| `--skip-density` | false | Mark density skipped (LAN) |
+| `--skip-hssm` | false | Mark the HSSM integration gate skipped (`hssm_load` or `hssm_missing_load`) |
+| `--skip-accuracy` | false | Mark accuracy skipped (cpn/opn) |
+| `--skip-mass-survey` | false | Mark the mass survey skipped (LAN); it also skips itself while `lanfactory.derive` is not importable |
 | `--hellinger-ratio-max FLOAT` | `3.0` | Maximum density error relative to sampling floor |
+| `--mass-survey-p99-max FLOAT` | `0.10` | Mass survey fail line: maximum p99 of `|total mass − 1|` over the full-box draws (provisional) |
+| `--mass-survey-frac-gt-0.10-max FLOAT` | `0.02` | Mass survey fail line: maximum fraction of the box where `|total mass − 1| > 0.10` (provisional) |
+| `--accuracy-mean-abs-max FLOAT` | `0.01` | Maximum mean `|network − truth|` over the accuracy draws (provisional) |
+| `--accuracy-max-abs-max FLOAT` | `0.03` | Maximum single-draw `|network − truth|` (provisional) |
 | `--log-level TEXT` | `WARNING` | Logging threshold |
 
 ## Parameter-recovery worker
