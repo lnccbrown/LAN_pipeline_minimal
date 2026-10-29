@@ -102,7 +102,6 @@ AUX_PROVENANCE_KEYS = (
     "integration_grid",
     "integration_max_t",
 )
-AUX_PROVENANCE_OPTIONAL_KEYS = ("source_lan_run_id",)
 # Keys that must exist on the run but may be empty: the legacy LANs on the
 # Hub (the 2023 artifacts, bare ``{model}.onnx``) predate training-run uuids,
 # so a network derived from one has a sha256 and a Hub commit but no
@@ -500,13 +499,6 @@ def aux_provenance(params: Mapping[str, str], network_type: str) -> dict[str, st
             "The network was derived for something other than its root "
             "filename would promise."
         )
-    provenance.update(
-        {
-            key: str(params[key])
-            for key in AUX_PROVENANCE_OPTIONAL_KEYS
-            if _present(params.get(key))
-        }
-    )
     return provenance
 
 

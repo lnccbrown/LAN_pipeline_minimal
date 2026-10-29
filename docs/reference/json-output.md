@@ -229,8 +229,7 @@ unless an operator card was staged:
     "source_lan_sha256": "<sha256 of the integrated LAN>",
     "source_lan_hf_commit": "<Hub revision it was downloaded at>",
     "integration_grid": "1000",
-    "integration_max_t": "20.0",
-    "source_lan_run_id": "<optional MLflow run id of the LAN>"
+    "integration_max_t": "20.0"
   },
   "forwarded_tags": {
     "derive_total_mass_mean": "0.998",
@@ -244,9 +243,8 @@ unless an operator card was staged:
 }
 ```
 
-Values are strings, as MLflow stores params and tags. `source_lan_run_id`
-appears only when the training run carries it, and so does every key of
-`forwarded_tags`: a training run from before LANfactory logged the fallback
+Values are strings, as MLflow stores params and tags. Every key of
+`forwarded_tags` appears only when the training run carries it: a training run from before LANfactory logged the fallback
 fraction and the onset leak shows only the mass stats here, and a tag the
 training run stored as `"None"` or `""` (a survey with no onset parameter
 logs `derive_leak_below_onset_p99` that way) is dropped rather than forwarded.

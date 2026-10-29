@@ -105,7 +105,6 @@ it cannot name. LANfactory logs these params on a training run started from a
 | `aux_category` | `choice` for a cpn, `omission` for an opn |
 | `source_lan_run_uuid`, `source_lan_sha256`, `source_lan_hf_commit` | The LAN the corpus was integrated from; `source_lan_run_uuid` may be empty for a legacy Hub LAN (the 2023 artifacts predate run uuids), the other two never |
 | `integration_grid`, `integration_max_t` | The quadrature the corpus was built on |
-| `source_lan_run_id` | Optional: the LAN's MLflow training run |
 
 A run started from a simulated corpus carries none of them and is refused,
 naming the first missing key, before anything is staged. An empty value, or

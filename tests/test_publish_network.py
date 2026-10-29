@@ -224,10 +224,6 @@ class TestAuxProvenance:
         assert aux_provenance(params, "cpn") == PROVENANCE
         assert set(PROVENANCE) == set(AUX_PROVENANCE_KEYS)
 
-    def test_the_optional_run_id_is_included_when_present(self):
-        params = {**PROVENANCE, "source_lan_run_id": "0123456789abcdef"}
-        assert aux_provenance(params, "cpn")["source_lan_run_id"] == "0123456789abcdef"
-
     @pytest.mark.parametrize("missing", AUX_PROVENANCE_KEYS)
     def test_each_missing_required_key_is_named(self, missing):
         params = {k: v for k, v in PROVENANCE.items() if k != missing}
@@ -259,10 +255,6 @@ class TestAuxProvenance:
                 {k: v for k, v in PROVENANCE.items() if k != "source_lan_run_uuid"},
                 "cpn",
             )
-
-    def test_a_none_valued_optional_key_is_left_out(self):
-        params = {**PROVENANCE, "source_lan_run_id": "None"}
-        assert "source_lan_run_id" not in aux_provenance(params, "cpn")
 
     def test_trained_from_simulation_is_recognised_but_not_publishable(self):
         # The contract allows the value, but no writer emits it and the card

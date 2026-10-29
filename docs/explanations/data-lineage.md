@@ -39,8 +39,7 @@ points at another network rather than at simulator workers:
 published LAN (root file on the Hub)
   |-- source_lan_sha256      the exact bytes integrated
   |-- source_lan_hf_commit   the Hub revision they were downloaded at
-  |-- source_lan_run_uuid    the LAN's own training run
-  `-- source_lan_run_id      that run's MLflow id, when known
+  `-- source_lan_run_uuid    the LAN's own training run
             |
             | derivation_method, aux_category,
             | integration_grid, integration_max_t
