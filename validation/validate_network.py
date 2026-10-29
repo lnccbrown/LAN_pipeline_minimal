@@ -579,6 +579,29 @@ def hssm_load_data(
     }
 
 
+def _no_usable_draw(gate: str, draw: dict, n_trials: int, shrink: float) -> dict:
+    """The skip G3 and A3 report when every inset-box draw was unusable.
+
+    Skipped, not failed: no network was loaded, so there is no verdict on it.
+    Like a skipped parity gate this reports passed=True, and like any skipped
+    gate it still blocks publish, which requires the gate to have run.
+    """
+    return _result(
+        gate,
+        True,
+        skipped=True,
+        n_trials=n_trials,
+        attempts=draw["attempts"],
+        rejected_draws=draw["rejected"],
+        reason=(
+            f"no usable dataset in {draw['attempts']} draws from the "
+            f"{shrink:.0%}-inset box: every draw simulated an rt <= 0 or "
+            "a non-finite rt, which HSSM rejects. This is a fact about "
+            "the box, not the network; the network was never loaded."
+        ),
+    )
+
+
 def gate_hssm_load(
     onnx_path: Path,
     model_name: str,
@@ -601,24 +624,7 @@ def gate_hssm_load(
         model_config = ssms.config.model_config[model_name]
         draw = hssm_load_data(model_name, n_trials=n_trials, seed=seed, shrink=shrink)
         if draw["data"] is None:
-            # Skipped, not failed: no network was loaded, so there is no
-            # verdict on it. Like a skipped parity gate this reports
-            # passed=True, and like any skipped gate it still blocks publish,
-            # which requires hssm_load to have run.
-            return _result(
-                "hssm_load",
-                True,
-                skipped=True,
-                n_trials=n_trials,
-                attempts=draw["attempts"],
-                rejected_draws=draw["rejected"],
-                reason=(
-                    f"no usable dataset in {draw['attempts']} draws from the "
-                    f"{shrink:.0%}-inset box: every draw simulated an rt <= 0 or "
-                    "a non-finite rt, which HSSM rejects. This is a fact about "
-                    "the box, not the network; the network was never loaded."
-                ),
-            )
+            return _no_usable_draw("hssm_load", draw, n_trials, shrink)
         data = draw["data"]
 
         model = hssm.HSSM(
@@ -948,7 +954,9 @@ def gate_hssm_missing_load(
     RT — about half the trials then omit, which exercises both branches of
     HSSM's assembled likelihood. cpn: every 5th trial has its rt blanked to
     the missing marker while its response is kept, which is the shape of a
-    choice-only row.
+    choice-only row. The base data come from G3's ``hssm_load_data``: an
+    inset-box θ, redrawn until HSSM would accept every rt, so A3 skips like
+    G3 when no draw is usable and never blames the net for an rt <= 0.
 
     The base LAN is resolved by name through HSSM (a download for registry
     models) unless ``lan_onnx`` points at one; models outside HSSM's registry
@@ -976,10 +984,13 @@ def gate_hssm_missing_load(
         import pandas as pd
         import ssms
 
-        rng = np.random.default_rng(seed)
         model_config = ssms.config.model_config[model_name]
-        theta = _draw_theta(model_config, rng)
-        rts, choices = _simulate(model_name, theta, n_trials, seed)
+        draw = hssm_load_data(model_name, n_trials=n_trials, seed=seed)
+        if draw["data"] is None:
+            return _no_usable_draw("hssm_missing_load", draw, n_trials, 0.1)
+        theta = np.asarray(draw["theta"])
+        rts = draw["data"]["rt"].to_numpy()
+        choices = draw["data"]["response"].to_numpy()
 
         hssm_kwargs: dict[str, Any] = {
             "missing_data": True,
@@ -1001,8 +1012,14 @@ def gate_hssm_missing_load(
 
         if network_type == "opn":
             deadline = float(np.median(rts))
+            # ponytail: the _deadline run is not re-checked for rt <= 0. Its θ
+            # passed G3's check, which makes that rare; redraw both if an st
+            # model ever trips it.
             rts, choices = _simulate(
-                f"{model_name}_deadline", np.append(theta, deadline), n_trials, seed
+                f"{model_name}_deadline",
+                np.append(theta, deadline),
+                n_trials,
+                draw["seed"],
             )
             data = pd.DataFrame({"rt": rts, "response": choices, "deadline": deadline})
             hssm_kwargs["deadline"] = True
@@ -1044,6 +1061,8 @@ def gate_hssm_missing_load(
         initial_logp_by_p_outlier=initial_logp,
         n_trials=n_trials,
         n_missing=n_missing,
+        attempts=draw["attempts"],
+        rejected_draws=draw["rejected"],
         lan=str(lan_onnx) if lan_onnx is not None else f"{model_name} (by name)",
     )
 

@@ -176,6 +176,10 @@ A3 resolves the base LAN by model name through HSSM, which downloads it for
 registry models. Pass `--lan-onnx` to use a local LAN instead; models outside
 HSSM's registry require it. Either way the assembly is LAN + auxiliary net
 (`loglik_kind="approx_differentiable"`), never HSSM's analytical likelihood.
+A3 simulates its base data as G3 does, from the 10 %-inset box and redrawn
+until every response time is positive, so it records `attempts` and
+`rejected_draws` too, and skips with G3's `no usable dataset` reason when no
+draw is usable. A skipped A3 blocks a publish like any skipped required gate.
 
 `lan-publish` runs the same gates for a cpn or opn, passing `--aux-category
 choice` for a cpn itself and forwarding `--lan-onnx`; see

@@ -544,6 +544,49 @@ class TestHssmMissingLoadGate:
         assert fake_hssm[0]["loglik_missing_data"] == str(path)
         assert "deadline" not in fake_hssm[0]
 
+    def test_cpn_redraws_a_dataset_hssm_would_refuse_like_g3(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        # #64 made G3 redraw an rt <= 0; A3 hands HSSM the same kind of data
+        # and must not fail a working net on it either. Row 1 is not blanked.
+        calls = []
+
+        def simulate(model_name, theta, n_samples, random_state, max_t=20.0):
+            calls.append(random_state)
+            rts, choices = fixed_simulate(model_name, theta, n_samples, random_state)
+            if len(calls) == 1:
+                rts = rts.copy()
+                rts[1] = -0.05
+            return rts, choices
+
+        monkeypatch.setattr(
+            vn, "_hssm_version_supports_cpn_response", lambda: (True, "0.6.0")
+        )
+        monkeypatch.setattr(vn, "_simulate", simulate)
+        gate = vn.gate_hssm_missing_load(
+            make_onnx(tmp_path / "cpn.onnx", (1, 5)), "ddm", "cpn", n_trials=100
+        )
+        assert gate["passed"] and not gate.get("skipped")
+        assert gate["attempts"] == 2 and len(gate["rejected_draws"]) == 1
+        assert calls == [0, vn.HSSM_LOAD_REDRAW_STRIDE]
+        rts = fake_hssm[0]["data"]["rt"]
+        assert ((rts > 0) | (rts == vn.OMISSION_RT)).all()
+
+    def test_an_exhausted_budget_skips_rather_than_fails_like_g3(
+        self, tmp_path, monkeypatch, fake_hssm
+    ):
+        def simulate(model_name, theta, n_samples, random_state, max_t=20.0):
+            return np.full(n_samples, -0.05), np.ones(n_samples)
+
+        monkeypatch.setattr(vn, "_simulate", simulate)
+        gate = vn.gate_hssm_missing_load(
+            make_onnx(tmp_path / "opn.onnx", (1, 5)), "ddm", "opn"
+        )
+        assert gate["passed"] and gate["skipped"]
+        assert gate["reason"].startswith("no usable dataset")
+        assert gate["attempts"] == vn.HSSM_LOAD_MAX_REDRAWS + 1
+        assert fake_hssm == []
+
     def test_opn_places_the_deadline_at_the_base_median_and_simulates_the_variant(
         self, tmp_path, monkeypatch, fake_hssm
     ):
@@ -1560,8 +1603,9 @@ class TestHssmLoadGate:
     def test_ddm_normal_st_seed_zero_is_usable(self, monkeypatch):
         """The draw that failed ddm_normal_st in practice, on the real simulator.
 
-        The networks were trained on an st box widened to 0.35 (ssms ships
-        0.25 at the pinned version), so the test installs that box. Its
+        The networks were trained on an st box widened to 0.35 (ssms main
+        ships it since ssm-simulators#390; the 0.15.0 release ships 0.25), so
+        the test installs that box explicitly. Its
         full-box seed-0 draw (t = 0.283, st = 0.285) simulates an rt below
         zero through the untruncated Normal kernel; the gate's own draw at the
         same seed must not.
