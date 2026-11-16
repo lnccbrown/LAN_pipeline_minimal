@@ -35,7 +35,7 @@ lan-sbatch
           |
           |  generated script enters this checkout and runs through uv
           v
-   generate | jaxtrain | torchtrain
+   generate | train --backend jax|torch
           |
           |  data files or run-identified network artifacts
           v

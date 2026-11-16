@@ -46,7 +46,7 @@ condos:
       # is effectively uncapped — but ask for what you need, not the maximum.
       batch: {max_cores: 208, max_mem: 2500G, max_walltime: null}
       gpu-he: {max_cores: 160, max_gpus: 75, max_mem: 1920G, max_submit_jobs: 1200}
-    suited_for: [generate, jaxtrain, torchtrain]
+    suited_for: [generate, train]
     verified_on: 2026-08-09
 
   # The default (non-condo) account, for smoke tests when the condo is busy.
@@ -72,14 +72,8 @@ job_defaults:
     time: "04:00:00"
   # Training: one GPU is plenty for these MLPs. gpu-he nodes carry 8 GPUs
   # each, so a 1-GPU request packs well and schedules faster than a whole node.
-  jaxtrain:
-    account: carney-mjfrank-condo2
-    partition: gpu-he
-    cores: 8
-    mem: 64G
-    num_gpus: 1
-    time: "12:00:00"
-  torchtrain:
+  # Both backends (`train --backend jax|torch`) share these resources.
+  train:
     account: carney-mjfrank-condo2
     partition: gpu-he
     cores: 8

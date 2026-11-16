@@ -6,7 +6,7 @@ operators. Each object occupies exactly one line.
 
 ## Slurm submission
 
-`lan-sbatch generate`, `lan-sbatch jaxtrain`, and `lan-sbatch torchtrain` emit
+`lan-sbatch generate` and `lan-sbatch train` emit
 one object per generated script (one per selected resource lane). When
 `--script-only` is used, `job_id` is null because no Slurm submission occurs:
 

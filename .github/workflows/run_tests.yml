@@ -65,7 +65,7 @@ jobs:
           uv run python sbatch_scripts/gen_sbatch.py generate \
             --config-path configs/quick_test/data_generation.yaml \
             --output-path /tmp/gen_out --n-jobs-in-array 2 --script-only
-          uv run python sbatch_scripts/gen_sbatch.py jaxtrain \
+          uv run python sbatch_scripts/gen_sbatch.py train --backend jax \
             --config-path configs/quick_test/network_training.yaml \
             --output-path /tmp/net_out --training-data-folder /tmp/data \
             --network-id 0 --script-only

@@ -102,7 +102,7 @@ After all generation tasks finish, submit one trainer:
 ```bash
 export EXPERIMENT_ID="<generation-experiment-id>"
 
-uv run lan-sbatch jaxtrain \
+uv run lan-sbatch train --backend jax \
   --config-path configs/examples/network_training_lan.yaml \
   --output-path "$LAN_PIPELINE_ROOT/networks" \
   --training-data-folder "$LAN_PIPELINE_ROOT/data/training_data/lan/.../ddm" \
@@ -110,7 +110,7 @@ uv run lan-sbatch jaxtrain \
   --cluster-config configs/cluster/oscar.yaml
 ```
 
-Use `torchtrain` in place of `jaxtrain` for a Torch training config. The
+Use `--backend torch` to train with PyTorch instead. The
 orchestrator creates one training MLflow run before submission and passes its
 run ID into the compute job so LANfactory continues the same record.
 

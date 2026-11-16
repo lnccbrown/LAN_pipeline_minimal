@@ -10,7 +10,7 @@ The quick workflow:
 
 1. installs and invokes ssm-simulators to generate a small DDM dataset;
 2. retrieves the data-generation experiment ID from MLflow;
-3. invokes LANfactory's JAX trainer with that experiment ID;
+3. invokes LANfactory's `train --backend jax` with that experiment ID;
 4. writes local MLflow metadata and artifacts for inspection.
 
 It takes a few minutes on a typical development machine. The first dependency

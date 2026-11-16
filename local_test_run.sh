@@ -79,7 +79,7 @@ echo "Training on data at: $DATA_PATH"
 
 # Run network training using LANfactory CLI
 # Link to data generation experiment for lineage tracking
-uv run jaxtrain \
+uv run train --backend jax \
     --config-path "$CONFIG_TRAIN" \
     --training-data-folder "$DATA_PATH" \
     --networks-path-base "$TEST_DIR/networks" \

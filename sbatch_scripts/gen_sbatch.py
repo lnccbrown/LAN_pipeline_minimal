@@ -15,6 +15,7 @@ import re
 import shlex
 import subprocess
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 
 import typer
@@ -127,15 +128,7 @@ JOB_KIND_FALLBACKS = {
         "mem": "16G",
         "time": "00:30:00",
     },
-    "jaxtrain": {
-        "account": "default",
-        "partition": "batch",
-        "num_gpus": 0,
-        "cores": 1,
-        "mem": "16G",
-        "time": "00:30:00",
-    },
-    "torchtrain": {
+    "train": {
         "account": "default",
         "partition": "batch",
         "num_gpus": 0,
@@ -157,8 +150,8 @@ JOB_KIND_FALLBACKS = {
 }
 
 
-# What `$UV run` actually executes per job kind. generate/jaxtrain/torchtrain
-# are console scripts installed by ssm-simulators/lanfactory; the recovery
+# What `$UV run` actually executes per job kind. generate/train are console
+# scripts installed by ssm-simulators/lanfactory; the recovery
 # worker is a repo script (bare sibling imports, so it cannot be a console
 # script) that additionally needs the `validate` dependency group — sync it on
 # the login node first (`uv sync --frozen --group validate`), compute nodes
@@ -228,6 +221,18 @@ def _validate_recover_identity(
 
 
 RUNNABLES = {"recover": "--group validate python validation/recover_parameters.py"}
+
+
+class Backend(str, Enum):
+    """LANfactory training backend, forwarded as `train --backend`.
+
+    Mirrors lanfactory.cli.train.Backend; defined here rather than imported so
+    the login node does not load torch and jax just to render a script.
+    """
+
+    jax = "jax"
+    torch = "torch"
+
 
 DEFAULT_MODULES = ["python", "gcc"]
 
@@ -553,6 +558,7 @@ def get_parameters_setup(
     training_data_folder: Path | None = None,
     network_id: int = 0,
     dl_workers: int = 1,
+    backend: str | None = None,  # For training: LANfactory `train --backend`
     # MLflow parameters - different for generate vs training
     mlflow_run_name: str | None = None,  # For data generation (ssm-simulators)
     mlflow_experiment_name: str | None = None,  # For data generation (ssm-simulators)
@@ -567,7 +573,8 @@ def get_parameters_setup(
         - Uses --mlflow-run-name and --mlflow-experiment-name
         - Each worker creates its own run
 
-    For training (LANfactory):
+    For training (LANfactory `train`):
+        - Uses --backend to select torch or jax
         - Uses --mlflow-run-id to continue logging to parent run
         - Uses --data-generation-experiment-id for lineage tracking
 
@@ -592,7 +599,12 @@ def get_parameters_setup(
         if mlflow_experiment_name:
             params["mlflow-experiment-name"] = mlflow_experiment_name
 
-    elif command in ["jaxtrain", "torchtrain"]:
+    elif command == "train":
+        if backend is None:
+            raise ValueError("train jobs need a backend (jax or torch)")
+        # --backend first: it is what tells the two kinds of job apart when
+        # reading a generated script.
+        params = {"backend": backend, **params}
         params.update(
             {
                 "networks-path-base": output_path.resolve(),
@@ -632,6 +644,7 @@ def handle_job(
     dl_workers: int = 1,
     data_generation_experiment_id: str | None = None,
     recover_args: dict | None = None,
+    backend: str | None = None,
 ):
     # Case-insensitive, and validated: getattr(logging, "info") returns the
     # *function*, which basicConfig rejects with a TypeError traceback — and
@@ -744,7 +757,7 @@ def handle_job(
                         f"{shlex.quote(artifact_location)}"
                     )
 
-            elif command_name in ["jaxtrain", "torchtrain"]:
+            elif command_name == "train":
                 # Training experiment
                 experiment_name = f"{model_name}-training"
 
@@ -777,11 +790,13 @@ def handle_job(
 
                 # Create a parent run for the training job
                 # The SBATCH worker will continue logging to this run via --mlflow-run-id
-                run = mlflow.start_run(run_name=f"{command_name}_network_{network_id}")
+                run = mlflow.start_run(run_name=f"train-{backend}_network_{network_id}")
                 mlflow_run_id = run.info.run_id
 
-                # Log configuration
+                # Log configuration. LANfactory logs `backend` itself too, but
+                # the parent run is visible before the job starts.
                 mlflow.log_param("command", command_name)
+                mlflow.log_param("backend", backend)
                 mlflow.log_param("config_path", str(config_path))
                 mlflow.log_param("output_path", str(output_path))
                 mlflow.log_param("network_id", network_id)
@@ -821,7 +836,8 @@ def handle_job(
         )
     else:
         basic_config = get_basic_config_from_yaml(config_path.resolve())
-        job_name_base = f"{safe_name(basic_config['MODEL'])}_{command_name}_sbatch"
+        kind = f"{command_name}_{backend}" if command_name == "train" else command_name
+        job_name_base = f"{safe_name(basic_config['MODEL'])}_{kind}_sbatch"
 
     # Scripts and SLURM logs live under <output_path>/runs/, timestamped —
     # repeated invocations never overwrite each other (previously the script
@@ -868,6 +884,7 @@ def handle_job(
             training_data_folder=training_data_folder,
             network_id=network_id,
             dl_workers=dl_workers,
+            backend=backend,
             mlflow_run_name=lane_run_name,
             mlflow_experiment_name=mlflow_experiment_name,
             mlflow_run_id=mlflow_run_id,
@@ -1039,90 +1056,92 @@ def generate(
     )
 
 
-def train_command(command_name: str):
-    def train(
-        config_path: Path = typer.Option(
-            ..., help="Path to configuration .yaml file for running commands"
-        ),
-        output_path: Path = typer.Option(
-            ..., help="Path to output folder for trained neural network"
-        ),
-        training_data_folder: Path = typer.Option(
-            ..., help="Path to folder with data to train the neural network on"
-        ),
-        network_id: int = typer.Option(0, help="Id for the neural network to train"),
-        data_generation_experiment_id: str = typer.Option(
-            None,
-            "--data-generation-experiment-id",
-            help="MLflow Experiment ID of the data generation experiment. "
-            "If provided, training data lineage will be logged.",
-        ),
-        cluster_config: Path = typer.Option(
-            None,
-            exists=True,
-            dir_okay=False,
-            readable=True,
-            help="Cluster inventory YAML (e.g. configs/cluster/oscar.yaml); its "
-            "job_defaults section supplies account/partition/resources for "
-            "this job kind. Explicit flags below override it.",
-        ),
-        account: str = typer.Option(
-            None, help="Condo to run the SBATCH job on [default: from cluster config]"
-        ),
-        partition: str = typer.Option(
-            None,
-            help="Partition to run the SBATCH script on [default: from cluster config]",
-        ),
-        num_gpus: int = typer.Option(
-            None, help="Number of GPUs requested [default: from cluster config]"
-        ),
-        cores: int = typer.Option(
-            None, help="Number of cores per job [default: from cluster config]"
-        ),
-        dl_workers: int = typer.Option(
-            1, help="Number of cores to use with the dataloader class"
-        ),
-        time: str = typer.Option(
-            None, help="Wall time limit for each job [default: from cluster config]"
-        ),
-        mem: str = typer.Option(
-            None, help="Memory limit for each job [default: from cluster config]"
-        ),
-        script_only: bool = typer.Option(
-            False,
-            help="Generate the sbatch script without submitting the job. "
-            "Side-effect-free: no MLflow experiment/run is created and no "
-            "MLflow wiring is embedded in the script.",
-        ),
-        log_level: str = typer.Option(
-            "WARNING", help="Set the log level", show_default=True
-        ),
-    ):
-        """Generate SBATCH script for neural network training using LANfactory."""
-        handle_job(
-            command_name=command_name,
-            config_path=config_path,
-            output_path=output_path,
-            log_level=log_level,
-            time=time,
-            script_only=script_only,
-            cluster_config=cluster_config,
-            account=account,
-            partition=partition,
-            num_gpus=num_gpus,
-            cores=cores,
-            mem=mem,
-            training_data_folder=training_data_folder,
-            network_id=network_id,
-            dl_workers=dl_workers,
-            data_generation_experiment_id=data_generation_experiment_id,
-        )
-
-    return train
-
-
-app.command("jaxtrain")(train_command("jaxtrain"))
-app.command("torchtrain")(train_command("torchtrain"))
+@app.command()
+def train(
+    backend: Backend = typer.Option(
+        ...,
+        "--backend",
+        "-b",
+        case_sensitive=False,
+        help="LANfactory training backend: jax or torch.",
+    ),
+    config_path: Path = typer.Option(
+        ..., help="Path to configuration .yaml file for running commands"
+    ),
+    output_path: Path = typer.Option(
+        ..., help="Path to output folder for trained neural network"
+    ),
+    training_data_folder: Path = typer.Option(
+        ..., help="Path to folder with data to train the neural network on"
+    ),
+    network_id: int = typer.Option(0, help="Id for the neural network to train"),
+    data_generation_experiment_id: str = typer.Option(
+        None,
+        "--data-generation-experiment-id",
+        help="MLflow Experiment ID of the data generation experiment. "
+        "If provided, training data lineage will be logged.",
+    ),
+    cluster_config: Path = typer.Option(
+        None,
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Cluster inventory YAML (e.g. configs/cluster/oscar.yaml); its "
+        "job_defaults section supplies account/partition/resources for "
+        "this job kind. Explicit flags below override it.",
+    ),
+    account: str = typer.Option(
+        None, help="Condo to run the SBATCH job on [default: from cluster config]"
+    ),
+    partition: str = typer.Option(
+        None,
+        help="Partition to run the SBATCH script on [default: from cluster config]",
+    ),
+    num_gpus: int = typer.Option(
+        None, help="Number of GPUs requested [default: from cluster config]"
+    ),
+    cores: int = typer.Option(
+        None, help="Number of cores per job [default: from cluster config]"
+    ),
+    dl_workers: int = typer.Option(
+        1, help="Number of cores to use with the dataloader class"
+    ),
+    time: str = typer.Option(
+        None, help="Wall time limit for each job [default: from cluster config]"
+    ),
+    mem: str = typer.Option(
+        None, help="Memory limit for each job [default: from cluster config]"
+    ),
+    script_only: bool = typer.Option(
+        False,
+        help="Generate the sbatch script without submitting the job. "
+        "Side-effect-free: no MLflow experiment/run is created and no "
+        "MLflow wiring is embedded in the script.",
+    ),
+    log_level: str = typer.Option(
+        "WARNING", help="Set the log level", show_default=True
+    ),
+):
+    """Generate SBATCH script for neural network training with LANfactory `train`."""
+    handle_job(
+        command_name="train",
+        backend=backend.value,
+        config_path=config_path,
+        output_path=output_path,
+        log_level=log_level,
+        time=time,
+        script_only=script_only,
+        cluster_config=cluster_config,
+        account=account,
+        partition=partition,
+        num_gpus=num_gpus,
+        cores=cores,
+        mem=mem,
+        training_data_folder=training_data_folder,
+        network_id=network_id,
+        dl_workers=dl_workers,
+        data_generation_experiment_id=data_generation_experiment_id,
+    )
 
 
 @app.command()

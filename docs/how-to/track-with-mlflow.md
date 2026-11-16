@@ -53,7 +53,7 @@ many worker runs.
 Pass the experiment ID when rendering or submitting a trainer:
 
 ```bash
-uv run lan-sbatch jaxtrain \
+uv run lan-sbatch train --backend jax \
   --config-path configs/examples/network_training_lan.yaml \
   --output-path /shared/networks \
   --training-data-folder /shared/data/training_data/lan/.../ddm \
