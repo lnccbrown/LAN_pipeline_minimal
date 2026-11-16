@@ -7,6 +7,7 @@ load-bearing contract here.
 
 import json
 import logging
+import re
 import shlex
 from pathlib import Path
 
@@ -43,6 +44,15 @@ JSON_KEYS = {
     "lane",
     "n_lanes",
 }
+
+
+# typer renders usage errors through rich, which colours them when it detects
+# CI (e.g. GITHUB_ACTIONS): the escape codes split `--backend` into `-` + `-backend`.
+_ANSI_RE = re.compile(r"\x1b\[[\d;]*m")
+
+
+def plain(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 def last_json_line(output: str) -> dict:
@@ -1174,7 +1184,7 @@ class TestTrainCommand:
     def test_backend_is_required(self, model_config, tmp_path):
         result = self.invoke(model_config, tmp_path / "out", tmp_path)
         assert result.exit_code != 0
-        assert "--backend" in result.output
+        assert "--backend" in plain(result.output)
 
     def test_backend_is_case_insensitive(self, model_config, tmp_path):
         result = self.invoke(
