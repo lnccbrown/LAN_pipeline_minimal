@@ -63,7 +63,7 @@ Discovery chooses defaults according to the workload:
 
 - `generate` uses the highest-priority CPU lane and records every usable CPU
   lane for optional array fan-out;
-- `jaxtrain` and `torchtrain` use one GPU on the highest-priority GPU lane;
+- `train` (either backend) uses one GPU on the highest-priority GPU lane;
 - debug and VNC QOS entries are excluded from pipeline capacity.
 
 Data generation is embarrassingly parallel, so `--use-all-lanes` can split its

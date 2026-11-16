@@ -46,7 +46,7 @@ def cluster_config(tmp_path):
                         "num_gpus": 0,
                         "time": "02:00:00",
                     },
-                    "jaxtrain": {
+                    "train": {
                         "account": "test-condo",
                         "partition": "gpu",
                         "cores": 2,

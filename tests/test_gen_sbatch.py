@@ -7,6 +7,7 @@ load-bearing contract here.
 
 import json
 import logging
+import re
 import shlex
 from pathlib import Path
 
@@ -43,6 +44,15 @@ JSON_KEYS = {
     "lane",
     "n_lanes",
 }
+
+
+# typer renders usage errors through rich, which colours them when it detects
+# CI (e.g. GITHUB_ACTIONS): the escape codes split `--backend` into `-` + `-backend`.
+_ANSI_RE = re.compile(r"\x1b\[[\d;]*m")
+
+
+def plain(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 def last_json_line(output: str) -> dict:
@@ -258,7 +268,9 @@ class TestScriptOnly:
         result = runner.invoke(
             app,
             [
-                "jaxtrain",
+                "train",
+                "--backend",
+                "jax",
                 "--config-path",
                 str(model_config),
                 "--output-path",
@@ -319,7 +331,9 @@ class TestResourceResolution:
         result = runner.invoke(
             app,
             [
-                "jaxtrain",
+                "train",
+                "--backend",
+                "jax",
                 "--config-path",
                 str(model_config),
                 "--output-path",
@@ -374,7 +388,7 @@ class TestResourceResolution:
             / "cluster"
             / "oscar.yaml"
         )
-        for kind in ("generate", "jaxtrain", "torchtrain", "recover"):
+        for kind in ("generate", "train", "recover"):
             resources = resolve_resources(kind, repo_yaml, {})
             # Real account, seeded from sacctmgr (not the placeholder guess).
             assert resources["account"] == "carney-mjfrank-condo2"
@@ -622,11 +636,11 @@ class TestModulesResolution:
         config = self.write_config(
             tmp_path,
             {
-                "job_defaults": {"jaxtrain": {"modules": ["python", "gcc", "cuda"]}},
+                "job_defaults": {"train": {"modules": ["python", "gcc", "cuda"]}},
                 "modules": ["python", "gcc"],
             },
         )
-        resources = resolve_resources("jaxtrain", config, {})
+        resources = resolve_resources("train", config, {})
         assert resources["modules"] == ["python", "gcc", "cuda"]
 
     def test_empty_list_disables_module_loading(self, tmp_path):
@@ -1112,12 +1126,14 @@ class TestNCpusPassthrough:
         assert "#SBATCH -c 12" in script
 
     def test_training_commands_do_not_get_n_cpus(self, model_config, tmp_path):
-        # jaxtrain/torchtrain have no such option; passing it would be an error.
+        # LANfactory `train` has no such option; passing it would be an error.
         out = tmp_path / "out"
         result = runner.invoke(
             app,
             [
-                "jaxtrain",
+                "train",
+                "--backend",
+                "jax",
                 "--config-path",
                 str(model_config),
                 "--output-path",
@@ -1130,3 +1146,55 @@ class TestNCpusPassthrough:
         assert result.exit_code == 0, result.output
         script = next((out / "runs").glob("*.sh")).read_text()
         assert "--n-cpus" not in script
+
+
+class TestTrainCommand:
+    """`train --backend` renders LANfactory's single `train` command."""
+
+    def invoke(self, model_config, out, data, *backend_args):
+        return runner.invoke(
+            app,
+            [
+                "train",
+                *backend_args,
+                "--config-path",
+                str(model_config),
+                "--output-path",
+                str(out),
+                "--training-data-folder",
+                str(data),
+                "--script-only",
+            ],
+        )
+
+    @pytest.mark.parametrize("backend", ["jax", "torch"])
+    def test_backend_reaches_the_rendered_command(
+        self, model_config, tmp_path, backend
+    ):
+        out = tmp_path / "out"
+        result = self.invoke(model_config, out, tmp_path, "--backend", backend)
+        assert result.exit_code == 0, result.output
+        command = last_json_line(result.output)["command"]
+        assert command.startswith(f"train --backend {backend} --config-path ")
+        script = next((out / "runs").glob("*.sh")).read_text()
+        assert f"$UV run {command}" in script
+        # The backend is in the job name, so squeue tells the two apart.
+        assert f"_train_{backend}_sbatch" in script
+
+    def test_backend_is_required(self, model_config, tmp_path):
+        result = self.invoke(model_config, tmp_path / "out", tmp_path)
+        assert result.exit_code != 0
+        assert "--backend" in plain(result.output)
+
+    def test_backend_is_case_insensitive(self, model_config, tmp_path):
+        result = self.invoke(
+            model_config, tmp_path / "out", tmp_path, "--backend", "TORCH"
+        )
+        assert result.exit_code == 0, result.output
+        assert "--backend torch " in last_json_line(result.output)["command"]
+
+    def test_unknown_backend_is_rejected(self, model_config, tmp_path):
+        result = self.invoke(
+            model_config, tmp_path / "out", tmp_path, "--backend", "tensorflow"
+        )
+        assert result.exit_code != 0

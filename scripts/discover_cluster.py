@@ -158,12 +158,11 @@ def suggest_job_defaults(lanes: list[dict]) -> dict:
         }
     if gpu:
         best = gpu[0]
-        for kind in ("jaxtrain", "torchtrain"):
-            defaults[kind] = {
-                "account": best["account"],
-                "partition": best["partition"],
-                "num_gpus": 1,
-            }
+        defaults["train"] = {
+            "account": best["account"],
+            "partition": best["partition"],
+            "num_gpus": 1,
+        }
     return defaults
 
 

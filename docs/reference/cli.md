@@ -5,12 +5,12 @@ environment and git-sourced dependencies are selected.
 
 ## `lan-sbatch`
 
-The installed entry point for `sbatch_scripts.gen_sbatch` has three commands:
+The installed entry point for `sbatch_scripts.gen_sbatch` renders generation and
+training jobs:
 
 ```bash
 uv run lan-sbatch generate --help
-uv run lan-sbatch jaxtrain --help
-uv run lan-sbatch torchtrain --help
+uv run lan-sbatch train --help
 ```
 
 ### `generate`
@@ -31,13 +31,15 @@ uv run lan-sbatch torchtrain --help
 The rendered `generate` command also receives `--n-cpus` equal to the resolved
 core request.
 
-### `jaxtrain` and `torchtrain`
+### `train`
 
-The trainer commands have the same interface and differ only in the LANfactory
-console command embedded in the script.
+Renders LANfactory's `train --backend {jax,torch}` into the script. The backend
+also appears in the job name (`{model}_train_{backend}_sbatch`) and as a
+`backend` parameter on the parent MLflow run.
 
 | Option | Required/default | Meaning |
 | --- | --- | --- |
+| `--backend {jax,torch}`, `-b` | required | LANfactory training backend (case-insensitive) |
 | `--config-path PATH` | required | LANfactory training YAML |
 | `--output-path PATH` | required | Network output root |
 | `--training-data-folder PATH` | required | Generated data consumed by the trainer |

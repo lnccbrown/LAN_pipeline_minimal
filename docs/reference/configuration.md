@@ -117,8 +117,7 @@ The committed file separates human-readable inventory from executable defaults.
 | --- | --- | --- |
 | `condos` | humans | Accounts, partitions, QOS, node classes, known limits, suitability, and verification date |
 | `job_defaults.generate` | `lan-sbatch` | CPU generation account, partition, cores, memory, GPU count, and wall time |
-| `job_defaults.jaxtrain` | `lan-sbatch` | JAX training resources |
-| `job_defaults.torchtrain` | `lan-sbatch` | Torch training resources |
+| `job_defaults.train` | `lan-sbatch` | Training resources (both backends) |
 | `modules` | generated script | Top-level module load list |
 
 Accepted executable resource keys are `account`, `partition`, `cores`, `mem`,
