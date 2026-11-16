@@ -396,6 +396,7 @@ class TestPublishRecord:
 
     def record(self, tmp_path, training_run_id, verified):
         import mlflow
+
         from publish.publish_network import publish_network
 
         publish_run_id = publish_network(
